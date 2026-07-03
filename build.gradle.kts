@@ -15,6 +15,9 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation(kotlin("stdlib"))
+
+    // tree-generator-common: Kotlin 编译器源码中的 IR 树结构生成器
+    implementation(files(File(rootDir, "libs/tree-generator-common.jar")))
 }
 
 tasks.test {
