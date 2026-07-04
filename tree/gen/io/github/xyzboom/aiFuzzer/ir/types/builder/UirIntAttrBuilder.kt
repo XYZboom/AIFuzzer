@@ -15,7 +15,7 @@ import kotlin.contracts.*
 
 @BuilderDsl
 class UirIntAttrBuilder {
-    lateinit var attrKind: UirAttrKind
+    var attrKind: UirAttrKind = UirAttrKind.INT
     var value: Int by kotlin.properties.Delegates.notNull<Int>()
 
     fun build(): UirIntAttr {

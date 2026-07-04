@@ -15,7 +15,7 @@ import kotlin.contracts.*
 
 @BuilderDsl
 class UirAttributeBuilder {
-    lateinit var attrKind: UirAttrKind
+    var attrKind: UirAttrKind = UirAttrKind.INT
 
     fun build(): UirAttribute {
         return UirAttributeImpl(
@@ -25,7 +25,7 @@ class UirAttributeBuilder {
 }
 
 @OptIn(ExperimentalContracts::class)
-inline fun buildAttribute(init: UirAttributeBuilder.() -> Unit): UirAttribute {
+inline fun buildAttribute(init: UirAttributeBuilder.() -> Unit = {}): UirAttribute {
     contract {
         callsInPlace(init, InvocationKind.EXACTLY_ONCE)
     }

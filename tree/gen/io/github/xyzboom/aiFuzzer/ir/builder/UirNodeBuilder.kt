@@ -19,7 +19,7 @@ class UirNodeBuilder {
     lateinit var op: String
     val inputs: MutableList<UirValueRef> = mutableListOf()
     val outputs: MutableList<UirValueRef> = mutableListOf()
-    lateinit var attributes: MutableMap<String, Attribute>
+    var attributes: MutableMap<String, Attribute> = mutableMapOf()
 
     fun build(): UirNode {
         return UirNodeImpl(

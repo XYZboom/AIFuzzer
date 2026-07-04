@@ -15,7 +15,7 @@ import kotlin.contracts.*
 
 @BuilderDsl
 class UirStringAttrBuilder {
-    lateinit var attrKind: UirAttrKind
+    var attrKind: UirAttrKind = UirAttrKind.STRING
     lateinit var value: String
 
     fun build(): UirStringAttr {

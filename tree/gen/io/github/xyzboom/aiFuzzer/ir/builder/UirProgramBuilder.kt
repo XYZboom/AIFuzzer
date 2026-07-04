@@ -15,7 +15,7 @@ import kotlin.contracts.*
 @BuilderDsl
 class UirProgramBuilder {
     val graphs: MutableList<UirGraph> = mutableListOf()
-    lateinit var metadata: MutableMap<String, String>
+    var metadata: MutableMap<String, String> = mutableMapOf()
 
     fun build(): UirProgram {
         return UirProgramImpl(
@@ -26,7 +26,7 @@ class UirProgramBuilder {
 }
 
 @OptIn(ExperimentalContracts::class)
-inline fun buildProgram(init: UirProgramBuilder.() -> Unit): UirProgram {
+inline fun buildProgram(init: UirProgramBuilder.() -> Unit = {}): UirProgram {
     contract {
         callsInPlace(init, InvocationKind.EXACTLY_ONCE)
     }

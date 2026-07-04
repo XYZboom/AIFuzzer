@@ -12,9 +12,13 @@ class BuilderConfigurator(model: org.jetbrains.kotlin.generators.tree.Model<Elem
     override val defaultBuilderPackage: String get() = "$BASE_PACKAGE.builder"
 
     override fun configureBuilders() = with(TreeBuilder) {
-        builder(program) { }
+        builder(program) {
+            default("metadata", "mutableMapOf()")
+        }
         builder(graph) { }
-        builder(node) { }
+        builder(node) { 
+            default("attributes", "mutableMapOf()")
+        }
         builder(valueRef) { }
         builder(namedElement) { }
         builder(type) { }
@@ -22,8 +26,14 @@ class BuilderConfigurator(model: org.jetbrains.kotlin.generators.tree.Model<Elem
         builder(shape) { }
         builder(dim) { }
         builder(dataType) { }
-        builder(attribute) { }
-        builder(intAttr) { }
-        builder(stringAttr) { }
+        builder(attribute) {
+            default("attrKind", "UirAttrKind.INT")
+        }
+        builder(intAttr) {
+            default("attrKind", "UirAttrKind.INT")
+        }
+        builder(stringAttr) {
+            default("attrKind", "UirAttrKind.STRING")
+        }
     }
 }
