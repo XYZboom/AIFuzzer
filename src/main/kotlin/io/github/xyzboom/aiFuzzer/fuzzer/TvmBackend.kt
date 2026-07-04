@@ -1,5 +1,6 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
+import io.github.xyzboom.aiFuzzer.config.TvmConfig
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.translator.tvm.TvmRelaxTranslator
 import java.io.File
@@ -8,12 +9,20 @@ import java.util.concurrent.TimeUnit
 /**
  * TVM Relax 编译器后端。
  */
-class TvmBackend(workDir: File = File(System.getProperty("java.io.tmpdir"), "aiFuzzer_tvm")) : Backend<TvmBackend.TvmResult> {
+class TvmBackend(
+    workDir: File = File(System.getProperty("java.io.tmpdir"), "aiFuzzer_tvm"),
+    /** 从 config 创建 */
+    config: TvmConfig? = null,
+) : Backend<TvmBackend.TvmResult> {
 
     override val name = "TVM Relax"
     override val workDir = workDir.also { it.mkdirs() }
 
-    private val translator = TvmRelaxTranslator()
+    private val translator = if (config != null) {
+        TvmRelaxTranslator(shapeRank = config.shapeRank, dtype = config.dtype)
+    } else {
+        TvmRelaxTranslator()
+    }
 
     override fun checkEnvironment(): Boolean {
         return try {

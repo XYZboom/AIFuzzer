@@ -27,6 +27,10 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation(kotlin("stdlib"))
     implementation(project(":tree"))
+    // YAML 配置文件解析
+    implementation("org.yaml:snakeyaml:2.0")
+    // CLIKT 命令行参数解析
+    implementation("com.github.ajalt.clikt:clikt-jvm:4.2.2")
 }
 
 application {

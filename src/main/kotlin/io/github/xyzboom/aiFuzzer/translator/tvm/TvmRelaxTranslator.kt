@@ -15,7 +15,11 @@ import io.github.xyzboom.aiFuzzer.translator.UirTranslator
 class TvmRelaxTranslator(
     private val dtypeMapping: Map<String, String> = defaultDtypeMapping,
     private val opNameMapping: Map<String, String> = defaultOpNameMapping,
+    private val shapeRank: Int = 3,
+    private val dtype: String = "float32",
 ) : UirTranslator<UirProgram, String> {
+
+    private val shapeStr: String = (-1 downTo -1).take(shapeRank).joinToString(", ") { "-1" }
 
     /**
      * Visitor 数据上下文：累积输出、缩进、节点到输出变量名的映射。
@@ -82,7 +86,7 @@ class TvmRelaxTranslator(
             for ((i, input) in graph.inputs.withIndex()) {
                 val name = sanitizeName(input.valueId)
                 val varName = "${name}_var"
-                val typeStr = inferInputType(input, graph)
+                val typeStr = inferInputType(input, graph, shapeStr, dtype)
                 data.appendLine("$varName = relax.Var(\"$name\", $typeStr)")
                 data.valueMap[input.valueId] = varName
                 inputVarNames.add(varName)
@@ -171,10 +175,9 @@ class TvmRelaxTranslator(
             return sb.toString()
         }
 
-        private fun inferInputType(ref: UirValueRef, graph: UirGraph): String {
-            // 使用 3-D 动态形状以兼容最多 3 维的输入
-            // TVM 会基于实际 shape 做类型推导和 axis 规范化
-            return """relax.TensorStructInfo(shape=(-1, -1, -1), dtype="float32")"""
+        private fun inferInputType(ref: UirValueRef, graph: UirGraph, shape: String, dtype: String): String {
+            // 使用可配置的动态形状（默认 3 维）
+            return """relax.TensorStructInfo(shape=($shape), dtype="$dtype")"""
         }
 
         private fun sanitizeName(name: String): String {

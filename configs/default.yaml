@@ -1,0 +1,75 @@
+# AiFuzzer 默认配置文件
+# 配置文件的 YAML 路径可通过 CLI 的 --config 参数指定
+
+# 全局运行设置
+run:
+  description: "AiFuzzer default run"
+  seed: null                          # null = 使用系统时间; 或指定数字如 42
+  output_dir: "./reports"
+  log_level: "info"
+
+# 生成器设置
+generator:
+  min_nodes_per_graph: 3
+  max_nodes_per_graph: 8
+  min_inputs: 1
+  max_inputs: 3
+  min_input_ndim: 1
+  max_input_ndim: 3
+  graph_count: 1
+  strategy: "random"                  # random | enumerated | template
+  template_dir: "./templates"
+
+  # 算子选择
+  ops:
+    include_all: true                 # true = 包含所有算子
+    include: []                       # 指定算子白名单（include_all=false 时生效）
+    exclude: []                       # 排除算子黑名单
+
+  # 变异设置
+  mutation:
+    enabled: false
+    rate: 0.1
+
+# 后端设置
+backends:
+  enabled: ["tvm"]                    # 启用的后端: tvm, onnx, iree
+
+  tvm:
+    python: "python3"
+    timeout_seconds: 60
+    keep_artifacts: false
+    work_dir: "/tmp/aiFuzzer_tvm"
+    dtype: "float32"
+    shape_rank: 3                     # TensorStructInfo 的 shape 维度数
+
+  onnx:
+    python: "python3"
+    timeout_seconds: 60
+    opset_version: 21
+    ir_version: 8
+
+  iree:
+    timeout_seconds: 120
+    target: "llvm-cpu"
+    driver: "local-sync"
+    mlir_flags: []
+
+# Bug 收集
+bug_collector:
+  enabled: true
+  ignore_patterns:
+    - "SyntaxError"
+    - "IndentationError"
+    - "ImportError"
+    - "ModuleNotFoundError"
+    - "AttributeError"
+    - "OpNotImplemented"
+  output_dir: "./reports"
+
+# Fuzzing 流水线
+pipeline:
+  workers: 1
+  batch_size: 100
+  report_interval: 10
+  run_timeout_seconds: 60

@@ -1,0 +1,22 @@
+# AiFuzzer 调试配置
+# 小规模快速测试
+
+run:
+  description: "Debug run - small scale"
+  seed: 42
+
+generator:
+  min_nodes_per_graph: 2
+  max_nodes_per_graph: 4
+  min_inputs: 1
+  max_inputs: 2
+  graph_count: 1
+
+backends:
+  enabled: ["tvm"]
+
+pipeline:
+  workers: 1
+  batch_size: 20
+  report_interval: 5
+  run_timeout_seconds: 30
