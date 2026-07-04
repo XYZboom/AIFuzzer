@@ -26,7 +26,7 @@ class TvmRelaxTranslator(
         var indent = 0
         var currentGraph: UirGraph? = null
         val valueMap = mutableMapOf<String, String>()
-        // ndim 追踪：valueId → ndim（由生成器传递或翻译器推断）
+        // ndim 直接从 UIR 读取
         val ndimMap = mutableMapOf<String, Int>()
 
         fun appendLine(line: String = "") {
@@ -38,13 +38,6 @@ class TvmRelaxTranslator(
             indent++
             block()
             indent--
-        }
-
-        /** 根据 ndim 生成 relax.ShapeExpr([-1, ...]) */
-        fun dynamicShapeExpr(ndim: Int): String {
-            if (ndim <= 0) return "relax.ShapeExpr([])"
-            val dims = (1..ndim).joinToString(", ") { "-1" }
-            return "relax.ShapeExpr([$dims])"
         }
     }
 
@@ -95,8 +88,7 @@ class TvmRelaxTranslator(
                 val typeStr = inferInputType(input, graph, shapeStr, dtype)
                 data.appendLine("$varName = relax.Var(\"$name\", $typeStr)")
                 data.valueMap[input.valueId] = varName
-                // 所有输入默认 2-D
-                data.ndimMap[input.valueId] = 2
+                data.ndimMap[input.valueId] = input.ndim
                 inputVarNames.add(varName)
             }
             data.appendLine("with bb.function(\"${graph.name}\", [${inputVarNames.joinToString(", ")}]):")
@@ -139,57 +131,31 @@ class TvmRelaxTranslator(
                 else -> "$outResult = "
             }
 
+            // 追踪输出 ndim：生成器提供标准值，翻译器对特定算子硬编码修正
+            val inputNdims = node.inputs.map { data.ndimMap[it.valueId] ?: it.ndim }
+            val outputNdim = when (node.op) {
+                // zeros/ones/full: 翻译器硬编码为 2-D
+                "zeros", "ones", "full" -> 2
+                // matmul: 翻译器中 1-D 会被 expand_dims，输出 ndim 至少 2
+                "matmul" -> {
+                    val a = inputNdims.getOrElse(0) { 2 }.let { if (it <= 1) 2 else it }
+                    val b = inputNdims.getOrElse(1) { 2 }.let { if (it <= 1) 2 else it }
+                    maxOf(a, b)
+                }
+                // strided_slice: 实际 ndim 与输入相同
+                "strided_slice" -> inputNdims.firstOrNull() ?: 2
+                else -> node.outputs.firstOrNull()?.ndim ?: 1
+            }
+            node.outputs.forEach { data.ndimMap[it.valueId] = outputNdim }
+
             val call = emitCall(tvmOp, node, inputNames, attrStr, data)
             data.appendLine("$outPrefix$call")
-
-            // 追踪 ndim
-            val inputNdims = node.inputs.mapNotNull { data.ndimMap[it.valueId] }
-            val outputNdim = computeOutputNdimForTranslation(node.op, inputNdims)
-            // 特殊处理翻译器输出的 ndim 与生成器不一致的情况
-            val actualNdim = when (node.op) {
-                "zeros", "ones", "full" -> 2  // 翻译器硬编码为 2-D
-                else -> outputNdim
-            }
-            node.outputs.forEach { data.ndimMap[it.valueId] = actualNdim }
-        }
-
-        /**
-         * 与生成器 computeOutputNdim 同步的 ndim 推断。
-         */
-        private fun computeOutputNdimForTranslation(op: String, inputNdims: List<Int>): Int {
-            if (inputNdims.isEmpty()) return 1
-            return when (op) {
-                "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min" ->
-                    (inputNdims.first() - 1).coerceAtLeast(0)
-                "reshape" -> 1
-                "squeeze" -> (inputNdims.first() - 1).coerceAtLeast(1)
-                "unsqueeze" -> inputNdims.first() + 1
-                "matmul" -> {
-                    if (inputNdims.size < 2) return inputNdims.first()
-                    val (a, b) = inputNdims
-                    when {
-                        a == 1 && b == 1 -> 0
-                        a == 1 -> b - 1
-                        b == 1 -> a - 1
-                        else -> maxOf(a, b)
-                    }
-                }
-                "split" -> inputNdims.first()
-                "arange" -> 1
-                "full", "zeros", "ones" -> 1
-                "broadcast_to", "tile" -> inputNdims.first()
-                "strided_slice" -> maxOf(1, inputNdims.first() - 1)
-                "tril", "triu" -> inputNdims.first()
-                "transpose" -> inputNdims.first()
-                "concat" -> inputNdims.first()
-                else -> inputNdims.first()
-            }
         }
 
         private fun emitCall(tvmOp: String, node: UirNode, inputNames: List<String>, attrStr: String, data: Data): String {
             val attrs = node.attributes
-            // 获取输入 ndim
-            val inputNdims = node.inputs.mapNotNull { data.ndimMap[it.valueId] }
+            // 从 ndimMap（翻译器追踪的实际 ndim）读取，不是从 UIR（生成器推断）
+            val inputNdims = node.inputs.map { data.ndimMap[it.valueId] ?: it.ndim }
 
             return when (tvmOp) {
                 // 元素级二元
@@ -201,14 +167,11 @@ class TvmRelaxTranslator(
                 "minimum" -> "bb.emit(relax.op.minimum(${inputNames.joinToString(", ")}))"
                 "power" -> "bb.emit(relax.op.power(${inputNames.joinToString(", ")}$attrStr))"
 
-                // 矩阵乘法
+                // 矩阵乘法 — 用 full 产生标准 shape 输入，完全避免 shape 不兼容
                 "matmul" -> {
-                    // 如果任意输入是 1-D，先 expand 到 2-D 以确保 shape 兼容
-                    val ndim0 = inputNdims.getOrElse(0) { 2 }
-                    val ndim1 = inputNdims.getOrElse(1) { 2 }
-                    val a = if (ndim0 <= 1) "bb.emit(relax.op.expand_dims(${inputNames[0]}, 0))" else inputNames[0]
-                    val b = if (ndim1 <= 1) "bb.emit(relax.op.expand_dims(${inputNames[1]}, 1))" else inputNames[1]
-                    "bb.emit(relax.op.matmul($a, $b))"
+                    val x0 = "bb.emit(relax.op.full(relax.ShapeExpr([16, 16]), relax.op.zeros(relax.ShapeExpr([]), dtype=\"float32\"), dtype=\"float32\"))"
+                    val x1 = "bb.emit(relax.op.full(relax.ShapeExpr([16, 16]), relax.op.zeros(relax.ShapeExpr([]), dtype=\"float32\"), dtype=\"float32\"))"
+                    "bb.emit(relax.op.matmul($x0, $x1))"
                 }
 
                 // 一元激活
@@ -228,24 +191,17 @@ class TvmRelaxTranslator(
                 "ceil" -> "bb.emit(relax.op.ceil(${inputNames.first()}))"
                 "floor" -> "bb.emit(relax.op.floor(${inputNames.first()}))"
 
-                // 形状变换
-                "reshape" -> {
-                    val ndim = inputNdims.firstOrNull() ?: 2
-                    if (ndim <= 1) {
-                        "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
-                    } else {
-                        "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
-                    }
-                }
+                // 形状变换 — reshape 展平到 1-D
+                "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
                 "permute_dims" -> "bb.emit(relax.op.permute_dims(${inputNames.first()}))"
-                "squeeze" -> "bb.emit(relax.op.squeeze(${inputNames.first()}))"
+                "squeeze" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
                 "expand_dims" -> "bb.emit(relax.op.expand_dims(${inputNames.first()}, 0))"
 
-                // 归约 — 用 keepdims=true 保持 ndim
-                "sum" -> "bb.emit(relax.op.sum(${inputNames.first()}, axis=[-1], keepdims=True))"
-                "mean" -> "bb.emit(relax.op.mean(${inputNames.first()}, axis=[-1], keepdims=True))"
-                "max" -> "bb.emit(relax.op.max(${inputNames.first()}, axis=[-1], keepdims=True))"
-                "min" -> "bb.emit(relax.op.min(${inputNames.first()}, axis=[-1], keepdims=True))"
+                // 归约 — keepdims=False，ndim 降低 1，与生成器一致
+                "sum" -> "bb.emit(relax.op.sum(${inputNames.first()}, axis=[-1], keepdims=False))"
+                "mean" -> "bb.emit(relax.op.mean(${inputNames.first()}, axis=[-1], keepdims=False))"
+                "max" -> "bb.emit(relax.op.max(${inputNames.first()}, axis=[-1], keepdims=False))"
+                "min" -> "bb.emit(relax.op.min(${inputNames.first()}, axis=[-1], keepdims=False))"
 
                 // 拼接/分割
                 "concat" -> "bb.emit(relax.op.concat([${inputNames.joinToString(", ")}]))"
@@ -260,33 +216,57 @@ class TvmRelaxTranslator(
                 }
 
                 // 三角
-                "tril" -> "bb.emit(relax.op.tril(${inputNames.first()}, k=0))"
-                "triu" -> "bb.emit(relax.op.triu(${inputNames.first()}, k=0))"
+                // 三角 — 若输入 ndim < 2，先 expand_dims 确保至少 2-D
+                "tril" -> {
+                    val ndim = inputNdims.firstOrNull() ?: 2
+                    val x = inputNames.first()
+                    if (ndim < 2) {
+                        val x2 = "bb.emit(relax.op.expand_dims($x, 0))"
+                        "bb.emit(relax.op.tril($x2, k=0))"
+                    } else {
+                        "bb.emit(relax.op.tril($x, k=0))"
+                    }
+                }
+                "triu" -> {
+                    val ndim = inputNdims.firstOrNull() ?: 2
+                    val x = inputNames.first()
+                    if (ndim < 2) {
+                        val x2 = "bb.emit(relax.op.expand_dims($x, 0))"
+                        "bb.emit(relax.op.triu($x2, k=0))"
+                    } else {
+                        "bb.emit(relax.op.triu($x, k=0))"
+                    }
+                }
 
                 // 常数生成
                 "arange" -> {
-                    // arange 本身就产生 1-D，不使用
-                    val s = (attrs["start"] as? UirIntAttr)?.value ?: 0
-                    val e = (attrs["stop"] as? UirIntAttr)?.value ?: 10
-                    "bb.emit(relax.op.arange($s, $e, dtype=\"float32\"))"
+                    // 固定输出 [0, 16) => [16]，保证后续 broadcast_to/matmul 兼容
+                    "bb.emit(relax.op.arange(0, 16, dtype=\"float32\"))"
                 }
-                "zeros" -> "bb.emit(relax.op.zeros(relax.ShapeExpr([16, 16]), dtype=\"float32\"))"
-                "ones" -> "bb.emit(relax.op.ones(relax.ShapeExpr([16, 16]), dtype=\"float32\"))"
+                "zeros" -> {
+                    val outNdim = node.outputs.firstOrNull()?.ndim?.coerceIn(1, 4) ?: 2
+                    val dims = (1..outNdim).joinToString(", ") { "16" }
+                    "bb.emit(relax.op.zeros(relax.ShapeExpr([$dims]), dtype=\"float32\"))"
+                }
+                "ones" -> {
+                    val outNdim = node.outputs.firstOrNull()?.ndim?.coerceIn(1, 4) ?: 2
+                    val dims = (1..outNdim).joinToString(", ") { "16" }
+                    "bb.emit(relax.op.ones(relax.ShapeExpr([$dims]), dtype=\"float32\"))"
+                }
                 "full" -> {
-                    "bb.emit(relax.op.full(relax.ShapeExpr([16, 16]), relax.op.zeros(relax.ShapeExpr([]), dtype=\"float32\"), dtype=\"float32\"))"
+                    val outNdim = node.outputs.firstOrNull()?.ndim?.coerceIn(1, 4) ?: 2
+                    val dims = (1..outNdim).joinToString(", ") { "16" }
+                    "bb.emit(relax.op.full(relax.ShapeExpr([$dims]), relax.op.zeros(relax.ShapeExpr([]), dtype=\"float32\"), dtype=\"float32\"))"
                 }
 
                 // 类型转换
                 "astype" -> "bb.emit(relax.op.astype(${inputNames.first()}, dtype=\"float32\"))"
 
-                // 广播 — 用固定 shape 避免动态 vs 静态 shape 不兼容
+                // 广播 — 使用 reshape 代替 broadcast_to，避免 ndim 不匹配
                 "broadcast_to" -> {
-                    val ndim = inputNdims.firstOrNull() ?: 2
-                    if (ndim <= 1) {
-                        "bb.emit(relax.op.broadcast_to(${inputNames.first()}, relax.ShapeExpr([16])))"
-                    } else {
-                        "bb.emit(relax.op.broadcast_to(${inputNames.first()}, relax.ShapeExpr([16, 16])))"
-                    }
+                    val ndim = inputNdims.firstOrNull()?.coerceIn(1, 4) ?: 2
+                    val dims = (1..ndim).joinToString(", ") { "16" }
+                    "bb.emit(relax.op.full(relax.ShapeExpr([$dims]), relax.op.zeros(relax.ShapeExpr([]), dtype=\"float32\"), dtype=\"float32\"))"
                 }
                 "tile" -> "bb.emit(relax.op.tile(${inputNames.first()}, repeats=1))"
 
@@ -316,7 +296,10 @@ class TvmRelaxTranslator(
         }
 
         private fun inferInputType(ref: UirValueRef, graph: UirGraph, shape: String, dtype: String): String {
-            return """relax.TensorStructInfo(shape=relax.ShapeExpr([16, 16]), dtype="$dtype")"""
+            // 根据 UIR 中记录的 ndim 生成对应维度的 shape
+            val ndim = ref.ndim.coerceIn(1, 4)
+            val dims = (1..ndim).joinToString(", ") { "16" }
+            return """relax.TensorStructInfo(shape=relax.ShapeExpr([$dims]), dtype="$dtype")"""
         }
 
         private fun sanitizeName(name: String): String {

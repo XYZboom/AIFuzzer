@@ -13,6 +13,7 @@ import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
  */
 abstract class UirValueRef : UirElement, UirPureAbstractElement {
     abstract var valueId: String
+    abstract var ndim: Int
 
     override fun <R, D> accept(visitor: UirVisitor<R, D>, data: D): R =
         visitor.visitValueRef(this, data)

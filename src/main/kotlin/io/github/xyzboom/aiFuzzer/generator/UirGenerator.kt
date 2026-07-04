@@ -93,9 +93,9 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         val availableValues = mutableListOf<String>()
         repeat(inputCount) {
             val vid = nextValueId()
-            val ndim = config.minInputNdim + rand.nextInt(config.maxInputNdim - config.minInputNdim + 1)
-            inputs.add(buildValueRef { valueId = vid })
-            ndimMap[vid] = ndim
+            val n = config.minInputNdim + rand.nextInt(config.maxInputNdim - config.minInputNdim + 1)
+            inputs.add(buildValueRef { valueId = vid; ndim = n })
+            ndimMap[vid] = n
             availableValues.add(vid)
         }
 
@@ -140,8 +140,8 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             nodes.add(buildNode {
                 this.name = op
                 this.op = op
-                chosenInputs.forEach { inputs.add(buildValueRef { valueId = it }) }
-                outputIds.forEach { outputs.add(buildValueRef { valueId = it }) }
+                chosenInputs.forEach { inputs.add(buildValueRef { valueId = it; ndim = ndimMap[it] ?: 1 }) }
+                outputIds.forEach { outputs.add(buildValueRef { valueId = it; ndim = outputNdim }) }
                 if (attrs.isNotEmpty()) {
                     attributes = attrs.toMutableMap()
                 }
@@ -175,7 +175,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         // 3. 选择输出（从可用值中随机选 1-3 个）
         val outputCount = 1.coerceAtLeast(rand.nextInt(availableValues.size).coerceAtLeast(1))
         val chosenOutputs = availableValues.shuffled(rand).take(outputCount)
-        chosenOutputs.forEach { outputs.add(buildValueRef { valueId = it }) }
+        chosenOutputs.forEach { outputs.add(buildValueRef { valueId = it; ndim = ndimMap[it] ?: 1 }) }
     }
 
     /**
@@ -257,7 +257,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             "transpose", "tril", "triu" -> {
                 val valid = availableValues.filter { (ndimMap[it] ?: 1) >= 2 }
                 if (valid.isNotEmpty()) valid.shuffled(rand).take(neededCount)
-                else availableValues.shuffled(rand).take(neededCount)
+                else availableValues.sortedByDescending { ndimMap[it] ?: 1 }.take(neededCount)
             }
             // reduce 类：需要 >= 1-D
             "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min" -> {

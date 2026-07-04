@@ -45,6 +45,7 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
 
     val valueRef: Element by element(Element.Kind.Other, name = "ValueRef") {
         +field("valueId", StandardTypes.string, isChild = false)
+        +field("ndim", StandardTypes.int, isChild = false, isMutable = true)
     }
 
     val namedElement: Element by element(Element.Kind.Other, name = "NamedElement") {

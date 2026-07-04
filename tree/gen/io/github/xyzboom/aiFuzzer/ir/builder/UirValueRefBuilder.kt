@@ -14,10 +14,12 @@ import kotlin.contracts.*
 @BuilderDsl
 class UirValueRefBuilder {
     lateinit var valueId: String
+    var ndim: Int by kotlin.properties.Delegates.notNull<Int>()
 
     fun build(): UirValueRef {
         return UirValueRefImpl(
             valueId,
+            ndim,
         )
     }
 }

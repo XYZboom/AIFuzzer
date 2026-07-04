@@ -13,6 +13,7 @@ import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
 
 internal class UirValueRefImpl(
     override var valueId: String,
+    override var ndim: Int,
 ) : UirValueRef() {
 
     override fun <R, D> acceptChildren(visitor: UirVisitor<R, D>, data: D) {}
