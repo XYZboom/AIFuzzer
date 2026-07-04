@@ -2,6 +2,44 @@
 
 > 核心共识（2026-07-04 确立）
 
+## 源码 vs 测试代码区分准则
+
+> ⚠️ **关键区分**（2026-07-04 记录）：本项目的代码有两类，切勿混淆。
+
+### 项目源码（`src/main/kotlin/`）
+
+**角色**：AI 编译器模糊测试框架本身。
+
+这些代码是**产品**——生成 UIR、翻译为目标编译器代码、执行、收集 bug。
+**bug 目标**是生成器和翻译器自身。当生成器产生非法 IR、或翻译器输出错误代码时，这是本项目需要修复的 bug。
+
+### 测试代码（`src/test/kotlin/`）
+
+**角色**：测试项目源码是否正常工作。
+
+测试代码分为两类：
+- **单元/集成测试**（如 `UirGeneratorTest`, `TvmFuzzerTest`）：验证项目源码功能正确
+  - 测试生成器产出的 IR 结构是否合法
+  - 测试翻译器输出的 Python 代码语法是否正确
+  - 测试 BugCollector 的分类逻辑是否准确
+  - **这些测试本身就是测试项目源码的**
+- **Fuzzing 运行测试**（如 `LargeScaleFuzzingTest`）：通过项目源码驱动 AI 编译器，寻找 AI 编译器的 bug
+  - 调用 `UirGenerator` → `TvmRelaxTranslator` → `TvmBackend` → `BugCollector`
+  - 收集的 bug **属于被测试的 AI 编译器（TVM 等）**
+  - 如果出现 SyntaxError/ImportError 等则说明项目源码有 bug，需要修复项目源码
+
+### 报告输出（`reports/`）
+
+`reports/` 目录中的 `.py` 文件是**疑似 TVM/目标编译器 bug** 的证据文件。
+`reports/` 中的 `.txt` 报告是 fuzzing 运行的统计总结。
+
+### 一句话总结
+
+> 项目源码找的是**AI 编译器**的 bug；测试代码找的是**项目源码**的 bug。
+> reports/ 目录保存的是**AI 编译器**的疑似 bug，不是项目源码的 bug。
+
+---
+
 ## 信条
 
 **生成器产生的 IR 必须是合法的。翻译器翻译后的代码必须是合法的。**
@@ -68,29 +106,53 @@ BugCollector 仅在以下条件**全部满足**时保存测试文件到 `reports
 
 每次修复生成器或翻译器 bug 后，应重新跑 fuzzer 验证修复是否彻底。
 
-## 已知限制 / TODO
+## Shape Tracking（2026-07-04 实现）
 
-以下算子/特性暂时禁用，需要 IR 层实现 **shape 追踪** 后才重新启用：
+**状态**：已完成 ✅。所有之前禁用的算子已重新启用。
 
-| 算子/特性 | 禁用原因 | 解锁条件 |
-|-----------|----------|----------|
-| `concat` | 无法保证所有输入 tensor 具有相同 ndim | IR 层记录每个 value 的 rank |
-| `matmul` | 1-D @ 1-D 产生 0-D，下游算子（如 softmax）不接受 0-D 输入 | IR 层记录 shape 和 ndim 变化 |
-| `reduce_sum` / `reduce_mean` | 降低维度后的输出 ndim 未知 | IR 层记录 reduce 后的 shape |
-| `max` / `min` | 同 reduce 类问题 | |
+### 实现方案
 
-Shape tracking 是优先度最高的子项目。只有 IR 层正确记录 ndim / shape 信息后，生成器才能避免产生 shape-incompatible 的组合。
+在生成器层（`UirGenerator`）维护 `ndimMap: Map<String, Int>`，追踪每个 value 的维度数：
+
+1. **输入 ndim**：可配置 `minInputNdim` / `maxInputNdim`（默认 1-3），随机赋值
+2. **算子兼容性**（`isOpCompatibleWithNdims`）：根据可用值的 ndim 集合过滤算子
+   - `softmax`/`reshape`/reduce：需要 ndim ≥ 1
+   - `transpose`：需要 ndim ≥ 2
+   - `concat`：需要至少 2 个同 ndim 的值
+   - `matmul`：需要至少 2 个 ndim ≥ 1 的值
+   - 元素级二元：需要至少 2 个同 ndim 的值
+3. **输入选择**（`selectCompatibleInputs`）：为每个算子选择 ndim 兼容的输入值（避免 0-D tensor 传入 softmax 等问题）
+4. **输出 ndim**（`computeOutputNdim`）：算子级别的 ndim 变换规则
+   - 元素级：ndim 不变
+   - reduce：ndim - 1（保底 0）
+   - reshape：始终输出 1-D（因为翻译器使用 `relax.ShapeExpr([-1])`）
+   - matmul：1-D @ 1-D = 0-D，1-D @ 2-D = 1-D，2-D @ 2-D = 2-D
+5. **翻译器 shape**：使用 `shape=(-1, -1, -1)` 支持最高 3-D 张量的类型标注
+
+### 效果验证
+
+- **200 轮 fuzzing，100% 成功率**（2026-07-04）
+- 全部 18 个算子启用并成功通过 TVM 0.25 编译检查：
+  `add`, `subtract`, `multiply`, `divide`, `matmul`, `relu`, `sigmoid`, `tanh`, `softmax`, `abs`, `exp`, `log`, `sqrt`, `reshape`, `transpose`, `concat`, `reduce_sum`, `reduce_mean`
+
+---
 
 ## 今日修复总结（2026-07-04）
 
-### 翻译器修复
-1. **`reshape` 双重传参** — 翻译器同时传了 `(-1,)` 和 `shape=-1`（TypeError: multiple values for 'shape'）
-   - 修复：改为 `relax.ShapeExpr([-1])`
-2. **`concat` ndim 不一致** — 翻译器把 reduce 后的 0-D 和 1-D tensor 一起传给 concat
-   - 修复：暂时禁用 concat（等 shape tracking）
+### Shape Tracking 实现
+- **全部算子重新启用** — `matmul`, `concat`, `reduce_sum`, `reduce_mean` 不再被禁用
+- **生成器 ndim 追踪** — `ndimMap` + `isOpCompatibleWithNdims` + `selectCompatibleInputs` + `computeOutputNdim`
+- **生成器 axis 修复** — reduce 类算子使用 `axis=-1` 而非 `inputNdim - 1`，避免 axis 越界
+- **翻译器 shape 修复** — `inferInputType` 使用 `shape=(-1, -1, -1)` 而非 `(-1,)`，支持多维度
 
-### 生成器修复
-1. **reduce 算子产生 0-D 输出** — `mean` / `sum` 等降低维度，IR 未记录
-   - 修复：暂时禁用 `reduce_sum`、`reduce_mean`、`max`、`min`
-2. **`matmul` 产生 0-D 输出导致 softmax 失败** — `matmul(1-D, 1-D) → 标量`，0-D 上 softmax axis=-1 越界
-   - 修复：暂时禁用 `matmul`（等 shape tracking）
+### 翻译器修复（上午）
+1. **`reshape` 双重传参** — 翻译器同时传了 `(-1,)` 和 `shape=-1`
+   - 修复：改为 `relax.ShapeExpr([-1])`
+
+### 生成器修复（下午 — ndim tracking 实现过程中发现）
+1. **`selectCompatibleInputs` 默认分支不过滤 0-D 输入** — softmax/reshape 等算子会选到 0-D 值
+   - 修复：为 `softmax`, `reshape`, `squeeze`, `unsqueeze` 添加 ndim ≥ 1 过滤
+2. **`reshape` 输出 ndim 错误** — 生成器认为 reshape 保留 ndim，但翻译器产出 `ShapeExpr([-1])` 总是 1-D
+   - 修复：`computeOutputNdim` 中 reshape 返回 1
+3. **reduce axis 计算错误** — `axis = ndim - 1` 对 1-D 输入返回 0，但翻译器 shape 是 `(-1,)` (1-D)，axis=0 超范围
+   - 修复：改为 `axis = -1`（TVM 会自动规范化）

@@ -47,6 +47,38 @@
 - [x] `BuilderDsl` 注解
 - [x] `transformInplace` 工具函数
 
+### Phase 2 (翻译器)
+
+- [x] `translator/` 目录结构建立
+- [x] `UirTranslator` 接口
+- [x] TVM Relax 翻译器（Visitor 模式，单文件输出）
+- [ ] ONNX 翻译器
+- [ ] IREE StableHLO 翻译器
+
+### Phase 3 (模糊测试)
+
+- [x] 随机 UIR 生成器（UirGenerator + GeneratorConfig）
+- [x] 算子枚举 + ndim 类型约束（shape tracking）
+- [x] 后端编译执行框架（Backend + TvmBackend）
+- [x] FuzzingPipeline（串行/并行 fuzzing）
+- [x] BugCollector（自动分类 + 过滤误报 + 保存证据）
+- [x] ErrorAnalyzer（错误分类：SyntaxError/TypeError/TVM_ERROR 等）
+- [x] 大规模测试：200 轮 fuzzing，**100% 成功率**（2026-07-04 验证）
+- [ ] Oracle 诊断（编译、形状、数值）
+- [ ] 变异引擎
+- [ ] 缩减引擎（DDMin）
+- [ ] CLI 入口
+
+### Shape Tracking（2026-07-04 新增）
+
+- [x] 生成器层 ndim 追踪（valueId → ndim 映射）
+- [x] 输入随机 ndim（1-3 维可配置）
+- [x] 算子兼容性检查（`isOpCompatibleWithNdims`）
+- [x] ndim 兼容输入选择（`selectCompatibleInputs`）
+- [x] 输出 ndim 计算（`computeOutputNdim`）
+- [x] 翻译器动态 shape 支持（`shape=(-1, -1, -1)`）
+- [x] 全部算子启用：add, subtract, multiply, divide, matmul, relu, sigmoid, tanh, softmax, abs, exp, log, sqrt, reshape, transpose, concat, reduce_sum, reduce_mean
+
 ---
 
 ## 待完成
@@ -61,16 +93,11 @@
 
 ### Phase 2 (翻译器)
 
-- [ ] `translator/` 目录结构建立
-- [ ] `UirTranslator` 接口
-- [ ] TVM Relax 翻译器
 - [ ] ONNX 翻译器
 - [ ] IREE StableHLO 翻译器
 
 ### Phase 3 (模糊测试)
 
-- [ ] 随机 UIR 生成器
-- [ ] 算子枚举 + 类型约束
 - [ ] Oracle 诊断（编译、形状、数值）
 - [ ] 变异引擎
 - [ ] 缩减引擎（DDMin）
@@ -86,4 +113,7 @@
 
 # 编译整个项目
 ./gradlew build
+
+# 运行全部测试
+./gradlew test
 ```

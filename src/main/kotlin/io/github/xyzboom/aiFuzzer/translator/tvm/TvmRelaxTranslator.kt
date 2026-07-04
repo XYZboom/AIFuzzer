@@ -167,7 +167,9 @@ class TvmRelaxTranslator(
         }
 
         private fun inferInputType(ref: UirValueRef, graph: UirGraph): String {
-            return """relax.TensorStructInfo(shape=(-1,), dtype="float32")"""
+            // 使用 3-D 动态形状以兼容最多 3 维的输入
+            // TVM 会基于实际 shape 做类型推导和 axis 规范化
+            return """relax.TensorStructInfo(shape=(-1, -1, -1), dtype="float32")"""
         }
 
         private fun sanitizeName(name: String): String {
