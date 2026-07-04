@@ -25,8 +25,8 @@ AiFuzzer 是一个 AI 编译器模糊测试框架。其核心思想是：
 > **关键设计决策**: AiFuzzer 的 IR 树结构（接口、实现、Visitor、Builder）**不手写**，而是参考 CrossLangFuzzer，通过 `tree-generator`（Kotlin 编译器源码中的 `generators/tree-generator-common`）从 Kotlin 配置文件自动生成。
 >
 > 具体流程：
-> 1. 在 `uir-builder/` 中编写 Kotlin 配置（类似 `TreeBuilder.kt`），定义 IR 元素、字段、父子关系
-> 2. 运行 tree-generator 的主入口，自动生成 `uir/gen/` 下的所有接口、实现、Visitor、Builder
+> 1. 在 `tree/tree-generator/` 中编写 Kotlin 配置（类似 `TreeBuilder.kt`），定义 IR 元素、字段、父子关系
+> 2. 运行 `./gradlew :tree:generateTree`，自动生成 `tree/gen/` 下的所有接口、实现、Visitor、Builder
 > 3. 生成的代码遵循 `DO NOT MODIFY IT MANUALLY` 原则，修改 IR 结构只需改配置后重新生成
 
 ```
@@ -37,36 +37,50 @@ aiFuzzer/
 │   └── validation_report.md    # (Phase 4) 验证报告
 ├── libs/
 │   └── tree-generator-common.jar  # Kotlin 编译器的 IR 树生成器 (64MB shadowJar)
-├── uir/                        # 统一 IR 模块
-│   ├── gen/                    # (自动生成) 由 tree-generator 产生的 IR 代码
+├── tree/                        # 统一 IR 模块 (子模块)
+│   ├── build.gradle.kts        # 定义 generateTree 任务，依赖 :tree:tree-generator
+│   ├── src/                    # 手写代码（枚举、扩展、序列化等）
+│   │   ├── UirAttrKind.kt
+│   │   ├── UirBlockKind.kt
+│   │   ├── UirDimKind.kt
+│   │   ├── UirTypeKind.kt
+│   │   ├── UirPureAbstractElement.kt
+│   │   ├── Attribute.kt (typealias)
+│   │   ├── builder/BuilderDsl.kt
+│   │   ├── serialize/      # 序列化 (手写，非自动生成)
+│   │   └── visitors/transformInplace.kt
+│   ├── gen/                    # (自动生成) 由 `:tree:generateTree` 产生的 IR 代码
 │   │   ├── UirElement.kt
 │   │   ├── UirProgram.kt
 │   │   ├── UirGraph.kt
 │   │   ├── UirNode.kt
+│   │   ├── UirValueRef.kt
+│   │   ├── UirNamedElement.kt
 │   │   ├── types/              # 类型系统
-│   │   ├── ops/                # 算子枚举
+│   │   ├── impl/               # 实现类
 │   │   ├── builder/            # Builder 模式构造器
-│   │   ├── visitor/            # Visitor/Transformer
-│   │   └── serialize/          # 序列化 (手写，非自动生成)
-│   └── ...
-├── uir-builder/                # (类似于 tree/tree-generator)
-│   ├── build.gradle.kts        # 依赖 tree-generator-common.jar
-│   └── src/main/kotlin/...
-│       ├── TreeBuilder.kt      # IR 元素定义配置
-│       ├── ImplConfigurator.kt # 实现配置
-│       ├── BuilderConfigurator.kt # Builder 配置
-│       └── main.kt             # 入口，启动生成
-├── translator/                 # 编译器翻译器
-│   ├── ...
-├── generator/                  # IR 生成器
-│   ├── ...
-├── fuzzer/                     # 模糊测试引擎
-│   ├── ...
-├── cli/                        # 命令行入口
+│   │   └── visitors/           # Visitor/Transformer
+│   └── tree-generator/         # 生成器配置 (子模块 :tree:tree-generator)
+│       └── src/main/kotlin/...
+│           ├── TreeBuilder.kt      # IR 元素定义配置
+│           ├── ImplConfigurator.kt # 实现配置
+│           ├── BuilderConfigurator.kt # Builder 配置
+│           ├── model/              # 模型定义
+│           ├── printer/            # 代码生成器 Printer
+│           └── main.kt             # 入口，启动生成
+├── translator/                 # 编译器翻译器 (Phase 2)
+├── generator/                  # IR 生成器 (Phase 3)
+├── fuzzer/                     # 模糊测试引擎 (Phase 3)
+├── cli/                        # 命令行入口 (Phase 3)
+├── src/
+│   └── main/kotlin/            # 主模块源文件 (项目入口)
 ├── test/                       # 测试用例
-│   └── ...
 └── build.gradle.kts
 ```
+
+> **当前状态**: Phase 1 核心 IR 已通过 tree-generator 自动生成并编译通过。
+> 生成方式: `./gradlew :tree:generateTree` (由 `tree/build.gradle.kts` 中的 `generateTree` 任务驱动，
+> `workingDir = rootDir` 确保 `File("tree/gen")` 相对于项目根目录解析)
 
 ---
 
@@ -78,29 +92,81 @@ aiFuzzer/
 
 ### 1.1 核心 IR 接口 (通过 tree-generator 自动生成)
 
-**不手写 IR 接口/实现/Visitor/Builder**。参考 CrossLangFuzzer 的 `tree/tree-generator`，在 `uir-builder/` 模块中编写 Kotlin 配置，运行后自动生成到 `uir/gen/`。
+**不手写 IR 接口/实现/Visitor/Builder**。参考 CrossLangFuzzer 的 `tree/tree-generator`，在 `tree/tree-generator/src/` 中编写 Kotlin 配置，运行 `:tree:generateTree` 后自动生成到 `tree/gen/`。
 
 需要编写的配置文件和自动生成的文件:
 
-| 配置 (uir-builder/src) | 自动生成 (uir/gen) | 对应 CrossLangFuzzer 的 gen |
+| 配置 (tree/tree-generator/...) | 自动生成 (tree/gen) | 对应 CrossLangFuzzer 的 gen |
 |------|------|------|
 | `TreeBuilder.kt` — 定义 Element 树 | `UirElement.kt` | `IrElement.kt` |
-| 同上 | `UirNode.kt` (新定义) | — |
+| 同上 | `UirNode.kt` (新增) | — |
 | 同上 | `UirProgram.kt` | `IrProgram.kt` |
-| 同上 | `UirGraph.kt` (新定义) | — |
-| 同上 | `UirValue.kt` (新定义) | — |
+| 同上 | `UirGraph.kt` (新增) | — |
+| 同上 | `UirValueRef.kt` (新增) | — |
+| 同上 | `UirNamedElement.kt` | `IrNamedElement.kt` |
 | 同上 | `types/UirType.kt` | `IrType.kt` |
 | 同上 | `types/UirTensorType.kt` | `IrClassifier` |
-| 同上 | `types/UirDataType.kt` (新定义) | — |
-| 同上 | `types/UirShape.kt` (新定义) | — |
-| 同上 | `types/UirLayout.kt` (新定义) | — |
-| 同上 | `ops/UirOp.kt` (新定义) | — |
-| 同上 | `visitor/UirVisitor.kt` | `IrVisitor.kt` |
+| 同上 | `types/UirDataType.kt` (新增) | — |
+| 同上 | `types/UirShape.kt` (新增) | — |
+| 同上 | `types/UirDim.kt` (新增) | — |
+| 同上 | `types/UirAttribute.kt` | — |
+| 同上 | `types/UirIntAttr.kt` (新增) | — |
+| 同上 | `types/UirStringAttr.kt` (新增) | — |
+| 同上 | `visitors/UirVisitor.kt` | `IrVisitor.kt` |
+| 同上 | `visitors/UirTransformer.kt` | `IrTransformer.kt` |
 | 同上 | `builder/UirGraphBuilder.kt` | Builder 模块 |
 | `ImplConfigurator.kt` | `impl/` 下的实现类 | 各 `*Impl.kt` 文件 |
 | `BuilderConfigurator.kt` | `builder/` 下的 Builder | `builder/` 目录 |
 
-### 1.2 Phase 1 算子子集
+手写代码（位于 `tree/src/`）:
+
+| 文件 | 说明 |
+|------|------|
+| `UirAttrKind.kt` | 属性类型枚举 |
+| `UirBlockKind.kt` | 子图块类型枚举 |
+| `UirDimKind.kt` | 维度类型枚举 |
+| `UirTypeKind.kt` | 类型分类枚举 |
+| `UirPureAbstractElement.kt` | 抽象元素标记接口 |
+| `Attribute.kt` | Attribute 对 UirAttribute 的 typealias |
+| `builder/BuilderDsl.kt` | Builder DSL 标记注解 |
+| `visitors/transformInplace.kt` | 列表变换工具 |
+| `serialize/` | (待实现) JSON 序列化/反序列化 |
+
+#### 当前 IR 树结构
+
+```
+UirElement (根接口)
+├── UirProgram
+│   ├── graphs: MutableList<UirGraph>
+│   └── metadata: MutableMap<String, String>
+├── UirNamedElement (interface)
+│   └── name: String
+├── UirGraph (abstract, extends UirNamedElement)
+│   ├── nodes: MutableList<UirNode>
+│   ├── inputs: MutableList<UirValueRef>
+│   └── outputs: MutableList<UirValueRef>
+├── UirNode (abstract, extends UirNamedElement)
+│   ├── op: String
+│   ├── inputs: MutableList<UirValueRef>
+│   ├── outputs: MutableList<UirValueRef>
+│   └── attributes: MutableMap<String, Attribute>
+├── UirValueRef
+│   └── valueId: String
+├── UirType (interface)
+│   ├── typeKind: UirTypeKind
+│   ├── UirTensorType
+│   │   ├── shape: UirShape
+│   │   └── dtype: UirDataType
+│   ├── UirShape (dims: MutableList<UirDim>)
+│   │   └── UirDim (dimKind, value)
+│   └── UirDataType (name, bits)
+├── UirAttribute (interface)
+│   ├── attrKind: UirAttrKind
+│   ├── UirIntAttr (value: Int)
+│   └── UirStringAttr (value: String)
+```
+
+> ✅ **已编译通过**: 上述所有 IR 接口、实现、Builder、Visitor/Transformer 均已通过 tree-generator 自动生成并编译成功。
 
 先实现**最核心的 15 个算子**，保证能覆盖：
 
@@ -119,8 +185,8 @@ aiFuzzer/
 
 ### 1.4 Phase 1 完成标准
 
-- [ ] 所有 14 个接口/类定义完成，编译成功
-- [ ] Visitor/Builder 模式工作正常
+- [x] 所有 14 个接口/类定义完成，编译成功
+- [x] Visitor/Builder 模式工作正常
 - [ ] 可以手工构建一个最小 UIR 程序（relu + add）并 JSON 序列化
 - [ ] 从 JSON 反序列化后可以正确重建 UIR 对象
 - [ ] UirGraph 支持 DAG 的拓扑排序

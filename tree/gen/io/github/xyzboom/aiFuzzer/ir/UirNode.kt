@@ -1,0 +1,27 @@
+
+
+// This file was generated automatically. See README.md.
+// DO NOT MODIFY IT MANUALLY.
+
+package io.github.xyzboom.aiFuzzer.ir
+
+import io.github.xyzboom.aiFuzzer.ir.visitors.UirTransformer
+import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
+
+/**
+ * Generated from: [io.github.xyzboom.aiFuzzer.tree.generator.TreeBuilder.node]
+ */
+abstract class UirNode : UirNamedElement, UirPureAbstractElement {
+    abstract override var name: String
+    abstract var op: String
+    abstract var inputs: MutableList<UirValueRef>
+    abstract var outputs: MutableList<UirValueRef>
+    abstract var attributes: MutableMap<String, Attribute>
+
+    override fun <R, D> accept(visitor: UirVisitor<R, D>, data: D): R =
+        visitor.visitNode(this, data)
+
+    @Suppress("UNCHECKED_CAST")
+    override fun <E : UirElement, D> transform(transformer: UirTransformer<D>, data: D): E =
+        transformer.transformNode(this, data) as E
+}

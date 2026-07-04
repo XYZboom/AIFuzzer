@@ -4,3 +4,6 @@ pluginManagement {
     }
 }
 rootProject.name = "aiFuzzer"
+
+include(":tree")
+include(":tree:tree-generator")

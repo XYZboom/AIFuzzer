@@ -10,14 +10,30 @@ repositories {
     mavenCentral()
 }
 
+subprojects {
+    pluginManager.apply("org.jetbrains.kotlin.jvm")
+    kotlin {
+        compilerOptions {
+            extraWarnings = true
+            allWarningsAsErrors = true
+        }
+    }
+}
+
 dependencies {
     testImplementation(platform("org.junit:junit-bom:6.0.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation(kotlin("stdlib"))
+    implementation(project(":tree"))
+}
 
-    // tree-generator-common: Kotlin 编译器源码中的 IR 树结构生成器
-    implementation(files(File(rootDir, "libs/tree-generator-common.jar")))
+sourceSets {
+    main {
+        kotlin {
+            srcDirs("src/main/kotlin")
+        }
+    }
 }
 
 tasks.test {
