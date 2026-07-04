@@ -68,10 +68,11 @@ object BugCollector {
 # Backend: ${backendName}
 # Seed: ${seed}
 # Timestamp: ${timestamp}
-# Error: ${result.stderr.lines().firstOrNull()?.take(120) ?: "unknown"}
+# Error:
+""".trimStart() + result.stderr.lines().joinToString("\n") { "# ${it.take(200)}" } + """
 # ============================================================
 
-""".trimStart()
+"""
 
         srcFile.copyTo(bugFile, overwrite = true)
         // 在文件开头插入注释

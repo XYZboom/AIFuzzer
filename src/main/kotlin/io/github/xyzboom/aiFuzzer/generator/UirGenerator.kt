@@ -328,7 +328,14 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 val pair = byNdim.entries.firstOrNull { it.value.size >= 2 }
                 pair?.value?.take(2)
             }
-            op in singleInputOps -> listOf(branches.random(rand))
+            op in singleInputOps -> {
+                val compatible = branches.filter { b ->
+                    val ndim = ndimMap[b] ?: 1
+                    isOpCompatibleWithNdims(op, setOf(ndim))
+                }
+                if (compatible.isNotEmpty()) listOf(compatible.random(rand))
+                else null
+            }
             else -> null
         }
     }
@@ -485,6 +492,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             "transpose", "broadcast_to",
             "arange", "full",
             "tile", "split",
+            "strided_slice",
         )
 
         /** 多输出算子 */
