@@ -55,36 +55,40 @@ class TvmRelaxTranslator(
             data.appendLine("import tvm")
             data.appendLine("from tvm import relax")
             data.appendLine("import tvm.relax.op as op")
-            data.appendLine("from tvm.script import tir as T")
             data.appendLine()
             data.appendLine()
             data.appendLine("def build_mod():")
-            data.appendLine("    bb = relax.BlockBuilder()")
-            data.appendLine()
-            program.acceptChildren(this, data)
-            data.appendLine("    return bb.get()")
+            data.indent {
+                data.appendLine("bb = relax.BlockBuilder()")
+                data.appendLine()
+                program.acceptChildren(this, data)
+                data.appendLine("return bb.get()")
+            }
             data.appendLine()
             data.appendLine()
             data.appendLine("if __name__ == '__main__':")
-            data.appendLine("    mod = build_mod()")
-            data.appendLine("    print(mod.script())")
+            data.indent {
+                data.appendLine("mod = build_mod()")
+                data.appendLine("print(mod.script())")
+            }
         }
 
         override fun visitGraph(graph: UirGraph, data: Data) {
             data.currentGraph = graph
             data.valueMap.clear()
 
-            data.appendLine("    with bb.function(\"${graph.name}\"):")
+            // 为每个输入创建 relax.Var
+            val inputVarNames = mutableListOf<String>()
+            for ((i, input) in graph.inputs.withIndex()) {
+                val name = sanitizeName(input.valueId)
+                val varName = "${name}_var"
+                val typeStr = inferInputType(input, graph)
+                data.appendLine("$varName = relax.Var(\"$name\", $typeStr)")
+                data.valueMap[input.valueId] = varName
+                inputVarNames.add(varName)
+            }
+            data.appendLine("with bb.function(\"${graph.name}\", [${inputVarNames.joinToString(", ")}]):")
             data.indent {
-                // 声明输入 Var
-                for (input in graph.inputs) {
-                    val name = sanitizeName(input.valueId)
-                    data.valueMap[input.valueId] = name
-                    val typeStr = inferInputType(input, graph)
-                    data.appendLine("$name = relax.Var(\"$name\", $typeStr)")
-                }
-                data.appendLine()
-
                 // 输出变量预留
                 for (output in graph.outputs) {
                     if (output.valueId !in data.valueMap) {
@@ -92,15 +96,18 @@ class TvmRelaxTranslator(
                     }
                 }
 
-                // 遍历子节点（node + 其他）
+                // 遍历子节点
                 graph.acceptChildren(this, data)
 
-                // 输出定义
+                // emit 输出
                 data.appendLine()
                 val outputNames = graph.outputs.map {
                     data.valueMap[it.valueId] ?: sanitizeName(it.valueId)
                 }
-                data.appendLine("bb.emit_func_output([${outputNames.joinToString(", ")}])")
+                when (outputNames.size) {
+                    1 -> data.appendLine("bb.emit_func_output(${outputNames[0]})")
+                    else -> data.appendLine("bb.emit_func_output([${outputNames.joinToString(", ")}])")
+                }
             }
             data.appendLine()
             data.currentGraph = null
@@ -114,20 +121,34 @@ class TvmRelaxTranslator(
             val outputNames = node.outputs.map {
                 data.valueMap[it.valueId] ?: sanitizeName(it.valueId)
             }
-
             val attrStr = buildAttributeString(node.attributes)
 
-            when {
-                outputNames.isEmpty() -> {
-                    data.appendLine("# op ${node.op} has no outputs")
-                }
-                outputNames.size == 1 -> {
-                    data.appendLine("${outputNames[0]} = bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))")
-                }
-                else -> {
-                    data.appendLine("${outputNames.joinToString(", ")} = bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))")
-                }
+            val outResult = outputNames.joinToString(", ")
+            val outPrefix = when {
+                outputNames.isEmpty() -> return  // skip
+                outputNames.size == 1 -> "${outputNames[0]} = "
+                else -> "$outResult = "
             }
+
+            val call = when (tvmOp) {
+                "concat" -> "bb.emit(relax.op.concat([${inputNames.joinToString(", ")}]$attrStr))"
+                "split" -> "bb.emit(relax.op.split(${inputNames.first()}, 2$attrStr))"
+                "sum" -> "bb.emit(relax.op.sum(${inputNames.first()}$attrStr))"
+                "mean" -> "bb.emit(relax.op.mean(${inputNames.first()}$attrStr))"
+                "max" -> "bb.emit(relax.op.max(${inputNames.first()}$attrStr))"
+                "min" -> "bb.emit(relax.op.min(${inputNames.first()}$attrStr))"
+                "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, (-1,)$attrStr))"
+                "squeeze" -> "bb.emit(relax.op.squeeze(${inputNames.first()}$attrStr))"
+                "expand_dims" -> "bb.emit(relax.op.expand_dims(${inputNames.first()}, 0$attrStr))"
+                "permute_dims" -> "bb.emit(relax.op.permute_dims(${inputNames.first()}$attrStr))"
+                "nn.softmax" -> "bb.emit(relax.op.nn.softmax(${inputNames.first()}$attrStr))"
+                "nn.relu" -> "bb.emit(relax.op.nn.relu(${inputNames.first()}))"
+                "nn.gelu" -> "bb.emit(relax.op.nn.gelu(${inputNames.first()}))"
+                "nn.silu" -> "bb.emit(relax.op.nn.silu(${inputNames.first()}))"
+                else -> "bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))"
+            }
+
+            data.appendLine("$outPrefix$call")
         }
     }
 
@@ -146,7 +167,7 @@ class TvmRelaxTranslator(
         }
 
         private fun inferInputType(ref: UirValueRef, graph: UirGraph): String {
-            return """R.Tensor(("any",), "float32")"""
+            return """relax.TensorStructInfo(shape=(-1,), dtype="float32")"""
         }
 
         private fun sanitizeName(name: String): String {
@@ -202,6 +223,8 @@ class TvmRelaxTranslator(
             "dropout" to "nn.dropout",
             "maximum" to "maximum",
             "minimum" to "minimum",
+            "min" to "minimum",
+            "max" to "maximum",
             "power" to "power",
             "gather" to "take",
             "scatter" to "scatter_elements",

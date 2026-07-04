@@ -1,0 +1,58 @@
+package io.github.xyzboom.aiFuzzer.fuzzer
+
+import io.github.xyzboom.aiFuzzer.ir.UirProgram
+import java.io.File
+
+/**
+ * 编译器后端抽象。
+ *
+ * 定义如何在特定编译器中执行 UIR 程序并收集结果。
+ * 每个目标编译器（TVM, ONNX, MLIR 等）实现此接口。
+ */
+interface Backend<T : BackendResult> {
+    /** 后端名称，用于标识和日志 */
+    val name: String
+
+    /** 临时工作目录 */
+    val workDir: File
+
+    /**
+     * 将 UIR 程序编译/执行为后端特定的结果。
+     */
+    fun execute(program: UirProgram): T
+
+    /**
+     * 执行前是否需要先翻译为某种中间表示。
+     * 默认实现先翻译为 Python/其他代码，再执行。
+     */
+    fun compile(program: UirProgram): CompilationArtifact
+
+    /**
+     * 检查环境是否就绪（编译器是否可用）。
+     */
+    fun checkEnvironment(): Boolean
+}
+
+/**
+ * 编译产物（源文件、脚本等）。
+ */
+data class CompilationArtifact(
+    val sourcePath: String,
+    val sources: List<SourceFile>,
+)
+
+data class SourceFile(
+    val fileName: String,
+    val content: String,
+)
+
+/**
+ * 后端执行结果的基类。
+ */
+abstract class BackendResult(
+    open val success: Boolean,
+    open val exitCode: Int,
+    open val stdout: String,
+    open val stderr: String,
+    open val elapsedMs: Long,
+)
