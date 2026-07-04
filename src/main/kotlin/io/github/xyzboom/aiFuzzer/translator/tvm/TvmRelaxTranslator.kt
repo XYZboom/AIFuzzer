@@ -21,9 +21,6 @@ class TvmRelaxTranslator(
 
     private val shapeStr: String = (-1 downTo -1).take(shapeRank).joinToString(", ") { "-1" }
 
-    /**
-     * Visitor 数据上下文：累积输出、缩进、节点到输出变量名的映射。
-     */
     private class Data {
         val out = StringBuilder()
         var indent = 0
@@ -81,7 +78,6 @@ class TvmRelaxTranslator(
             data.currentGraph = graph
             data.valueMap.clear()
 
-            // 为每个输入创建 relax.Var
             val inputVarNames = mutableListOf<String>()
             for ((i, input) in graph.inputs.withIndex()) {
                 val name = sanitizeName(input.valueId)
@@ -93,17 +89,14 @@ class TvmRelaxTranslator(
             }
             data.appendLine("with bb.function(\"${graph.name}\", [${inputVarNames.joinToString(", ")}]):")
             data.indent {
-                // 输出变量预留
                 for (output in graph.outputs) {
                     if (output.valueId !in data.valueMap) {
                         data.valueMap[output.valueId] = sanitizeName(output.valueId)
                     }
                 }
 
-                // 遍历子节点
                 graph.acceptChildren(this, data)
 
-                // emit 输出
                 data.appendLine()
                 val outputNames = graph.outputs.map {
                     data.valueMap[it.valueId] ?: sanitizeName(it.valueId)
@@ -129,35 +122,90 @@ class TvmRelaxTranslator(
 
             val outResult = outputNames.joinToString(", ")
             val outPrefix = when {
-                outputNames.isEmpty() -> return  // skip
+                outputNames.isEmpty() -> return
                 outputNames.size == 1 -> "${outputNames[0]} = "
                 else -> "$outResult = "
             }
 
-            val call = when (tvmOp) {
-                "concat" -> "bb.emit(relax.op.concat([${inputNames.joinToString(", ")}]$attrStr))"
-                "split" -> "bb.emit(relax.op.split(${inputNames.first()}, 2$attrStr))"
+            val call = emitCall(tvmOp, node, inputNames, attrStr)
+            data.appendLine("$outPrefix$call")
+        }
+
+        private fun emitCall(tvmOp: String, node: UirNode, inputNames: List<String>, attrStr: String): String {
+            val attrs = node.attributes
+            return when (tvmOp) {
+                // 元素级二元
+                "add" -> "bb.emit(relax.op.add(${inputNames.joinToString(", ")}))"
+                "subtract" -> "bb.emit(relax.op.subtract(${inputNames.joinToString(", ")}))"
+                "multiply" -> "bb.emit(relax.op.multiply(${inputNames.joinToString(", ")}))"
+                "divide" -> "bb.emit(relax.op.divide(${inputNames.joinToString(", ")}))"
+                "maximum" -> "bb.emit(relax.op.maximum(${inputNames.joinToString(", ")}))"
+                "minimum" -> "bb.emit(relax.op.minimum(${inputNames.joinToString(", ")}))"
+                "power" -> "bb.emit(relax.op.power(${inputNames.joinToString(", ")}$attrStr))"
+
+                // 矩阵乘法
+                "matmul" -> "bb.emit(relax.op.matmul(${inputNames.joinToString(", ")}))"
+
+                // 一元激活
+                "nn.relu" -> "bb.emit(relax.op.nn.relu(${inputNames.first()}))"
+                "sigmoid" -> "bb.emit(relax.op.sigmoid(${inputNames.first()}))"
+                "tanh" -> "bb.emit(relax.op.tanh(${inputNames.first()}))"
+                "nn.gelu" -> "bb.emit(relax.op.nn.gelu(${inputNames.first()}))"
+                "nn.silu" -> "bb.emit(relax.op.nn.silu(${inputNames.first()}))"
+                "nn.softmax" -> "bb.emit(relax.op.nn.softmax(${inputNames.first()}$attrStr))"
+
+                // 一元数学
+                "negative" -> "bb.emit(relax.op.negative(${inputNames.first()}))"
+                "abs" -> "bb.emit(relax.op.abs(${inputNames.first()}))"
+                "exp" -> "bb.emit(relax.op.exp(${inputNames.first()}))"
+                "log" -> "bb.emit(relax.op.log(${inputNames.first()}))"
+                "sqrt" -> "bb.emit(relax.op.sqrt(${inputNames.first()}))"
+                "ceil" -> "bb.emit(relax.op.ceil(${inputNames.first()}))"
+                "floor" -> "bb.emit(relax.op.floor(${inputNames.first()}))"
+
+                // 形状变换
+                "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
+                "permute_dims" -> "bb.emit(relax.op.permute_dims(${inputNames.first()}))"
+                "squeeze" -> "bb.emit(relax.op.squeeze(${inputNames.first()}))"
+                "expand_dims" -> "bb.emit(relax.op.expand_dims(${inputNames.first()}, 0))"
+
+                // 归约
                 "sum" -> "bb.emit(relax.op.sum(${inputNames.first()}$attrStr))"
                 "mean" -> "bb.emit(relax.op.mean(${inputNames.first()}$attrStr))"
                 "max" -> "bb.emit(relax.op.max(${inputNames.first()}$attrStr))"
                 "min" -> "bb.emit(relax.op.min(${inputNames.first()}$attrStr))"
-                "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
-                "squeeze" -> "bb.emit(relax.op.squeeze(${inputNames.first()}$attrStr))"
-                "expand_dims" -> "bb.emit(relax.op.expand_dims(${inputNames.first()}, 0$attrStr))"
-                "permute_dims" -> "bb.emit(relax.op.permute_dims(${inputNames.first()}$attrStr))"
-                "nn.softmax" -> "bb.emit(relax.op.nn.softmax(${inputNames.first()}$attrStr))"
-                "nn.relu" -> "bb.emit(relax.op.nn.relu(${inputNames.first()}))"
-                "nn.gelu" -> "bb.emit(relax.op.nn.gelu(${inputNames.first()}))"
-                "nn.silu" -> "bb.emit(relax.op.nn.silu(${inputNames.first()}))"
-                "negative" -> "bb.emit(relax.op.negative(${inputNames.first()}))"
-                "ceil" -> "bb.emit(relax.op.ceil(${inputNames.first()}))"
-                "floor" -> "bb.emit(relax.op.floor(${inputNames.first()}))"
-                "maximum" -> "bb.emit(relax.op.maximum(${inputNames.joinToString(", ")}$attrStr))"
-                "minimum" -> "bb.emit(relax.op.minimum(${inputNames.joinToString(", ")}$attrStr))"
+
+                // 拼接/分割
+                "concat" -> "bb.emit(relax.op.concat([${inputNames.joinToString(", ")}]))"
+                "split" -> "bb.emit(relax.op.split(${inputNames.first()}, 2))"
+
+                // 三角
+                "tril" -> "bb.emit(relax.op.tril(${inputNames.first()}, k=0))"
+                "triu" -> "bb.emit(relax.op.triu(${inputNames.first()}, k=0))"
+
+                // 常数生成
+                "arange" -> {
+                    val s = (attrs["start"] as? UirIntAttr)?.value ?: 0
+                    val e = (attrs["stop"] as? UirIntAttr)?.value ?: 10
+                    "bb.emit(relax.op.arange($s, $e))"
+                }
+                "zeros" -> "bb.emit(relax.op.zeros(relax.ShapeExpr([1]), dtype=\"float32\"))"
+                "ones" -> "bb.emit(relax.op.ones(relax.ShapeExpr([1]), dtype=\"float32\"))"
+                "full" -> {
+                    val fillInput = inputNames.firstOrNull() ?: "relax.ShapeExpr([1])"
+                    "bb.emit(relax.op.full(\$fillInput, relax.ShapeExpr([1]), dtype=\"float32\"))"
+                }
+
+                // 类型转换
+                "astype" -> "bb.emit(relax.op.astype(${inputNames.first()}, dtype=\"float32\"))"
+
+                // 广播
+                "broadcast_to" -> "bb.emit(relax.op.broadcast_to(${inputNames.first()}, relax.ShapeExpr([-1])))"
+                "tile" -> "bb.emit(relax.op.tile(${inputNames.first()}$attrStr))"
+
+                // 默认：通过命名映射拼接
                 else -> "bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))"
             }
-
-            data.appendLine("$outPrefix$call")
         }
     }
 
@@ -176,8 +224,7 @@ class TvmRelaxTranslator(
         }
 
         private fun inferInputType(ref: UirValueRef, graph: UirGraph, shape: String, dtype: String): String {
-            // 使用可配置的动态形状（默认 3 维）
-            return """relax.TensorStructInfo(shape=($shape), dtype="$dtype")"""
+            return """relax.TensorStructInfo(shape=relax.ShapeExpr([$shape]), dtype="$dtype")"""
         }
 
         private fun sanitizeName(name: String): String {
