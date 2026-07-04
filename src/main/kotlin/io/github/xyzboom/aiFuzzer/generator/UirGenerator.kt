@@ -9,19 +9,20 @@ import kotlin.random.Random
 val DefaultOps = listOf(
     // 元素级二元
     "add", "subtract", "multiply", "divide",
+    "maximum", "minimum", "power",
     // 矩阵乘法
     "matmul",
     // 一元激活
-    "relu", "sigmoid", "tanh",
+    "relu", "sigmoid", "tanh", "gelu", "silu",
     "softmax",
     // 一元数学
-    "abs", "exp", "log", "sqrt",
+    "neg", "abs", "exp", "log", "sqrt", "ceil", "floor",
     // 形状变换
     "reshape", "transpose",
     // 拼接
     "concat",
     // 归约
-    "reduce_sum", "reduce_mean",
+    "reduce_sum", "reduce_mean", "reduce_max", "reduce_min",
 )
 
 /**
@@ -145,7 +146,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             // 需要至少 1-D 输入
             "softmax", "reshape", "squeeze", "unsqueeze" -> availableNdims.any { it >= 1 }
             // reduce 类：需要至少 1-D 输入
-            "reduce_sum", "reduce_mean", "max", "min" -> availableNdims.any { it >= 1 }
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min" -> availableNdims.any { it >= 1 }
             // matmul：需要至少 1-D 输入，且不产生 0-D 输出
             "matmul" -> availableNdims.count { it >= 1 } >= 2
             // concat：需要至少 2 个同 ndim 的值
@@ -154,7 +155,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 counts.any { (ndim, count) -> ndim >= 1 && count >= 2 }
             }
             // 元素级二元：需要至少 2 个同 ndim 的值
-            "add", "subtract", "multiply", "divide" -> {
+            "add", "subtract", "multiply", "divide", "maximum", "minimum", "power" -> {
                 val counts = availableNdims.groupingBy { it }.eachCount()
                 counts.any { (_, count) -> count >= 2 }
             }
@@ -187,7 +188,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 }
             }
             // 元素级二元：需要同 ndim
-            "add", "subtract", "multiply", "divide" -> {
+            "add", "subtract", "multiply", "divide", "maximum", "minimum", "power" -> {
                 val byNdim = availableValues.groupBy { ndimMap[it] ?: 1 }
                 val compatibleGroup = byNdim.filter { (_, vals) -> vals.size >= 2 }
                 if (compatibleGroup.isNotEmpty()) {
@@ -203,8 +204,8 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 if (valid.isNotEmpty()) valid.shuffled(rand).take(neededCount)
                 else availableValues.shuffled(rand).take(neededCount)
             }
-            // reduce / max / min：需要 >= 1-D
-            "reduce_sum", "reduce_mean", "max", "min" -> {
+            // reduce 类：需要 >= 1-D
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min" -> {
                 val valid = availableValues.filter { (ndimMap[it] ?: 1) >= 1 }
                 if (valid.isNotEmpty()) valid.shuffled(rand).take(neededCount)
                 else availableValues.shuffled(rand).take(neededCount)
@@ -233,7 +234,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         if (inputNdims.isEmpty()) return 1
         return when (op) {
             // reduce 类：降低 1 维
-            "reduce_sum", "reduce_mean", "max", "min" -> (inputNdims.first() - 1).coerceAtLeast(0)
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min" -> (inputNdims.first() - 1).coerceAtLeast(0)
             // reshape：translator 使用 relax.ShapeExpr([-1])，总是输出 1-D
             "reshape" -> 1
             // matmul: 1-D @ 1-D → 0-D, 1-D @ 2-D → 1-D, 2-D @ 2-D → 2-D
@@ -257,7 +258,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             "softmax", "split" -> mapOf(
                 "axis" to buildIntAttr { value = -1 }
             )
-            "reduce_sum", "reduce_mean" -> mapOf(
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min" -> mapOf(
                 "axis" to buildIntAttr { value = -1 },
                 "keepdims" to buildIntAttr { value = 0 }
             )
@@ -273,9 +274,10 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         val singleInputOps = setOf(
             "relu", "sigmoid", "tanh", "gelu", "silu",
             "abs", "exp", "log", "sqrt", "neg",
+            "ceil", "floor",
             "softmax",
             "reshape", "squeeze", "unsqueeze",
-            "reduce_sum", "reduce_mean", "max", "min",
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min",
         )
 
         /** 多输出算子 */
@@ -283,7 +285,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
         /** 会改变 ndim 的算子 */
         val ndimChangingOps = setOf(
-            "reduce_sum", "reduce_mean", "max", "min",
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min",
             "matmul",
             "reshape", "squeeze", "unsqueeze",
         )

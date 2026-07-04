@@ -82,6 +82,7 @@ class FuzzingPipeline(
             val tasks = (0 until count).map { i ->
                 val seed = startSeed + i
                 Callable {
+                    printStatus(i, count, seed)
                     runOnce(seed)
                 }
             }

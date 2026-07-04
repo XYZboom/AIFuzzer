@@ -93,15 +93,28 @@
 
 ### Phase 2 (翻译器)
 
-- [ ] ONNX 翻译器
-- [ ] IREE StableHLO 翻译器
+- [ ] ONNX 翻译器（OpMapper 原型已设计，见 `docs/EXTENSION_DESIGN.md`）
+- [ ] IREE StableHLO 翻译器（OpMapper 骨架已设计）
+- [ ] **翻译器 OpMapper 接口**（解耦算子名映射）
+- [ ] **翻译器属性映射**（将 UIR 属性转换为各编译器格式）
 
 ### Phase 3 (模糊测试)
 
 - [ ] Oracle 诊断（编译、形状、数值）
 - [ ] 变异引擎
 - [ ] 缩减引擎（DDMin）
-- [ ] CLI 入口
+- [ ] CLI 入口（`cli/Main.kt`，设计见 `docs/EXTENSION_DESIGN.md`）
+- [ ] **外部配置文件系统**（`configs/` 目录 + `ConfigLoader`，设计见 `docs/EXTENSION_DESIGN.md`）
+- [ ] **OpRegistry 算子注册表**（将算子定义从生成器硬编码中解耦）
+
+### 生成器扩展（参考 `docs/EXTENSION_DESIGN.md`）
+
+- [ ] P0 新算子：neg, gelu, silu, ceil, floor, maximum, minimum, power
+- [ ] P0 新算子：reduce_max, reduce_min, argmax, argmin
+- [ ] P0 新算子：squeeze, unsqueeze, slice, pad, broadcast_to, tile, gather
+- [ ] P0 新算子：full, zeros, ones
+- [ ] P0 新算子：conv1d, max_pool2d, avg_pool2d, batch_norm
+- [ ] P1 算子：equal, greater, less, split, gather_nd, scatter_nd, topk, layer_norm, dropout, arange
 
 ---
 

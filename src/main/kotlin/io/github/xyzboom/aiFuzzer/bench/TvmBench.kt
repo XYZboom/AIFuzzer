@@ -32,7 +32,8 @@ class TvmBench {
         val pipeline = FuzzingPipeline(
             generator = generator, backends = listOf(backend),
             config = FuzzingPipeline.FuzzingConfig(
-                keepArtifacts = true, reportInterval = maxOf(1, count / 10)
+                keepArtifacts = true, reportInterval = 10,
+                workers = 16
             )
         )
         val summary = pipeline.runBatch(count = count, startSeed = startSeed)

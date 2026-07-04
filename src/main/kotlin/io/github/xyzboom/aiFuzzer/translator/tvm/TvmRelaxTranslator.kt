@@ -145,6 +145,11 @@ class TvmRelaxTranslator(
                 "nn.relu" -> "bb.emit(relax.op.nn.relu(${inputNames.first()}))"
                 "nn.gelu" -> "bb.emit(relax.op.nn.gelu(${inputNames.first()}))"
                 "nn.silu" -> "bb.emit(relax.op.nn.silu(${inputNames.first()}))"
+                "negative" -> "bb.emit(relax.op.negative(${inputNames.first()}))"
+                "ceil" -> "bb.emit(relax.op.ceil(${inputNames.first()}))"
+                "floor" -> "bb.emit(relax.op.floor(${inputNames.first()}))"
+                "maximum" -> "bb.emit(relax.op.maximum(${inputNames.joinToString(", ")}$attrStr))"
+                "minimum" -> "bb.emit(relax.op.minimum(${inputNames.joinToString(", ")}$attrStr))"
                 else -> "bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))"
             }
 
