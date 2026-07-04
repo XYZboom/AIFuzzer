@@ -1,135 +1,160 @@
 package io.github.xyzboom.aiFuzzer.translator.tvm
 
 import io.github.xyzboom.aiFuzzer.ir.*
-import io.github.xyzboom.aiFuzzer.ir.types.UirDataType
-import io.github.xyzboom.aiFuzzer.ir.types.UirDim
 import io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr
-import io.github.xyzboom.aiFuzzer.ir.types.UirShape
 import io.github.xyzboom.aiFuzzer.ir.types.UirStringAttr
-import io.github.xyzboom.aiFuzzer.ir.types.UirTensorType
+import io.github.xyzboom.aiFuzzer.ir.visitors.UirDefaultVisitor
 import io.github.xyzboom.aiFuzzer.translator.UirTranslator
 
 /**
  * 将 UIR 程序翻译为 TVM Relax Python 脚本。
  *
- * 输出：单文件 main.py，包含 Relax 函数定义 + 主入口。
+ * 基于 Visitor 模式，由 IR 树驱动遍历。
+ * 输出：单文件 main.py 字符串。
  */
 class TvmRelaxTranslator(
     private val dtypeMapping: Map<String, String> = defaultDtypeMapping,
     private val opNameMapping: Map<String, String> = defaultOpNameMapping,
 ) : UirTranslator<UirProgram, String> {
 
-    override fun translate(element: UirProgram): String {
-        return buildString {
-            appendLine("import tvm")
-            appendLine("from tvm import relax")
-            appendLine("import tvm.relax.op as op")
-            appendLine("from tvm.script import tir as T")
-            appendLine()
-            appendLine()
-            appendLine("def build_mod():")
-            appendLine("    bb = relax.BlockBuilder()")
-            appendLine()
-            for (graph in element.graphs) {
-                translateGraph(graph)
-            }
-            appendLine("    return bb.get()")
-            appendLine()
-            appendLine()
-            appendLine("if __name__ == '__main__':")
-            appendLine("    mod = build_mod()")
-            appendLine("    print(mod.script())")
-        }
-    }
-
-    private fun StringBuilder.translateGraph(graph: UirGraph) {
-        appendLine("    with bb.function(\"${graph.name}\"):")
-
-        // 1. 声明输入参数
-        val inputParams = graph.inputs.map { ref ->
-            val paramName = sanitizeName(ref.valueId)
-            // 查找类型信息（通过遍历 nodes 的 outputs 无法直接获取，先使用统一类型）
-            val tensorType = inferInputType(ref, graph)
-            appendLine("        $paramName = relax.Var(\"$paramName\", $tensorType)")
-            paramName
-        }
-
-        // 2. 翻译每个节点，建立变量名映射
+    /**
+     * Visitor 数据上下文：累积输出、缩进、节点到输出变量名的映射。
+     */
+    private class Data {
+        val out = StringBuilder()
+        var indent = 0
+        var currentGraph: UirGraph? = null
         val valueMap = mutableMapOf<String, String>()
-        for (input in graph.inputs) {
-            valueMap[input.valueId] = sanitizeName(input.valueId)
-        }
-        // 输出值也预留
-        for (output in graph.outputs) {
-            if (output.valueId !in valueMap) {
-                valueMap[output.valueId] = sanitizeName(output.valueId)
-            }
+
+        fun appendLine(line: String = "") {
+            repeat(indent) { out.append("    ") }
+            out.appendLine(line)
         }
 
-        appendLine()
-        for (node in graph.nodes) {
-            translateNode(node, valueMap)
-        }
-
-        // 3. 定义输出
-        val outputNames = graph.outputs.map { valueMap[it.valueId] ?: sanitizeName(it.valueId) }
-        appendLine()
-        appendLine("        bb.emit_func_output([${outputNames.joinToString(", ")}])")
-        appendLine()
-    }
-
-    private fun StringBuilder.translateNode(node: UirNode, valueMap: MutableMap<String, String>) {
-        val tvmOp = opNameMapping[node.op] ?: node.op
-        val inputNames = node.inputs.map { valueMap[it.valueId] ?: sanitizeName(it.valueId) }
-        val outputNames = node.outputs.map { valueMap[it.valueId] ?: sanitizeName(it.valueId) }
-
-        // 构建属性字符串
-        val attrStr = buildAttributeString(node.attributes)
-
-        // 处理输出赋值
-        // 单输出：out = bb.emit(op(...))
-        // 多输出：out1 = bb.emit(op(...)) 或 out1, out2 = bb.emit(op(...))
-        when {
-            outputNames.isEmpty() -> {
-                appendLine("        # op ${node.op} has no outputs")
-            }
-            outputNames.size == 1 -> {
-                appendLine("        ${outputNames[0]} = bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))")
-            }
-            else -> {
-                appendLine("        ${outputNames.joinToString(", ")} = bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))")
-            }
+        fun indent(block: () -> Unit) {
+            indent++
+            block()
+            indent--
         }
     }
 
-    private fun buildAttributeString(attributes: Map<String, Attribute>): String {
-        if (attributes.isEmpty()) return ""
-        val sb = StringBuilder()
-        for ((key, attr) in attributes) {
-            when (attr) {
-                is UirIntAttr -> sb.append(", $key=${attr.value}")
-                is UirStringAttr -> sb.append(", $key=\"${attr.value}\"")
-                // 其他属性类型暂不支持
-                else -> {}
+    override fun translate(element: UirProgram): String {
+        val data = Data()
+        val visitor = TranslatingVisitor()
+        element.accept(visitor, data)
+        return data.out.toString()
+    }
+
+    private inner class TranslatingVisitor : UirDefaultVisitor<Unit, Data>() {
+
+        override fun visitElement(element: UirElement, data: Data) {
+            element.acceptChildren(this, data)
+        }
+
+        override fun visitProgram(program: UirProgram, data: Data) {
+            data.appendLine("import tvm")
+            data.appendLine("from tvm import relax")
+            data.appendLine("import tvm.relax.op as op")
+            data.appendLine("from tvm.script import tir as T")
+            data.appendLine()
+            data.appendLine()
+            data.appendLine("def build_mod():")
+            data.appendLine("    bb = relax.BlockBuilder()")
+            data.appendLine()
+            program.acceptChildren(this, data)
+            data.appendLine("    return bb.get()")
+            data.appendLine()
+            data.appendLine()
+            data.appendLine("if __name__ == '__main__':")
+            data.appendLine("    mod = build_mod()")
+            data.appendLine("    print(mod.script())")
+        }
+
+        override fun visitGraph(graph: UirGraph, data: Data) {
+            data.currentGraph = graph
+            data.valueMap.clear()
+
+            data.appendLine("    with bb.function(\"${graph.name}\"):")
+            data.indent {
+                // 声明输入 Var
+                for (input in graph.inputs) {
+                    val name = sanitizeName(input.valueId)
+                    data.valueMap[input.valueId] = name
+                    val typeStr = inferInputType(input, graph)
+                    data.appendLine("$name = relax.Var(\"$name\", $typeStr)")
+                }
+                data.appendLine()
+
+                // 输出变量预留
+                for (output in graph.outputs) {
+                    if (output.valueId !in data.valueMap) {
+                        data.valueMap[output.valueId] = sanitizeName(output.valueId)
+                    }
+                }
+
+                // 遍历子节点（node + 其他）
+                graph.acceptChildren(this, data)
+
+                // 输出定义
+                data.appendLine()
+                val outputNames = graph.outputs.map {
+                    data.valueMap[it.valueId] ?: sanitizeName(it.valueId)
+                }
+                data.appendLine("bb.emit_func_output([${outputNames.joinToString(", ")}])")
+            }
+            data.appendLine()
+            data.currentGraph = null
+        }
+
+        override fun visitNode(node: UirNode, data: Data) {
+            val tvmOp = opNameMapping[node.op] ?: node.op
+            val inputNames = node.inputs.map {
+                data.valueMap[it.valueId] ?: sanitizeName(it.valueId)
+            }
+            val outputNames = node.outputs.map {
+                data.valueMap[it.valueId] ?: sanitizeName(it.valueId)
+            }
+
+            val attrStr = buildAttributeString(node.attributes)
+
+            when {
+                outputNames.isEmpty() -> {
+                    data.appendLine("# op ${node.op} has no outputs")
+                }
+                outputNames.size == 1 -> {
+                    data.appendLine("${outputNames[0]} = bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))")
+                }
+                else -> {
+                    data.appendLine("${outputNames.joinToString(", ")} = bb.emit(relax.op.$tvmOp(${inputNames.joinToString(", ")}$attrStr))")
+                }
             }
         }
-        return sb.toString()
-    }
-
-    private fun inferInputType(ref: UirValueRef, graph: UirGraph): String {
-        // 根据命名推测类型，实际使用中需要更好的类型推断
-        // 暂时输出一个动态形状的张量：R.Tensor(("?", "?"), "float32")
-        return """R.Tensor(("any",), "float32")"""
-    }
-
-    private fun sanitizeName(name: String): String {
-        // Python 中合法变量名，替换非法字符
-        return if (name.isEmpty()) "v" else name
-            .replace(Regex("[^a-zA-Z0-9_]"), "_")
-            .let { if (it[0].isDigit()) "_$it" else it }
     }
 
     companion object {
+        private fun buildAttributeString(attributes: Map<String, Attribute>): String {
+            if (attributes.isEmpty()) return ""
+            val sb = StringBuilder()
+            for ((key, attr) in attributes) {
+                when (attr) {
+                    is UirIntAttr -> sb.append(", $key=${attr.value}")
+                    is UirStringAttr -> sb.append(", $key=\"${attr.value}\"")
+                    else -> {}
+                }
+            }
+            return sb.toString()
+        }
+
+        private fun inferInputType(ref: UirValueRef, graph: UirGraph): String {
+            return """R.Tensor(("any",), "float32")"""
+        }
+
+        private fun sanitizeName(name: String): String {
+            return if (name.isEmpty()) "v" else name
+                .replace(Regex("[^a-zA-Z0-9_]"), "_")
+                .let { if (it[0].isDigit()) "_$it" else it }
+        }
+
         val defaultDtypeMapping = mapOf(
             "float32" to "float32",
             "float64" to "float64",
@@ -190,7 +215,7 @@ class TvmRelaxTranslator(
             "tril" to "tril",
             "triu" to "triu",
             "strided_slice" to "strided_slice",
-            "dense" to "linear",  // relax op 名
+            "dense" to "linear",
             "attention" to "attention",
         )
     }
