@@ -1,6 +1,7 @@
 plugins {
     id("java")
     kotlin("jvm")
+    application
 }
 
 group = "io.github.xyzboom"
@@ -26,6 +27,10 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation(kotlin("stdlib"))
     implementation(project(":tree"))
+}
+
+application {
+    mainClass = "io.github.xyzboom.aiFuzzer.AppKt"
 }
 
 sourceSets {

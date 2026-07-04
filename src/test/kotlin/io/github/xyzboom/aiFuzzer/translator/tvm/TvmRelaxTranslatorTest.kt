@@ -38,10 +38,15 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("with bb.function(\"main\"):"))
-        assertTrue(result.contains("input_0 = relax.Var(\"input_0\""))
-        assertTrue(result.contains("relu_out = bb.emit(relax.op.nn.relu(input_0))"))
-        assertTrue(result.contains("bb.emit_func_output([relu_out])"))
+        assertTrue(result.contains("with bb.function(\"main\", [input_0_var]):")) {
+            "Expected function with input_0_var, got:\n$result"
+        }
+        assertTrue(result.contains("relu_out = bb.emit(relax.op.nn.relu(input_0_var))")) {
+            "Expected relu_out = bb.emit(relax.op.nn.relu(input_0_var)), got:\n$result"
+        }
+        assertTrue(result.contains("bb.emit_func_output(relu_out)")) {
+            "Expected emit_func_output with relu_out, got:\n$result"
+        }
     }
 
     @Test
@@ -62,7 +67,9 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("c = bb.emit(relax.op.add(a, b))"))
+        assertTrue(result.contains("c = bb.emit(relax.op.add(a_var, b_var))")) {
+            "Expected c = bb.emit(relax.op.add(a_var, b_var)), got:\n$result"
+        }
     }
 
     @Test
@@ -82,7 +89,9 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("y = bb.emit(relax.op.nn.softmax(x, axis=-1))"))
+        assertTrue(result.contains("y = bb.emit(relax.op.nn.softmax(x_var, axis=-1))")) {
+            "Expected y = bb.emit(relax.op.nn.softmax(x_var, axis=-1)), got:\n$result"
+        }
     }
 
     @Test
@@ -103,6 +112,8 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("values, indices = bb.emit(relax.op.topk(x))"))
+        assertTrue(result.contains("values, indices = bb.emit(relax.op.topk(x_var))")) {
+            "Expected topk with x_var, got:\n$result"
+        }
     }
 }
