@@ -49,6 +49,9 @@ class FuzzingPipeline(
             else -> result.stderr.take(200)
         }
 
+        // 自动收集疑似 bug
+        BugCollector.collect(result, seed, backend.name)
+
         return FuzzingResult(
             seed = seed,
             backendName = backend.name,
@@ -62,6 +65,7 @@ class FuzzingPipeline(
      * 批量运行，可选并行。
      */
     fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {
+        BugCollector.reset()
         val allResults = mutableListOf<FuzzingResult>()
         val startTime = System.currentTimeMillis()
 

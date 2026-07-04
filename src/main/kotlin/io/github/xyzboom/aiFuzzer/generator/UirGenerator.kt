@@ -21,13 +21,14 @@ data class GeneratorConfig(
     /** 参与生成的算子列表 */
     val ops: List<String> = listOf(
         "add", "subtract", "multiply", "divide",
-        "matmul",
+        // "matmul" temporarily disabled (1-D @ 1-D → 0-D breaks ops like softmax)
         "relu", "sigmoid", "tanh",
         "softmax",
         "abs", "exp", "log", "sqrt",
-        "reshape", "transpose", "concat",
-        "reduce_sum", "reduce_mean",
-        "max", "min",
+        "reshape", "transpose",
+        // "concat" temporarily disabled (needs ndim tracking)
+        // reduce ops temporarily disabled until shape tracking is implemented
+        // "reduce_sum", "reduce_mean", "max", "min",
     ),
     /** 生成的 graph 数量 */
     val graphCount: Int = 1,
@@ -119,7 +120,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     private fun generateAttributes(op: String): Map<String, Attribute> {
         return when (op) {
-            "softmax", "concat", "split" -> mapOf(
+            "softmax", "split" -> mapOf(
                 "axis" to buildIntAttr { value = -1 }
             )
             "reshape" -> mapOf(
@@ -144,13 +145,15 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         /** 默认算子列表 */
         val defaultOps = listOf(
             "add", "subtract", "multiply", "divide",
-            "matmul",
+            // "matmul" temporarily disabled (1-D @ 1-D → 0-D breaks ops like softmax)
             "relu", "sigmoid", "tanh",
             "softmax",
             "abs", "exp", "log", "sqrt",
-            "reshape", "transpose", "concat",
-            "reduce_sum", "reduce_mean",
-            "max", "min",
+            "reshape", "transpose",
+            // "concat" temporarily disabled (needs ndim tracking)
+            // reduce ops temporarily disabled until shape tracking is implemented
+            // "reduce_sum", "reduce_mean",
+            // "max", "min",
         )
     }
 }

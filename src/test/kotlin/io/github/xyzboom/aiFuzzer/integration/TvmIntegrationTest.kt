@@ -10,7 +10,7 @@ import java.io.File
 class TvmIntegrationTest {
 
     @Test
-    fun `fuzz TVM with 50 programs`() {
+    fun `fuzz TVM with 10 programs`() {
         val backend = TvmBackend(File(System.getProperty("java.io.tmpdir"), "tvm_integration_test"))
         if (!backend.checkEnvironment()) {
             println("⚠ TVM not available, skipping")
@@ -22,7 +22,7 @@ class TvmIntegrationTest {
         ))
         val pipeline = FuzzingPipeline(
             generator = generator, backends = listOf(backend),
-            config = FuzzingPipeline.FuzzingConfig(keepArtifacts = true, reportInterval = 10)
+            config = FuzzingPipeline.FuzzingConfig(keepArtifacts = true, reportInterval = 5)
         )
         val summary = pipeline.runBatch(count = 50, startSeed = 10001)
         summary.printReport()

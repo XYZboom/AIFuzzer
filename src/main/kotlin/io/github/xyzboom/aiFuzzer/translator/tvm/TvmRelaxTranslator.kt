@@ -137,7 +137,7 @@ class TvmRelaxTranslator(
                 "mean" -> "bb.emit(relax.op.mean(${inputNames.first()}$attrStr))"
                 "max" -> "bb.emit(relax.op.max(${inputNames.first()}$attrStr))"
                 "min" -> "bb.emit(relax.op.min(${inputNames.first()}$attrStr))"
-                "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, (-1,)$attrStr))"
+                "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
                 "squeeze" -> "bb.emit(relax.op.squeeze(${inputNames.first()}$attrStr))"
                 "expand_dims" -> "bb.emit(relax.op.expand_dims(${inputNames.first()}, 0$attrStr))"
                 "permute_dims" -> "bb.emit(relax.op.permute_dims(${inputNames.first()}$attrStr))"
