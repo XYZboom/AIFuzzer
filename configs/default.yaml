@@ -69,7 +69,7 @@ bug_collector:
 
 # Fuzzing 流水线
 pipeline:
-  workers: 1
-  batch_size: 100
+  workers: 16
+  batch_size: 100000
   report_interval: 10
   run_timeout_seconds: 60

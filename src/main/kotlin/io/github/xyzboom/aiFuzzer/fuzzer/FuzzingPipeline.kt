@@ -49,8 +49,27 @@ class FuzzingPipeline(
             else -> result.stderr.take(200)
         }
 
-        // 自动收集疑似 bug
-        BugCollector.collect(result, seed, backend.name)
+        // 获取源码内容（用于 bug 报告）
+        val sourceCode = when (result) {
+            is TvmBackend.TvmResult -> {
+                // 从 TvmResult.sourceFile 读回源码
+                try {
+                    java.io.File(result.sourceFile).readText()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            else -> null
+        }
+
+        // 自动收集疑似 bug（传入 UirProgram 和源码，生成文件夹报告）
+        BugCollector.collect(
+            result = result,
+            seed = seed,
+            backendName = backend.name,
+            program = program,
+            sourceCode = sourceCode,
+        )
 
         return FuzzingResult(
             seed = seed,
@@ -67,7 +86,7 @@ class FuzzingPipeline(
     fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {
         BugCollector.reset()
         val allResults = mutableListOf<FuzzingResult>()
-        val startTime = System.currentTimeMillis()
+        val startTime = System.currentTimeMillis()  // 保留，可用于日志
 
         if (config.workers <= 1) {
             // 串行运行

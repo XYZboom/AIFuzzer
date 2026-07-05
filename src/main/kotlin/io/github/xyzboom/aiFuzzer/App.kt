@@ -122,6 +122,10 @@ class AiFuzzerCommand : CliktCommand(
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
         val timestamp = LocalDateTime.now().format(formatter)
         val reportFile = File(reportDir, "run_report_$timestamp.txt")
+        val bugFolders = reportDir.listFiles()
+            ?.filter { it.isDirectory && it.name.startsWith("bug_") }
+            ?.sortedBy { it.name }
+            ?: emptyList()
         PrintWriter(reportFile).use { pw ->
             pw.println("AiFuzzer Run Report")
             pw.println("Date: ${LocalDateTime.now()}")
@@ -132,8 +136,19 @@ class AiFuzzerCommand : CliktCommand(
             pw.println("Success: ${summary.successes} (${String.format("%.1f", summary.successRate * 100)}%)")
             pw.println("Failures: ${summary.failures}")
             pw.println("Time: ${summary.totalTimeMs}ms")
+            pw.println()
+            pw.println("Bug reports (folder-based):")
+            if (bugFolders.isEmpty()) {
+                pw.println("  (none)")
+            } else {
+                bugFolders.forEachIndexed { idx, dir ->
+                    val files = dir.listFiles()?.map { it.name }?.sorted() ?: emptyList()
+                    pw.println("  ${idx + 1}. ${dir.name}/")          
+                    files.forEach { f -> pw.println("       - $f") }
+                }
+            }
         }
-        echo("Report saved to: ${reportFile.relativeTo(File(".").absoluteFile)}")
+        echo("Report saved to: ${reportFile.absolutePath}")
     }
 
     private fun buildOverridesMap(): Map<String, Any> {
