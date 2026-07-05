@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm")
+    kotlin("plugin.serialization") version "2.4.0"
 }
 
 repositories {
@@ -45,4 +46,8 @@ tasks.compileKotlin {
 
 kotlin {
     jvmToolchain(17)
+}
+
+dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 }

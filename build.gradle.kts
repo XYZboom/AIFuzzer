@@ -2,6 +2,7 @@ plugins {
     id("java")
     kotlin("jvm")
     application
+    kotlin("plugin.serialization") version "2.4.0"
 }
 
 group = "io.github.xyzboom"
@@ -31,6 +32,10 @@ dependencies {
     implementation("org.yaml:snakeyaml:2.0")
     // CLIKT 命令行参数解析
     implementation("com.github.ajalt.clikt:clikt-jvm:4.2.2")
+    // JSON 序列化/反序列化
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // Kotlin 协程
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 
 application {

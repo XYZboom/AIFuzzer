@@ -1,16 +1,17 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
-import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 可配置的 Fuzzing 流水线。
  *
  * 生成 → 执行 → 收集 → 分析
+ *
+ * 并行模式使用 Kotlin 协程管理，每个测试有独立的超时时间。
  */
 class FuzzingPipeline(
     private val generator: UirGenerator = UirGenerator(),
@@ -18,20 +19,112 @@ class FuzzingPipeline(
     private val config: FuzzingConfig = FuzzingConfig(),
 ) {
     data class FuzzingConfig(
+        /** 每个测试的超时时间（秒），0 表示不限时 */
         val runTimeoutSeconds: Int = 60,
+        /** 并行 worker 数（≤1 时串行） */
         val workers: Int = 1,
+        /** 是否保留临时产物 */
         val keepArtifacts: Boolean = false,
+        /** 状态报告间隔 */
         val reportInterval: Int = 10,
     )
 
+    @OptIn(DelicateCoroutinesApi::class)
+    private val dispatcher: CoroutineDispatcher = when {
+        config.workers <= 1 -> Dispatchers.Unconfined // 串行时不切换线程
+        else -> newFixedThreadPoolContext(config.workers, "fuzzer-worker")
+    }
+
     /**
-     * 单次 Fuzzing 运行。
+     * 单次 Fuzzing 运行（单线程，调用方负责上下文）。
      */
     fun runOnce(seed: Long = System.currentTimeMillis()): List<FuzzingResult> {
         val program = generator.generate()
         return backends.map { backend ->
             runOnBackend(program, backend, seed)
         }
+    }
+
+    /**
+     * 批量运行，协程并行调度。
+     *
+     * 每个测试有独立的 [FuzzingConfig.runTimeoutSeconds] 超时时间。
+     * 超时的测试将被取消并记录为超时结果。
+     */
+    fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {
+        BugCollector.reset()
+        val allResults = mutableListOf<FuzzingResult>()
+        val startTime = System.currentTimeMillis()
+
+        runBlocking(dispatcher) {
+            // 信号量控制并发数
+            val semaphore = Semaphore(config.workers.coerceAtLeast(1))
+
+            coroutineScope {
+                (0 until count).map { i ->
+                    val seed = startSeed + i
+                    async {
+                        if (config.workers > 1) {
+                            semaphore.acquire()
+                        }
+                        try {
+                            printStatus(i, count, seed)
+
+                            // 每个单独测试的超时
+                            val results = if (config.runTimeoutSeconds > 0) {
+                                withTimeout((config.runTimeoutSeconds * 1000L).milliseconds) {
+                                    runOnce(seed)
+                                }
+                            } else {
+                                runOnce(seed)
+                            }
+                            results
+                        } catch (_: TimeoutCancellationException) {
+                            // 超时：生成一个占位结果
+                            println("[!] Test seed=$seed timed out after ${config.runTimeoutSeconds}s")
+                            backends.map { backend ->
+                                FuzzingResult(
+                                    seed = seed,
+                                    backendName = backend.name,
+                                    backendResult = object : BackendResult(false, -1, "", "", 0) {},
+                                    errorCategory = ErrorCategory.TIMEOUT,
+                                    errorSummary = "timed out after ${config.runTimeoutSeconds}s",
+                                )
+                            }
+                        } catch (e: CancellationException) {
+                            // 全局取消
+                            throw e
+                        } catch (e: Exception) {
+                            println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                            backends.map { backend ->
+                                FuzzingResult(
+                                    seed = seed,
+                                    backendName = backend.name,
+                                    backendResult = object : BackendResult(false, -1, "", e.message ?: "", 0) {
+                                    },
+                                    errorCategory = ErrorCategory.UNKNOWN,
+                                    errorSummary = e.message ?: "unknown",
+                                )
+                            }
+                        } finally {
+                            if (config.workers > 1) {
+                                semaphore.release()
+                            }
+                        }
+                    }
+                }.awaitAll().flatten().also { allResults.addAll(it) }
+            }
+        }
+
+        if (dispatcher is ExecutorCoroutineDispatcher) {
+            dispatcher.close()
+        }
+
+        if (!config.keepArtifacts) {
+            backends.filterIsInstance<TvmBackend>().forEach { it.cleanup() }
+        }
+
+        return FuzzingSummary.fromResults(allResults, System.currentTimeMillis() - startTime)
     }
 
     private fun runOnBackend(program: UirProgram, backend: Backend<*>, seed: Long): FuzzingResult {
@@ -78,50 +171,6 @@ class FuzzingPipeline(
             errorCategory = errorCategory,
             errorSummary = errorSummary,
         )
-    }
-
-    /**
-     * 批量运行，可选并行。
-     */
-    fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {
-        BugCollector.reset()
-        val allResults = mutableListOf<FuzzingResult>()
-        val startTime = System.currentTimeMillis()  // 保留，可用于日志
-
-        if (config.workers <= 1) {
-            // 串行运行
-            for (i in 0 until count) {
-                val seed = startSeed + i
-                printStatus(i, count, seed)
-                allResults.addAll(runOnce(seed))
-            }
-        } else {
-            // 并行运行
-            val executor = Executors.newFixedThreadPool(config.workers)
-            val tasks = (0 until count).map { i ->
-                val seed = startSeed + i
-                Callable {
-                    printStatus(i, count, seed)
-                    runOnce(seed)
-                }
-            }
-            try {
-                val futures = executor.invokeAll(tasks, config.runTimeoutSeconds.toLong(), TimeUnit.SECONDS)
-                futures.forEach { future ->
-                    if (future.isDone && !future.isCancelled) {
-                        allResults.addAll(future.get())
-                    }
-                }
-            } finally {
-                executor.shutdown()
-            }
-        }
-
-        if (!config.keepArtifacts) {
-            backends.filterIsInstance<TvmBackend>().forEach { it.cleanup() }
-        }
-
-        return FuzzingSummary.fromResults(allResults, System.currentTimeMillis() - startTime)
     }
 
     private fun printStatus(current: Int, total: Int, seed: Long) {
