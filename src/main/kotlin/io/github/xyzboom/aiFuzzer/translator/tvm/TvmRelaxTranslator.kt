@@ -134,14 +134,10 @@ class TvmRelaxTranslator(
             // 追踪输出 ndim：生成器提供标准值，翻译器对特定算子硬编码修正
             val inputNdims = node.inputs.map { data.ndimMap[it.valueId] ?: it.ndim }
             val outputNdim = when (node.op) {
-                // zeros/ones/full: 翻译器硬编码为 2-D
-                "zeros", "ones", "full" -> 2
-                // matmul: 翻译器中 1-D 会被 expand_dims，输出 ndim 至少 2
-                "matmul" -> {
-                    val a = inputNdims.getOrElse(0) { 2 }.let { if (it <= 1) 2 else it }
-                    val b = inputNdims.getOrElse(1) { 2 }.let { if (it <= 1) 2 else it }
-                    maxOf(a, b)
-                }
+                // zeros/ones/full: 使用生成器记录的 ndim（与翻译器 emitCall 中的 ShapeExpr 一致）
+                "zeros", "ones", "full" -> node.outputs.firstOrNull()?.ndim?.coerceIn(1, 4) ?: 2
+                // matmul: 翻译器用 2-D full 输入，输出恒为 2-D
+                "matmul" -> 2
                 // strided_slice: 实际 ndim 与输入相同
                 "strided_slice" -> inputNdims.firstOrNull() ?: 2
                 else -> node.outputs.firstOrNull()?.ndim ?: 1
@@ -194,10 +190,12 @@ class TvmRelaxTranslator(
                 // 形状变换 — reshape 展平到 1-D
                 "reshape" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
                 "permute_dims" -> "bb.emit(relax.op.permute_dims(${inputNames.first()}))"
-                "squeeze" -> "bb.emit(relax.op.reshape(${inputNames.first()}, relax.ShapeExpr([-1])))"
+                // squeeze: 用原生 squeeze 保持 ndim，和生成器 computeOutputNdim 一致
+                "squeeze" -> "bb.emit(relax.op.squeeze(${inputNames.first()}))"
                 "expand_dims" -> "bb.emit(relax.op.expand_dims(${inputNames.first()}, 0))"
 
                 // 归约 — keepdims=False，ndim 降低 1，与生成器一致
+                // 注意：生成器限制 reduce 只在 ndim >= 2 时才选，所以不会降到 0-D
                 "sum" -> "bb.emit(relax.op.sum(${inputNames.first()}, axis=[-1], keepdims=False))"
                 "mean" -> "bb.emit(relax.op.mean(${inputNames.first()}, axis=[-1], keepdims=False))"
                 "max" -> "bb.emit(relax.op.max(${inputNames.first()}, axis=[-1], keepdims=False))"

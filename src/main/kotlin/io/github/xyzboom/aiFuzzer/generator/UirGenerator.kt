@@ -185,18 +185,20 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         if (availableNdims.isEmpty()) return true
         return when (op) {
             // 需要至少 2-D 输入
-            "transpose", "tril", "triu", "strided_slice" -> availableNdims.any { it >= 2 }
-            // 需要至少 1-D 输入
+            in needNdimGe2 -> availableNdims.any { it >= 2 }
+            // 需要至少 1-D 输入（且不能是 0-D，因为 reduce 后 0-D 不能再 reduce）
             "softmax", "reshape", "squeeze", "unsqueeze",
             "broadcast_to", "gather" -> availableNdims.any { it >= 1 }
-            // reduce 类：需要至少 1-D 输入
-            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min" -> availableNdims.any { it >= 1 }
+            // reduce 类：需要至少 1-D 输入，且输出不会变成 0-D
+            // 如果输入 ndim > 1，reduce 后 >= 0，可以接受
+            // 如果输入 ndim == 1，reduce 后 == 0，后续无法再作为非常数算子的输入
+            // 为了解决这个问题，只有当 ndim >= 2 时才允许 reduce，
+            // 这样 reduce 后的 ndim >= 1，仍可被后续算子使用
+            in reducingOps -> availableNdims.any { it >= 2 }
             // matmul：需要至少 1-D 输入，且至少 2 个
             "matmul" -> availableNdims.count { it >= 1 } >= 2
             // pad：需要至少 1-D
             "pad" -> availableNdims.any { it >= 1 }
-            // conv2d, max_pool2d, avg_pool2d: 需要 ≥ 2-D 输入
-            "conv2d", "max_pool2d", "avg_pool2d" -> availableNdims.any { it >= 2 }
             // tile：需要至少 1-D
             "tile" -> availableNdims.any { it >= 1 }
             // concat/split：需要至少 2 个同 ndim 的值
@@ -505,6 +507,17 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             "reshape", "squeeze", "unsqueeze",
             "arange", "full", "ones", "zeros",
             "strided_slice",
+        )
+
+        /** 需要 ndim >= 2 的算子 */
+        val needNdimGe2 = setOf(
+            "transpose", "tril", "triu", "strided_slice",
+            "conv2d", "max_pool2d", "avg_pool2d",
+        )
+
+        /** reduce 类算子（输出 ndim = input - 1，可能降到 0） */
+        val reducingOps = setOf(
+            "reduce_sum", "reduce_mean", "reduce_max", "reduce_min", "max", "min",
         )
 
         /** 安全回退算子（兼容所有 ndim 且不改变 ndim） */
