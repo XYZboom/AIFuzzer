@@ -83,9 +83,13 @@ data class BackendsConfig(
 
 data class TvmConfig(
     var python: String = "python3",
+    /** 执行模式: "process" (每轮独立进程) 或 "daemon" (常驻进程) */
+    var mode: String = "daemon",
+    /** daemon 实例数（= workers 时最高效）*/
+    var daemonCount: Int = 1,
     var timeoutSeconds: Int = 60,
     var keepArtifacts: Boolean = false,
-    var workDir: String = "/tmp/aiFuzzer_tvm",
+    var workDir: String = System.getProperty("java.io.tmpdir", "/tmp") + "/aiFuzzer_tvm",
     var dtype: String = "float32",
     var shapeRank: Int = 3,
 )

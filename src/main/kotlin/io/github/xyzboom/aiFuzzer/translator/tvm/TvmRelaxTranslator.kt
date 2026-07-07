@@ -69,11 +69,9 @@ class TvmRelaxTranslator(
             }
             data.appendLine()
             data.appendLine()
-            data.appendLine("if __name__ == '__main__':")
-            data.indent {
-                data.appendLine("mod = build_mod()")
-                data.appendLine("print(mod.script())")
-            }
+            // 这里不加 __name__ == "__main__" 的判断，因为常驻运行DaemonBackend时，条件不成立
+            data.appendLine("mod = build_mod()")
+            data.appendLine("print(mod.script())")
         }
 
         override fun visitGraph(graph: UirGraph, data: Data) {

@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
  * TVM Relax 编译器后端。
  */
 class TvmBackend(
-    workDir: File = File(System.getProperty("java.io.tmpdir"), "aiFuzzer_tvm"),
+    workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_tvm"),
     /** 从 config 创建 */
     config: TvmConfig? = null,
 ) : Backend<TvmBackend.TvmResult> {

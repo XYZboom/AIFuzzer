@@ -118,9 +118,13 @@ class FuzzingPipeline(
             dispatcher.close()
         }
 
+        // 清理临时产物
         if (!config.keepArtifacts) {
             backends.filterIsInstance<TvmBackend>().forEach { it.cleanup() }
         }
+
+        // 关闭所有 backend（daemon 进程等）
+        backends.forEach { it.close() }
 
         return FuzzingSummary.fromResults(allResults, System.currentTimeMillis() - startTime)
     }

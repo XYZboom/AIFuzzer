@@ -15,6 +15,7 @@ import io.github.xyzboom.aiFuzzer.fuzzer.Backend
 import io.github.xyzboom.aiFuzzer.fuzzer.BugCollector
 import io.github.xyzboom.aiFuzzer.fuzzer.FuzzingPipeline
 import io.github.xyzboom.aiFuzzer.fuzzer.TvmBackend
+import io.github.xyzboom.aiFuzzer.fuzzer.TvmDaemonBackend
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import java.io.File
 import java.io.PrintWriter
@@ -72,6 +73,7 @@ class AiFuzzerCommand : CliktCommand(
 
         echo("Description: ${config.run.description}")
         echo("Backends: ${config.backends.enabled}")
+        echo()
 
         // 2. 确定 seed
         val seed = config.run.seed?.toLongOrNull() ?: System.currentTimeMillis()
@@ -84,8 +86,15 @@ class AiFuzzerCommand : CliktCommand(
         // 4. 创建后端
         val backends = mutableListOf<Backend<*>>()
         if ("tvm" in config.backends.enabled) {
-            val workDir = File(config.backends.tvm.workDir)
-            backends.add(TvmBackend(workDir, config.backends.tvm))
+            val tvmCfg = config.backends.tvm
+            if (tvmCfg.mode == "daemon") {
+                echo("  TVM backend: daemon mode (python=${tvmCfg.python})")
+                backends.add(TvmDaemonBackend(tvmCfg))
+            } else {
+                echo("  TVM backend: process mode")
+                val workDir = File(tvmCfg.workDir)
+                backends.add(TvmBackend(workDir, tvmCfg))
+            }
         }
         // TODO: ONNX and IREE backends
 
@@ -94,18 +103,37 @@ class AiFuzzerCommand : CliktCommand(
             return
         }
 
-        // 5. 创建流水线
+        // 5. 预热后端（检查环境、启动 daemon）
+        echo("Initializing backends...")
+        val readyBackends = backends.filter { backend ->
+            echo("  ${backend.name}: ")
+            val ok = backend.checkEnvironment()
+            if (ok) {
+                echo("✓")
+            } else {
+                echo("✗ FAILED")
+            }
+            ok
+        }
+        if (readyBackends.isEmpty()) {
+            echo("All backends failed to initialize! Aborting.", err = true)
+            backends.forEach { it.close() }
+            return
+        }
+        echo()
+
+        // 6. 创建流水线
         val pipeline = FuzzingPipeline(
             generator = generator,
             backends = backends,
             config = config.pipeline.toFuzzingConfig(),
         )
 
-        // 6. 确保输出目录存在
+        // 7. 确保输出目录存在
         val reportDir = File(config.run.outputDir)
         reportDir.mkdirs()
 
-        // 7. 运行
+        // 8. 运行
         BugCollector.reset()
         val batchSize = config.pipeline.batchSize
         echo()
@@ -114,11 +142,11 @@ class AiFuzzerCommand : CliktCommand(
 
         val summary = pipeline.runBatch(count = batchSize, startSeed = seed)
 
-        // 8. 打印报告
+        // 9. 打印报告
         echo()
         summary.printReport()
 
-        // 9. 保存报告到文件
+        // 10. 保存报告到文件
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
         val timestamp = LocalDateTime.now().format(formatter)
         val reportFile = File(reportDir, "run_report_$timestamp.txt")

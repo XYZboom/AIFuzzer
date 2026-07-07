@@ -39,7 +39,7 @@ backends:
     python: "python3"
     timeout_seconds: 60
     keep_artifacts: false
-    work_dir: "/tmp/aiFuzzer_tvm"
+    work_dir: "%TEMP%/aiFuzzer_tvm"
     dtype: "float32"
     shape_rank: 3                     # TensorStructInfo 的 shape 维度数
 

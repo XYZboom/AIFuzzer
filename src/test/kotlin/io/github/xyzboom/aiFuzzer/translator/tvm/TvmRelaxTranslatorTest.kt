@@ -27,13 +27,13 @@ class TvmRelaxTranslatorTest {
         val program = buildProgram {
             graphs.add(buildGraph {
                 name = "main"
-                inputs.add(buildValueRef { valueId = "input_0" })
-                outputs.add(buildValueRef { valueId = "relu_out" })
+                inputs.add(buildValueRef { valueId = "input_0"; ndim = 2 })
+                outputs.add(buildValueRef { valueId = "relu_out"; ndim = 2 })
                 nodes.add(buildNode {
                     name = "relu"
                     op = "relu"
-                    inputs.add(buildValueRef { valueId = "input_0" })
-                    outputs.add(buildValueRef { valueId = "relu_out" })
+                    inputs.add(buildValueRef { valueId = "input_0"; ndim = 2 })
+                    outputs.add(buildValueRef { valueId = "relu_out"; ndim = 2 })
                 })
             })
         }
@@ -54,15 +54,15 @@ class TvmRelaxTranslatorTest {
         val program = buildProgram {
             graphs.add(buildGraph {
                 name = "main"
-                inputs.add(buildValueRef { valueId = "a" })
-                inputs.add(buildValueRef { valueId = "b" })
-                outputs.add(buildValueRef { valueId = "c" })
+                inputs.add(buildValueRef { valueId = "a"; ndim = 2 })
+                inputs.add(buildValueRef { valueId = "b"; ndim = 2 })
+                outputs.add(buildValueRef { valueId = "c"; ndim = 2 })
                 nodes.add(buildNode {
                     name = "add"
                     op = "add"
-                    inputs.add(buildValueRef { valueId = "a" })
-                    inputs.add(buildValueRef { valueId = "b" })
-                    outputs.add(buildValueRef { valueId = "c" })
+                    inputs.add(buildValueRef { valueId = "a"; ndim = 2 })
+                    inputs.add(buildValueRef { valueId = "b"; ndim = 2 })
+                    outputs.add(buildValueRef { valueId = "c"; ndim = 2 })
                 })
             })
         }
@@ -77,13 +77,13 @@ class TvmRelaxTranslatorTest {
         val program = buildProgram {
             graphs.add(buildGraph {
                 name = "main"
-                inputs.add(buildValueRef { valueId = "x" })
-                outputs.add(buildValueRef { valueId = "y" })
+                inputs.add(buildValueRef { valueId = "x"; ndim = 2 })
+                outputs.add(buildValueRef { valueId = "y"; ndim = 2 })
                 nodes.add(buildNode {
                     name = "softmax"
                     op = "softmax"
-                    inputs.add(buildValueRef { valueId = "x" })
-                    outputs.add(buildValueRef { valueId = "y" })
+                    inputs.add(buildValueRef { valueId = "x"; ndim = 2 })
+                    outputs.add(buildValueRef { valueId = "y"; ndim = 2 })
                     attributes = mutableMapOf("axis" to buildIntAttr { value = -1 })
                 })
             })
@@ -99,15 +99,15 @@ class TvmRelaxTranslatorTest {
         val program = buildProgram {
             graphs.add(buildGraph {
                 name = "main"
-                inputs.add(buildValueRef { valueId = "x" })
-                outputs.add(buildValueRef { valueId = "values" })
-                outputs.add(buildValueRef { valueId = "indices" })
+                inputs.add(buildValueRef { valueId = "x"; ndim = 2 })
+                outputs.add(buildValueRef { valueId = "values"; ndim = 2 })
+                outputs.add(buildValueRef { valueId = "indices"; ndim = 2 })
                 nodes.add(buildNode {
                     name = "topk"
                     op = "topk"
-                    inputs.add(buildValueRef { valueId = "x" })
-                    outputs.add(buildValueRef { valueId = "values" })
-                    outputs.add(buildValueRef { valueId = "indices" })
+                    inputs.add(buildValueRef { valueId = "x"; ndim = 2 })
+                    outputs.add(buildValueRef { valueId = "values"; ndim = 2 })
+                    outputs.add(buildValueRef { valueId = "indices"; ndim = 2 })
                 })
             })
         }
