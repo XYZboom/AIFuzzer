@@ -45,7 +45,9 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
 
     val valueRef: Element by element(Element.Kind.Other, name = "ValueRef") {
         +field("valueId", StandardTypes.string, isChild = false)
-        +field("ndim", StandardTypes.int, isChild = false, isMutable = true)
+        +field("ndim", StandardTypes.int, isChild = false, isMutable = true) {
+            defaultValueInBuilder = "1"
+        }
     }
 
     val namedElement: Element by element(Element.Kind.Other, name = "NamedElement") {
@@ -119,7 +121,11 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
             isMutable = isMutable,
             withReplace = withReplace,
             withTransform = withTransform
-        ).apply(initializer)
+        ).apply(initializer).also {
+            if (name == "ndim") {
+                println("DEBUG: ndim defaultValueInBuilder = ${it.defaultValueInBuilder}")
+            }
+        }
     }
 
     fun listField(

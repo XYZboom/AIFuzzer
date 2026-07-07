@@ -2,7 +2,6 @@ package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
-import io.github.xyzboom.aiFuzzer.ir.builder.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import java.io.File
@@ -100,7 +99,6 @@ class FuzzerFrameworkTest {
             backends = backends,
             config = FuzzingPipeline.FuzzingConfig(
                 keepArtifacts = false,
-                reportInterval = 5,
             )
         )
         val summary = pipeline.runBatch(count = 3, startSeed = 1)

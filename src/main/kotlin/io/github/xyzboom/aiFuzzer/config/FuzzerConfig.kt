@@ -124,7 +124,6 @@ data class PipelineConfig(
             runTimeoutSeconds = runTimeoutSeconds,
             workers = workers,
             keepArtifacts = false,
-            reportInterval = reportInterval,
         )
     }
 }

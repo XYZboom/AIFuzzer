@@ -71,5 +71,4 @@ bug_collector:
 pipeline:
   workers: 16
   batch_size: 100000
-  report_interval: 10
   run_timeout_seconds: 60

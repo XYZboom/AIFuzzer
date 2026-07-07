@@ -24,9 +24,11 @@ class TvmBackend(
         TvmRelaxTranslator()
     }
 
+    private val tvmPython: String = config?.python ?: "python3"
+
     override fun checkEnvironment(): Boolean {
         return try {
-            val process = ProcessBuilder("python3", "-c", "import tvm")
+            val process = ProcessBuilder(tvmPython, "-c", "import tvm")
                 .redirectErrorStream(true)
                 .start()
             process.waitFor(5, TimeUnit.SECONDS)
@@ -54,7 +56,7 @@ class TvmBackend(
 
         val startTime = System.currentTimeMillis()
 
-        val process = ProcessBuilder("python3", scriptFile.absolutePath)
+        val process = ProcessBuilder(tvmPython, scriptFile.absolutePath)
             .directory(workDir)
             .redirectErrorStream(false)
             .start()

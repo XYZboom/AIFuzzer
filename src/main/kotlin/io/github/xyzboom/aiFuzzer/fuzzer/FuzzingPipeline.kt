@@ -25,8 +25,6 @@ class FuzzingPipeline(
         val workers: Int = 1,
         /** 是否保留临时产物 */
         val keepArtifacts: Boolean = false,
-        /** 状态报告间隔 */
-        val reportInterval: Int = 10,
     )
 
     @OptIn(DelicateCoroutinesApi::class)
@@ -174,8 +172,6 @@ class FuzzingPipeline(
     }
 
     private fun printStatus(current: Int, total: Int, seed: Long) {
-        if (current % config.reportInterval == 0 || current == total - 1) {
-            println("[${current + 1}/$total] seed=$seed")
-        }
+        println("[${current + 1}/$total] seed=$seed")
     }
 }

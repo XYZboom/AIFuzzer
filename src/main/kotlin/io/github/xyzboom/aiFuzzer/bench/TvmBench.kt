@@ -32,7 +32,7 @@ class TvmBench {
         val pipeline = FuzzingPipeline(
             generator = generator, backends = listOf(backend),
             config = FuzzingPipeline.FuzzingConfig(
-                keepArtifacts = true, reportInterval = 10,
+                keepArtifacts = true,
                 workers = 16
             )
         )

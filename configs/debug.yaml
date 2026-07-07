@@ -18,5 +18,4 @@ backends:
 pipeline:
   workers: 1
   batch_size: 20
-  report_interval: 5
   run_timeout_seconds: 30
