@@ -1,27 +1,27 @@
 """
-AiFuzzer TVM Daemon — 常驻 Python 进程，通过 stdin/stdout JSON 协议与 JVM 通信。
+AiFuzzer TVM Daemon — 常驻 Python HTTP 服务，通过 HTTP POST 与 JVM 通信。
 
-协议：
-  输入: {"type":"run", "id":<int>, "source":"<python code>"}
-  输出: {"type":"result", "id":<int>, "success":bool, "exit_code":int,
-         "stdout":"...", "stderr":"...", "elapsed_ms":<int>}
+API:
+  POST /run    {"source": "<python code>"}
+               → {"success": true, "exit_code": 0, "stdout": "...", "stderr": "...", "elapsed_ms": 1}
 
-  心跳:
-  输入: {"type":"ping"}
-  输出: {"type":"pong"}
+  GET  /health → {"status": "ok", "tvm_available": true, "uptime_seconds": 123}
 
-  关闭:
-  输入: __SHUTDOWN__
+  POST /shutdown → 优雅关闭
 
 使用方法:
-  python3 tvm_daemon.py          # 启动 daemon（监听 stdin）
-  python3 tvm_daemon.py --test   # 自测试模式（验证 TVM 可用）
+  python3 tvm_daemon.py                  # 启动 daemon（默认端口 34789）
+  python3 tvm_daemon.py --port 8888      # 指定端口
+  python3 tvm_daemon.py --test           # 自测试模式（验证 TVM 可用）
 """
 
 import json
+import signal
 import sys
+import threading
 import time
 import traceback
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import StringIO
 
 # 一次性导入 TVM（最耗时的部分）
@@ -38,17 +38,37 @@ except Exception as _ie:
     _tvm_import_detail = traceback.format_exc()
 
 
-def run_source(source: str) -> dict:
-    """执行单次测试源码，捕获 stdout/stderr。"""
+# 每次 exec 的最大超时时间（秒），避免 TVM 内部永久阻塞
+EXEC_TIMEOUT_SECONDS = 120
+DAEMON_START_TIME = time.time()
+
+
+def _timeout_handler(signum, frame):
+    """SIGALRM 处理器，抛出 TimeoutError。"""
+    raise TimeoutError(f"exec timed out after {EXEC_TIMEOUT_SECONDS}s")
+
+
+def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
+    """执行单次测试源码，捕获 stdout/stderr。
+
+    使用 signal.alarm 进行超时保护：TVM 编译可能在某些输入下无限阻塞
+    （如 CUDA 同步、死锁等），此时 alarm 会触发 TimeoutError。
+    """
     global tvm, relax, op
     old_stdout = sys.stdout
     old_stderr = sys.stderr
+    old_alarm = None
     sys.stdout = StringIO()
     sys.stderr = StringIO()
 
     start = time.time()
     exit_code = 0
     try:
+        # 设置 alarm 超时
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            old_alarm = signal.alarm(timeout)
+
         exec(source, {"tvm": tvm, "relax": relax, "op": op})
         success = True
     except SystemExit as e:
@@ -56,10 +76,18 @@ def run_source(source: str) -> dict:
         success = False
         exit_code = e.code if isinstance(e.code, int) else 1
         traceback.print_exc()
+    except TimeoutError as e:
+        success = False
+        exit_code = -1
+        print(f"TIMEOUT: {e}", file=sys.stderr)
     except Exception:
         traceback.print_exc()
         success = False
         exit_code = 1
+    finally:
+        # 恢复 alarm
+        if hasattr(signal, "SIGALRM") and old_alarm is not None:
+            signal.alarm(old_alarm)
 
     elapsed = int((time.time() - start) * 1000)
     captured_stdout = sys.stdout.getvalue()
@@ -76,74 +104,76 @@ def run_source(source: str) -> dict:
     }
 
 
-def daemon_loop():
-    """主循环：从 stdin 逐行读取 JSON 请求并回复到 stdout。"""
-    # 先报告就绪状态
-    ready_msg = {
-        "type": "ready",
-        "tvm_available": TVM_AVAILABLE,
-    }
-    if not TVM_AVAILABLE:
-        ready_msg["import_error"] = _import_error
-        if hasattr(sys.modules[__name__], '_tvm_import_detail'):
-            ready_msg["import_detail"] = _tvm_import_detail
-    print(json.dumps(ready_msg), flush=True)
+class DaemonRequestHandler(BaseHTTPRequestHandler):
+    """HTTP 请求处理器。每个请求在独立线程中处理（由 ThreadingHTTPServer 保证）。"""
 
-    for raw_line in sys.stdin:
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line == "__SHUTDOWN__":
-            break
-
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError as e:
-            print(json.dumps({
-                "type": "result",
-                "id": -1,
-                "success": False,
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"JSON decode error: {e}",
-                "elapsed_ms": 0,
-            }), flush=True)
-            continue
-
-        req_type = req.get("type", "run")
-
-        if req_type == "ping":
-            print(json.dumps({"type": "pong"}), flush=True)
-            continue
-
-        if req_type == "run":
-            req_id = req.get("id", -1)
-            source = req.get("source", "")
-            try:
-                result = run_source(source)
-                result["id"] = req_id
-                result["type"] = "result"
-                print(json.dumps(result), flush=True)
-            except Exception as e:
-                print(json.dumps({
-                    "type": "result",
-                    "id": req_id,
-                    "success": False,
-                    "exit_code": -1,
-                    "stdout": "",
-                    "stderr": f"Daemon internal error: {e}\n{traceback.format_exc()}",
-                    "elapsed_ms": 0,
-                }), flush=True)
+    def do_POST(self):
+        if self.path == "/run":
+            self._handle_run()
+        elif self.path == "/shutdown":
+            self._handle_shutdown()
         else:
-            print(json.dumps({
-                "type": "result",
-                "id": req.get("id", -1),
+            self._json_response(404, {"error": f"unknown path: {self.path}"})
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._handle_health()
+        else:
+            self._json_response(404, {"error": f"unknown path: {self.path}"})
+
+    def _handle_run(self):
+        """处理 /run：执行 TVM Relax 代码。"""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            req = json.loads(body)
+        except Exception as e:
+            self._json_response(400, {
                 "success": False,
                 "exit_code": -1,
                 "stdout": "",
-                "stderr": f"Unknown request type: {req_type}",
+                "stderr": f"Bad request: {e}",
                 "elapsed_ms": 0,
-            }), flush=True)
+            })
+            return
+
+        source = req.get("source", "")
+        try:
+            result = run_source(source)
+            self._json_response(200, result)
+        except Exception as e:
+            self._json_response(500, {
+                "success": False,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Daemon internal error: {e}\n{traceback.format_exc()}",
+                "elapsed_ms": 0,
+            })
+
+    def _handle_health(self):
+        self._json_response(200, {
+            "status": "ok",
+            "tvm_available": TVM_AVAILABLE,
+            "uptime_seconds": int(time.time() - DAEMON_START_TIME),
+            "import_error": _import_error if not TVM_AVAILABLE else "",
+        })
+
+    def _handle_shutdown(self):
+        self._json_response(200, {"status": "shutting_down"})
+        # 在响应发送后关闭服务
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    def _json_response(self, status_code: int, data: dict):
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        """抑制默认的 HTTP 日志输出（太吵）。"""
+        pass
 
 
 def self_test():
@@ -153,7 +183,6 @@ def self_test():
         sys.exit(1)
     print("PASS: TVM is available")
 
-    # 简单的 Relax 程序测试（使用 add，不依赖子模块）
     source = """
 import tvm
 from tvm import relax
@@ -180,8 +209,57 @@ print("Mod built successfully")
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def main():
+    import threading  # 用于 /shutdown
+
+    port = 34789  # 默认端口
+    if "--port" in sys.argv:
+        idx = sys.argv.index("--port")
+        if idx + 1 < len(sys.argv):
+            port = int(sys.argv[idx + 1])
+
     if "--test" in sys.argv:
         self_test()
-    else:
-        daemon_loop()
+        return
+
+    server = HTTPServer(("127.0.0.1", port), DaemonRequestHandler)
+    # 使用多线程处理请求
+    server.socket.settimeout(1.0)  # 1 秒超时，让 serve_forever 能响应信号
+
+    # 打印配置信息（JVM 将读取此信息获取端口等）
+    import os
+    server_info = {
+        "type": "ready",
+        "tvm_available": TVM_AVAILABLE,
+        "port": port,
+        "pid": os.getpid(),
+    }
+    if not TVM_AVAILABLE:
+        server_info["import_error"] = _import_error
+        server_info["import_detail"] = _tvm_import_detail
+
+    print(json.dumps(server_info), flush=True)
+
+    # 注册信号处理优雅退出
+    def sig_handler(signum, frame):
+        server.shutdown()
+
+    signal.signal(signal.SIGTERM, sig_handler)
+    signal.signal(signal.SIGINT, sig_handler)
+
+    try:
+        while True:
+            try:
+                server.handle_request()
+            except TimeoutError:
+                pass  # socket 超时，继续循环
+            except OSError:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

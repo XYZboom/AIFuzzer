@@ -7,11 +7,21 @@ import java.io.File
 class BugCollectorTest {
 
     @Test
-    fun `bug collector should ignore known false positives`() {
+    fun `bug collector should report all failures as bugs`() {
         val result = TvmBackend.TvmResult(
             success = false, exitCode = 1, stdout = "",
             stderr = "ImportError: no module named tvm", elapsedMs = 0,
             errorCategory = ErrorCategory.UNKNOWN,
+            errorSummary = "", sourceFile = ""
+        )
+        assertTrue(BugCollector.isWorthyBug(result), "all failures should be bugs")
+    }
+
+    @Test
+    fun `bug collector should not report success as bug`() {
+        val result = TvmBackend.TvmResult(
+            success = true, exitCode = 0, stdout = "OK", stderr = "",
+            elapsedMs = 100, errorCategory = ErrorCategory.NONE,
             errorSummary = "", sourceFile = ""
         )
         assertFalse(BugCollector.isWorthyBug(result))

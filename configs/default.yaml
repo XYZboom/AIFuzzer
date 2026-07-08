@@ -11,11 +11,11 @@ run:
 # 生成器设置
 generator:
   min_nodes_per_graph: 3
-  max_nodes_per_graph: 8
-  min_inputs: 1
-  max_inputs: 3
+  max_nodes_per_graph: 25
+  min_inputs: 2
+  max_inputs: 15
   min_input_ndim: 1
-  max_input_ndim: 3
+  max_input_ndim: 10
   graph_count: 1
   strategy: "random"                  # random | enumerated | template
   template_dir: "./templates"
@@ -58,17 +58,11 @@ backends:
 # Bug 收集
 bug_collector:
   enabled: true
-  ignore_patterns:
-    - "SyntaxError"
-    - "IndentationError"
-    - "ImportError"
-    - "ModuleNotFoundError"
-    - "AttributeError"
-    - "OpNotImplemented"
+  ignore_patterns: []
   output_dir: "./reports"
 
 # Fuzzing 流水线
 pipeline:
   workers: 16
-  batch_size: 100000
+  batch_size: 5000
   run_timeout_seconds: 60

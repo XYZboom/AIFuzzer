@@ -2,16 +2,14 @@ package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
-import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.Semaphore
-import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 可配置的 Fuzzing 流水线。
  *
  * 生成 → 执行 → 收集 → 分析
  *
- * 并行模式使用 Kotlin 协程管理，每个测试有独立的超时时间。
+ * 并行模式使用 Java ThreadPool + Future 确保可中断超时。
+ * 串行模式直接在主线程执行。
  */
 class FuzzingPipeline(
     private val generator: UirGenerator = UirGenerator(),
@@ -26,12 +24,6 @@ class FuzzingPipeline(
         /** 是否保留临时产物 */
         val keepArtifacts: Boolean = false,
     )
-
-    @OptIn(DelicateCoroutinesApi::class)
-    private val dispatcher: CoroutineDispatcher = when {
-        config.workers <= 1 -> Dispatchers.Unconfined // 串行时不切换线程
-        else -> newFixedThreadPoolContext(config.workers, "fuzzer-worker")
-    }
 
     /**
      * 单次 Fuzzing 运行（单线程，调用方负责上下文）。
@@ -48,74 +40,94 @@ class FuzzingPipeline(
      *
      * 每个测试有独立的 [FuzzingConfig.runTimeoutSeconds] 超时时间。
      * 超时的测试将被取消并记录为超时结果。
+     *
+     * 注意：daemon 执行是同步阻塞调用，Kotlin 协程的 withTimeout 无法打断
+     * 阻塞在 synchronized / readLine 中的线程。因此超时由两端共同保证：
+     * - 客户端侧：DaemonClient 层有 requestTimeoutMs 超时，超时后杀 daemon
+     * - 服务端侧：tvm_daemon.py 有 signal.alarm 超时保护
+     * - 并行模式：改用 Thread + Future 确保超时可中断
      */
     fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {
         BugCollector.reset()
-        val allResults = mutableListOf<FuzzingResult>()
+        val allResults = java.util.Collections.synchronizedList(mutableListOf<FuzzingResult>())
         val startTime = System.currentTimeMillis()
 
-        runBlocking(dispatcher) {
-            // 信号量控制并发数
-            val semaphore = Semaphore(config.workers.coerceAtLeast(1))
-
-            coroutineScope {
-                (0 until count).map { i ->
-                    val seed = startSeed + i
-                    async {
-                        if (config.workers > 1) {
-                            semaphore.acquire()
+        if (config.workers <= 1) {
+            // 串行模式：直接在主线程执行，daemon 超时由内部机制保证
+            for (i in 0 until count) {
+                val seed = startSeed + i
+                printStatus(i, count, seed)
+                try {
+                    val results = runOnce(seed)
+                    allResults.addAll(results)
+                } catch (e: Exception) {
+                    println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                    allResults.addAll(
+                        backends.map { backend ->
+                            FuzzingResult(
+                                seed = seed,
+                                backendName = backend.name,
+                                backendResult = object : BackendResult(false, -1, "", e.message ?: "", 0) {},
+                                errorCategory = ErrorCategory.UNKNOWN,
+                                errorSummary = e.message ?: "unknown",
+                            )
                         }
-                        try {
-                            printStatus(i, count, seed)
-
-                            // 每个单独测试的超时
-                            val results = if (config.runTimeoutSeconds > 0) {
-                                withTimeout((config.runTimeoutSeconds * 1000L).milliseconds) {
-                                    runOnce(seed)
-                                }
-                            } else {
-                                runOnce(seed)
-                            }
-                            results
-                        } catch (_: TimeoutCancellationException) {
-                            // 超时：生成一个占位结果
-                            println("[!] Test seed=$seed timed out after ${config.runTimeoutSeconds}s")
-                            backends.map { backend ->
-                                FuzzingResult(
-                                    seed = seed,
-                                    backendName = backend.name,
-                                    backendResult = object : BackendResult(false, -1, "", "", 0) {},
-                                    errorCategory = ErrorCategory.TIMEOUT,
-                                    errorSummary = "timed out after ${config.runTimeoutSeconds}s",
-                                )
-                            }
-                        } catch (e: CancellationException) {
-                            // 全局取消
-                            throw e
-                        } catch (e: Exception) {
-                            println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
-                            backends.map { backend ->
-                                FuzzingResult(
-                                    seed = seed,
-                                    backendName = backend.name,
-                                    backendResult = object : BackendResult(false, -1, "", e.message ?: "", 0) {
-                                    },
-                                    errorCategory = ErrorCategory.UNKNOWN,
-                                    errorSummary = e.message ?: "unknown",
-                                )
-                            }
-                        } finally {
-                            if (config.workers > 1) {
-                                semaphore.release()
-                            }
-                        }
-                    }
-                }.awaitAll().flatten().also { allResults.addAll(it) }
+                    )
+                }
             }
-        }
+        } else {
+            // 并行模式：使用线程池和 Future.get(timeout)，确保可中断
+            val executor = java.util.concurrent.Executors.newFixedThreadPool(config.workers) { r ->
+                Thread(r, "fuzzer-worker").also { it.isDaemon = true }
+            }
 
-        if (dispatcher is ExecutorCoroutineDispatcher) {
-            dispatcher.close()
+            val futures = (0 until count).map { i ->
+                val seed = startSeed + i
+                executor.submit<List<FuzzingResult>> {
+                    printStatus(i, count, seed)
+                    runOnce(seed)
+                }
+            }
+
+            futures.forEachIndexed { i, future ->
+                val seed = startSeed + i
+                try {
+                    val results = future.get(
+                        if (config.runTimeoutSeconds > 0) config.runTimeoutSeconds.toLong() else Long.MAX_VALUE,
+                        java.util.concurrent.TimeUnit.SECONDS
+                    )
+                    allResults.addAll(results)
+                } catch (_: java.util.concurrent.TimeoutException) {
+                    future.cancel(true)
+                    println("[!] Test seed=$seed timed out after ${config.runTimeoutSeconds}s")
+                    allResults.addAll(
+                        backends.map { backend ->
+                            FuzzingResult(
+                                seed = seed,
+                                backendName = backend.name,
+                                backendResult = object : BackendResult(false, -1, "", "", 0) {},
+                                errorCategory = ErrorCategory.TIMEOUT,
+                                errorSummary = "timed out after ${config.runTimeoutSeconds}s",
+                            )
+                        }
+                    )
+                } catch (e: Exception) {
+                    println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                    allResults.addAll(
+                        backends.map { backend ->
+                            FuzzingResult(
+                                seed = seed,
+                                backendName = backend.name,
+                                backendResult = object : BackendResult(false, -1, "", e.message ?: "", 0) {},
+                                errorCategory = ErrorCategory.UNKNOWN,
+                                errorSummary = e.message ?: "unknown",
+                            )
+                        }
+                    )
+                }
+            }
+
+            executor.shutdownNow()
         }
 
         // 清理临时产物

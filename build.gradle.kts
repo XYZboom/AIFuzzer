@@ -36,6 +36,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     // Kotlin 协程
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    // Ktor HTTP 客户端（与 daemon 通信）
+    implementation("io.ktor:ktor-client-core:3.1.2")
+    implementation("io.ktor:ktor-client-cio:3.1.2")
 }
 
 application {

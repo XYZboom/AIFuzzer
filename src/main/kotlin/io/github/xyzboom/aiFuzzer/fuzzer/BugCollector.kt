@@ -25,27 +25,12 @@ object BugCollector {
 
     private var bugCounter = 0
 
-    /** 可被误报忽略的错误模式（翻译器或生成器已知问题） */
-    private val ignorePatterns = listOf(
-        // 翻译器对某些 op 的映射可能不尽精确
-        "OpNotImplemented",
-        "AttributeError",
-        // Python 语法错误（翻译器 bug）
-        "SyntaxError",
-        "IndentationError",
-        // Import 错误
-        "ImportError",
-        "ModuleNotFoundError",
-    )
-
     /**
-     * 检查一个结果是否值得作为 bug 保存。
-     * 仅保存非预期编译错误（UCTE 类）。
+     * 所有非成功的执行结果都视为 bug。
+     * 不管错误来自翻译器/生成器还是被测程序，都应当被记录。
      */
     fun isWorthyBug(result: BackendResult): Boolean {
-        if (result.success) return false
-        val stderr = result.stderr
-        return ignorePatterns.none { stderr.contains(it) }
+        return !result.success
     }
 
     /**
