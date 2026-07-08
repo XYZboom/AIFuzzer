@@ -2,6 +2,9 @@ package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 
 /**
  * 可配置的 Fuzzing 流水线。
@@ -52,16 +55,43 @@ class FuzzingPipeline(
         val allResults = java.util.Collections.synchronizedList(mutableListOf<FuzzingResult>())
         val startTime = System.currentTimeMillis()
 
+        // 原子计数器：已完成数、成功数、失败数
+        val completed = AtomicInteger(0)
+        val successCount = AtomicInteger(0)
+        val failureCount = AtomicInteger(0)
+
+        // 定时报告线程（每 5 秒）
+        val progressReporter = thread(name = "fuzzer-progress") {
+            var lastCompleted = 0
+            while (completed.get() < count) {
+                Thread.sleep(5000)
+                val now = completed.get()
+                val rate = if (now - lastCompleted > 0) {
+                    "${((now - lastCompleted).toDouble() / 5.0).toInt()}/s"
+                } else { "0/s" }
+                lastCompleted = now
+                val elapsed = (System.currentTimeMillis() - startTime) / 1000
+                val ok = successCount.get()
+                val fail = failureCount.get()
+                System.err.println("[progress] $now/$count  S=$ok  F=$fail  ${elapsed}s  $rate")
+            }
+        }
+
         if (config.workers <= 1) {
-            // 串行模式：直接在主线程执行，daemon 超时由内部机制保证
+            // 串行模式
             for (i in 0 until count) {
                 val seed = startSeed + i
-                printStatus(i, count, seed)
+                System.err.println("[${i + 1}/$count] seed=$seed")
                 try {
                     val results = runOnce(seed)
                     allResults.addAll(results)
+                    results.forEach {
+                        if (it.backendResult.success) successCount.incrementAndGet()
+                        else failureCount.incrementAndGet()
+                    }
                 } catch (e: Exception) {
-                    println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                    failureCount.addAndGet(backends.size)
+                    System.err.println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
@@ -74,9 +104,10 @@ class FuzzingPipeline(
                         }
                     )
                 }
+                completed.incrementAndGet()
             }
         } else {
-            // 并行模式：使用线程池和 Future.get(timeout)，确保可中断
+            // 并行模式
             val executor = java.util.concurrent.Executors.newFixedThreadPool(config.workers) { r ->
                 Thread(r, "fuzzer-worker").also { it.isDaemon = true }
             }
@@ -84,8 +115,27 @@ class FuzzingPipeline(
             val futures = (0 until count).map { i ->
                 val seed = startSeed + i
                 executor.submit<List<FuzzingResult>> {
-                    printStatus(i, count, seed)
-                    runOnce(seed)
+                    try {
+                        val results = runOnce(seed)
+                        results.forEach {
+                            if (it.backendResult.success) successCount.incrementAndGet()
+                            else failureCount.incrementAndGet()
+                        }
+                        completed.incrementAndGet()
+                        results
+                    } catch (e: Exception) {
+                        failureCount.addAndGet(backends.size)
+                        completed.incrementAndGet()
+                        backends.map { backend ->
+                            FuzzingResult(
+                                seed = seed,
+                                backendName = backend.name,
+                                backendResult = object : BackendResult(false, -1, "", e.message ?: "", 0) {},
+                                errorCategory = ErrorCategory.UNKNOWN,
+                                errorSummary = e.message ?: "unknown",
+                            )
+                        }
+                    }
                 }
             }
 
@@ -99,7 +149,9 @@ class FuzzingPipeline(
                     allResults.addAll(results)
                 } catch (_: java.util.concurrent.TimeoutException) {
                     future.cancel(true)
-                    println("[!] Test seed=$seed timed out after ${config.runTimeoutSeconds}s")
+                    failureCount.addAndGet(backends.size)
+                    completed.incrementAndGet()
+                    System.err.println("[!] Test seed=$seed timed out after ${config.runTimeoutSeconds}s")
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
@@ -112,7 +164,9 @@ class FuzzingPipeline(
                         }
                     )
                 } catch (e: Exception) {
-                    println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                    failureCount.addAndGet(backends.size)
+                    completed.incrementAndGet()
+                    System.err.println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
@@ -129,6 +183,8 @@ class FuzzingPipeline(
 
             executor.shutdownNow()
         }
+
+        progressReporter.join()
 
         // 清理临时产物
         if (!config.keepArtifacts) {
@@ -185,9 +241,5 @@ class FuzzingPipeline(
             errorCategory = errorCategory,
             errorSummary = errorSummary,
         )
-    }
-
-    private fun printStatus(current: Int, total: Int, seed: Long) {
-        println("[${current + 1}/$total] seed=$seed")
     }
 }
