@@ -48,6 +48,9 @@ object UirSerializer {
             put("graphNames", buildJsonArray {
                 program.graphs.forEach { add(it.name) }
             })
+            put("metadata", buildJsonObject {
+                program.metadata.forEach { (k, v) -> put(k, v) }
+            })
         }))
 
         // 循环引用解除集：跟踪已输出的 visitValue
@@ -134,8 +137,9 @@ object UirSerializer {
             val nodes: MutableList<NodeEntry>,
         )
 
-        // 第一遍扫描：提取所有 visitValue
+        // 第一遍扫描：提取所有 visitValue 和 metadata
         val valueMap = mutableMapOf<String, Int>() // id → ndim
+        val restoredMetadata = mutableMapOf<String, String>()
         // 按 graph 分组的 node 和 graph 元数据
         val graphEntries = mutableListOf<GraphEntry>()
 
@@ -171,12 +175,21 @@ object UirSerializer {
                         attrs = obj["attrs"]?.jsonObject ?: buildJsonObject { },
                     ))
                 }
-                "visitMetadata" -> { /* metadata is informational; not needed for reconstruction */ }
+                "visitMetadata" -> {
+                    val metaObj = obj["metadata"]?.jsonObject
+                    if (metaObj != null) {
+                        for ((k, v) in metaObj) {
+                            restoredMetadata[k] = v.jsonPrimitive.contentOrNull ?: v.toString()
+                        }
+                    }
+                }
             }
         }
 
         // 第二遍：重建 UirProgram
         return buildProgram {
+            // 恢复 metadata
+            this.metadata = restoredMetadata
             for (ge in graphEntries) {
                 // 构建 graph 的 input / output valueRef
                 val graphInputs = ge.inputIds.map { id ->

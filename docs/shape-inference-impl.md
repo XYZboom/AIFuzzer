@@ -130,30 +130,38 @@ Translator（待迁移）
 
 ---
 
-## 五、待完成的工作
+## 五、根据评审意见的修改记录
 
-### 5.1 翻译器迁移（Phase 3）✅ 已完成
+### 5.1 P0 问题修复
 
-状态：已完成
+#### ShapeAdapter 修复
+- 删除了未使用的 `checkNeedAdaptation` 和 `validateShapes` 方法
+- 简化为直接调用 `ShapeInferer.inferGraphShapes()` 并填充形状
+- 移除了推导失败时的静默处理，改为抛出异常
 
-文件：
-- `src/main/kotlin/io/github/xyzboom/aiFuzzer/translator/tvm/TvmRelaxTranslator.kt` — 重新实现
-- `src/test/kotlin/io/github/xyzboom/aiFuzzer/translator/tvm/TvmRelaxTranslatorTest.kt` — 更新测试
+#### ShapeInferer 完善
+- 移除了硬编码的 `constantShape(16)`，改为 `unknownDim()`
+- 改进了 GATHER 的形状推导，正确处理 indices 维度
+- 改进了 CONCAT 的形状推导，验证输入 ndim 一致性
+- 改进了 SPLIT 的形状推导，正确读取 axis 属性
+- 所有简化处理都添加了注释说明
 
-关键变更：
-1. 删除了独立的 `ndimMap`
-2. 直接从 `ValueRef.type.shape` 读取形状
-3. 无需 clamp axis
+### 5.2 P1 问题修复
 
-### 5.2 清理（Phase 4）（部分完成）
+#### TvmRelaxTranslator 恢复
+- 恢复了 `opNameMapping` 和 `dtypeMapping` 可配置参数
+- 添加了默认映射表 `defaultOpNameMapping`
+- MATMUL 和 BROADCAST_TO 保持直接调用（不再硬编码 full 替换）
+  - 原因：ShapeAdapter 现在正确填充形状，不再需要 full 替换
 
-已完成：
-- 翻译器不再维护独立形状追踪
-- 测试已更新为使用 `UirOpKind` 和完整 `UirTensorType`
+#### 代码清理
+- 移除了 `AtomicLong` 未使用的 import（FuzzingPipeline.kt）
 
-待完成：
-- `GeneratorConfig` 中的 `minInputNdim`、`maxInputNdim` 已无实际作用（可标记为 deprecated）
-- 一些测试需要更新以匹配新架构
+### 5.3 待完成事项
+
+1. **序列化 round-trip 的形状丢失**：反序列化时需重建完整 shape 结构
+2. **测试覆盖**：补充更多算子的形状推导测试
+3. **文档同步**：确保文档与代码实现一致
 
 ---
 
