@@ -54,11 +54,12 @@ data class FuzzerGenConfig(
     }
 
     private fun resolveOps(): List<String> {
+        val defaultOps: List<String> = io.github.xyzboom.aiFuzzer.generator.DefaultOps.map { it.name }
         if (ops.includeAll) {
-            return ops.include.ifEmpty { io.github.xyzboom.aiFuzzer.generator.DefaultOps }
+            return ops.include.ifEmpty { defaultOps }
                 .filter { it !in ops.exclude }
         }
-        return ops.include.ifEmpty { io.github.xyzboom.aiFuzzer.generator.DefaultOps }
+        return ops.include.ifEmpty { defaultOps }
             .filter { it !in ops.exclude }
     }
 }

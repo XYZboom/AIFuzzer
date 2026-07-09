@@ -24,6 +24,7 @@ val typeKindType = generatedType("UirTypeKind")
 val dimKindType = generatedType("UirDimKind")
 val attrKindType = generatedType("UirAttrKind")
 val blockKindType = generatedType("UirBlockKind")
+val opKindType = generatedType("UirOpKind")
 
 val transformInPlaceImport = ArbitraryImportable(VISITOR_PACKAGE, "transformInplace")
 

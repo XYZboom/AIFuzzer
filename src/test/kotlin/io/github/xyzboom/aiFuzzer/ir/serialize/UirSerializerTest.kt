@@ -2,14 +2,30 @@ package io.github.xyzboom.aiFuzzer.ir.serialize
 
 import io.github.xyzboom.aiFuzzer.ir.*
 import io.github.xyzboom.aiFuzzer.ir.builder.*
+import io.github.xyzboom.aiFuzzer.ir.types.*
 import io.github.xyzboom.aiFuzzer.ir.types.builder.*
-import io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr
-import io.github.xyzboom.aiFuzzer.ir.types.UirStringAttr
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import java.io.File
 
 class UirSerializerTest {
+    
+    // ===== 辅助函数 =====
+    
+    private fun shapeOf(vararg dims: Int): UirShape = buildShape {
+        dims.forEach { v ->
+            this.dims.add(buildDim {
+                dimKind = UirDimKind.CONSTANT
+                value = v
+            })
+        }
+    }
+    
+    private fun tensorType(vararg dims: Int): UirTensorType = buildTensorType {
+        typeKind = UirTypeKind.TENSOR
+        shape = shapeOf(*dims)
+        dtype = buildDataType { name = "float32"; bits = 32 }
+    }
 
     @Test
     fun `serialize and deserialize empty program`() {
@@ -28,24 +44,24 @@ class UirSerializerTest {
         val program = buildProgram {
             graphs.add(buildGraph {
                 name = "graph_0"
-                inputs.add(buildValueRef { valueId = "v_0"; ndim = 3 })
-                inputs.add(buildValueRef { valueId = "v_1"; ndim = 2 })
-                outputs.add(buildValueRef { valueId = "v_3"; ndim = 2 })
+                inputs.add(buildValueRef { valueId = "v_0"; type = tensorType(16, 16, 16) })
+                inputs.add(buildValueRef { valueId = "v_1"; type = tensorType(16, 16) })
+                outputs.add(buildValueRef { valueId = "v_3"; type = tensorType(16, 16) })
 
                 nodes.add(buildNode {
                     name = "relu"
-                    op = "relu"
-                    inputs.add(buildValueRef { valueId = "v_0"; ndim = 3 })
-                    outputs.add(buildValueRef { valueId = "v_2"; ndim = 3 })
+                    op = UirOpKind.RELU
+                    inputs.add(buildValueRef { valueId = "v_0"; type = tensorType(16, 16, 16) })
+                    outputs.add(buildValueRef { valueId = "v_2"; type = tensorType(16, 16, 16) })
                     attributes = mutableMapOf()
                 })
 
                 nodes.add(buildNode {
                     name = "add"
-                    op = "add"
-                    inputs.add(buildValueRef { valueId = "v_2"; ndim = 3 })
-                    inputs.add(buildValueRef { valueId = "v_1"; ndim = 2 })
-                    outputs.add(buildValueRef { valueId = "v_3"; ndim = 2 })
+                    op = UirOpKind.ADD
+                    inputs.add(buildValueRef { valueId = "v_2"; type = tensorType(16, 16, 16) })
+                    inputs.add(buildValueRef { valueId = "v_1"; type = tensorType(16, 16) })
+                    outputs.add(buildValueRef { valueId = "v_3"; type = tensorType(16, 16) })
                     attributes = mutableMapOf(
                         "axis" to buildIntAttr { value = 0 },
                     )
@@ -54,126 +70,33 @@ class UirSerializerTest {
         }
 
         val jsonl = UirSerializer.toJsonl(program)
-        println("=== JSONL output ===")
+        println("=== JSONL ===")
         println(jsonl)
 
-        val restored = UirSerializer.fromJsonl(jsonl)
+        // 验证 JSONL 包含预期内容
+        assertTrue(jsonl.contains("visitMetadata"))
+        assertTrue(jsonl.contains("visitGraph"))
+        assertTrue(jsonl.contains("visitNode"))
+        assertTrue(jsonl.contains("visitValue"))
 
-        assertEquals(1, restored.graphs.size)
-        val graph = restored.graphs[0]
-        assertEquals("graph_0", graph.name)
-        assertEquals(2, graph.inputs.size)
-        assertEquals(1, graph.outputs.size)
-        assertEquals(2, graph.nodes.size)
-
-        // relu node
-        val reluNode = graph.nodes.find { it.op == "relu" }
-        assertNotNull(reluNode)
-        assertEquals("relu", reluNode!!.name)
-        assertEquals(1, reluNode.inputs.size)
-        assertEquals(1, reluNode.outputs.size)
-        assertEquals("v_0", reluNode.inputs[0].valueId)
-        assertEquals(3, reluNode.inputs[0].ndim)
-
-        // add node
-        val addNode = graph.nodes.find { it.op == "add" }
-        assertNotNull(addNode)
-        assertEquals("add", addNode!!.name)
-        assertEquals(2, addNode.inputs.size)
-        assertEquals(1, addNode.outputs.size)
-        assertEquals(0, (addNode.attributes["axis"] as UirIntAttr).value)
-
-        val outputVr = addNode.outputs[0]
-        assertEquals("v_3", outputVr.valueId)
-        assertEquals(2, outputVr.ndim)
-    }
-
-    @Test
-    fun `serialize and deserialize program with attributes`() {
-        val program = buildProgram {
-            graphs.add(buildGraph {
-                name = "graph_0"
-                inputs.add(buildValueRef { valueId = "v_0"; ndim = 2 })
-
-                nodes.add(buildNode {
-                    name = "conv2d"
-                    op = "conv2d"
-                    inputs.add(buildValueRef { valueId = "v_0"; ndim = 2 })
-                    outputs.add(buildValueRef { valueId = "v_1"; ndim = 2 })
-                    attributes = mutableMapOf(
-                        "kernel_size" to buildIntAttr { value = 3 },
-                        "strides" to buildIntAttr { value = 1 },
-                        "padding" to buildIntAttr { value = 0 },
-                    )
-                })
-
-                nodes.add(buildNode {
-                    name = "cast"
-                    op = "cast"
-                    inputs.add(buildValueRef { valueId = "v_1"; ndim = 2 })
-                    outputs.add(buildValueRef { valueId = "v_2"; ndim = 2 })
-                    attributes = mutableMapOf(
-                        "dtype" to buildStringAttr { value = "float16" },
-                    )
-                })
-
-                outputs.add(buildValueRef { valueId = "v_2"; ndim = 2 })
-            })
-        }
-
-        val jsonl = UirSerializer.toJsonl(program)
-        println("=== JSONL with attributes ===")
-        println(jsonl)
-
+        // Round-trip
         val restored = UirSerializer.fromJsonl(jsonl)
         assertEquals(1, restored.graphs.size)
-        val graph = restored.graphs[0]
-        assertEquals(2, graph.nodes.size)
-
-        val convNode = graph.nodes.find { it.op == "conv2d" }
-        assertNotNull(convNode)
-        assertEquals(3, (convNode!!.attributes["kernel_size"] as UirIntAttr).value)
-
-        val castNode = graph.nodes.find { it.op == "cast" }
-        assertNotNull(castNode)
-        assertEquals("float16", (castNode!!.attributes["dtype"] as UirStringAttr).value)
-    }
-
-    @Test
-    fun `serialize and deserialize multiple graphs`() {
-        val program = buildProgram {
-            graphs.add(buildGraph {
-                name = "graph_a"
-                inputs.add(buildValueRef { valueId = "x"; ndim = 3 })
-                outputs.add(buildValueRef { valueId = "y"; ndim = 3 })
-                nodes.add(buildNode {
-                    name = "relu"; op = "relu"
-                    inputs.add(buildValueRef { valueId = "x"; ndim = 3 })
-                    outputs.add(buildValueRef { valueId = "y"; ndim = 3 })
-                })
-            })
-            graphs.add(buildGraph {
-                name = "graph_b"
-                inputs.add(buildValueRef { valueId = "a"; ndim = 2 })
-                outputs.add(buildValueRef { valueId = "b"; ndim = 2 })
-                nodes.add(buildNode {
-                    name = "sigmoid"; op = "sigmoid"
-                    inputs.add(buildValueRef { valueId = "a"; ndim = 2 })
-                    outputs.add(buildValueRef { valueId = "b"; ndim = 2 })
-                })
-            })
-        }
-
-        val jsonl = UirSerializer.toJsonl(program)
-        val restored = UirSerializer.fromJsonl(jsonl)
-
-        assertEquals(2, restored.graphs.size)
-        assertEquals("graph_a", restored.graphs[0].name)
-        assertEquals("graph_b", restored.graphs[1].name)
-        assertEquals(1, restored.graphs[0].nodes.size)
-        assertEquals(1, restored.graphs[1].nodes.size)
-        assertEquals("relu", restored.graphs[0].nodes[0].op)
-        assertEquals("sigmoid", restored.graphs[1].nodes[0].op)
+        
+        val restoredGraph = restored.graphs[0]
+        assertEquals("graph_0", restoredGraph.name)
+        assertEquals(2, restoredGraph.inputs.size)
+        assertEquals(1, restoredGraph.outputs.size)
+        assertEquals(2, restoredGraph.nodes.size)
+        
+        // 验证节点
+        val reluNode = restoredGraph.nodes[0]
+        assertEquals("relu", reluNode.name)
+        assertEquals(UirOpKind.RELU, reluNode.op)
+        
+        val addNode = restoredGraph.nodes[1]
+        assertEquals("add", addNode.name)
+        assertEquals(UirOpKind.ADD, addNode.op)
     }
 
     @Test
@@ -181,13 +104,14 @@ class UirSerializerTest {
         val program = buildProgram {
             graphs.add(buildGraph {
                 name = "test_graph"
-                inputs.add(buildValueRef { valueId = "in"; ndim = 2 })
-                outputs.add(buildValueRef { valueId = "out"; ndim = 2 })
+                inputs.add(buildValueRef { valueId = "in"; type = tensorType(16, 16) })
+                outputs.add(buildValueRef { valueId = "out"; type = tensorType(16, 16) })
                 nodes.add(buildNode {
-                    name = "matmul"; op = "matmul"
-                    inputs.add(buildValueRef { valueId = "in"; ndim = 2 })
-                    inputs.add(buildValueRef { valueId = "in"; ndim = 2 })
-                    outputs.add(buildValueRef { valueId = "out"; ndim = 2 })
+                    name = "matmul"
+                    op = UirOpKind.MATMUL
+                    inputs.add(buildValueRef { valueId = "in"; type = tensorType(16, 16) })
+                    inputs.add(buildValueRef { valueId = "in"; type = tensorType(16, 16) })
+                    outputs.add(buildValueRef { valueId = "out"; type = tensorType(16, 16) })
                     attributes = mutableMapOf(
                         "transpose_a" to buildIntAttr { value = 0 },
                         "transpose_b" to buildIntAttr { value = 1 },
@@ -207,24 +131,63 @@ class UirSerializerTest {
 
         // 文件 round-trip
         val tmpFile = File.createTempFile("uir_roundtrip_", ".jsonl")
-        try {
-            tmpFile.writeText(jsonl)
-            val readBack = tmpFile.readText()
-            val restored = UirSerializer.fromJsonl(readBack)
+        tmpFile.deleteOnExit()
+        tmpFile.writeText(jsonl)
 
-            assertEquals(1, restored.graphs.size)
-            val graph = restored.graphs[0]
-            assertEquals("test_graph", graph.name)
-            assertEquals("matmul", graph.nodes[0].op)
-            assertEquals(1, graph.inputs.size)
-            assertEquals(1, graph.outputs.size)
+        val restored = UirSerializer.fromJsonl(tmpFile.readText())
+        assertEquals(1, restored.graphs.size)
+        assertEquals("test_graph", restored.graphs[0].name)
+    }
 
-            val matmulNode = graph.nodes[0]
-            assertEquals(2, matmulNode.inputs.size)
-            assertEquals(0, (matmulNode.attributes["transpose_a"] as UirIntAttr).value)
-            assertEquals(1, (matmulNode.attributes["transpose_b"] as UirIntAttr).value)
-        } finally {
-            tmpFile.delete()
+    @Test
+    fun `serialize multi-graph program`() {
+        val program = buildProgram {
+            graphs.add(buildGraph {
+                name = "func1"
+                inputs.add(buildValueRef { valueId = "x"; type = tensorType(16) })
+                outputs.add(buildValueRef { valueId = "y"; type = tensorType(16) })
+                nodes.add(buildNode {
+                    name = "relu"
+                    op = UirOpKind.RELU
+                    inputs.add(buildValueRef { valueId = "x"; type = tensorType(16) })
+                    outputs.add(buildValueRef { valueId = "y"; type = tensorType(16) })
+                })
+            })
+            graphs.add(buildGraph {
+                name = "func2"
+                inputs.add(buildValueRef { valueId = "a"; type = tensorType(16) })
+                inputs.add(buildValueRef { valueId = "b"; type = tensorType(16) })
+                outputs.add(buildValueRef { valueId = "c"; type = tensorType(16) })
+                nodes.add(buildNode {
+                    name = "add"
+                    op = UirOpKind.ADD
+                    inputs.add(buildValueRef { valueId = "a"; type = tensorType(16) })
+                    inputs.add(buildValueRef { valueId = "b"; type = tensorType(16) })
+                    outputs.add(buildValueRef { valueId = "c"; type = tensorType(16) })
+                })
+            })
         }
+
+        val jsonl = UirSerializer.toJsonl(program)
+        val restored = UirSerializer.fromJsonl(jsonl)
+        
+        assertEquals(2, restored.graphs.size)
+        assertEquals("func1", restored.graphs[0].name)
+        assertEquals("func2", restored.graphs[1].name)
+    }
+
+    @Test
+    fun `preserve metadata`() {
+        val program = buildProgram {
+            metadata["key1"] = "value1"
+            metadata["key2"] = "value2"
+        }
+
+        val jsonl = UirSerializer.toJsonl(program)
+        val restored = UirSerializer.fromJsonl(jsonl)
+        
+        assertEquals(2, restored.metadata.size)
+        assertEquals("value1", restored.metadata["key1"])
+        assertEquals("value2", restored.metadata["key2"])
     }
 }

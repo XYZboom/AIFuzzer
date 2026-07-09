@@ -8,6 +8,7 @@ import io.github.xyzboom.aiFuzzer.tree.generator.attrKindType
 import io.github.xyzboom.aiFuzzer.tree.generator.blockKindType
 import io.github.xyzboom.aiFuzzer.tree.generator.dimKindType
 import io.github.xyzboom.aiFuzzer.tree.generator.generatedType
+import io.github.xyzboom.aiFuzzer.tree.generator.opKindType
 import io.github.xyzboom.aiFuzzer.tree.generator.typeKindType
 import org.jetbrains.kotlin.generators.tree.ImplementationKind
 import org.jetbrains.kotlin.generators.tree.StandardTypes
@@ -37,7 +38,7 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
 
     val node: Element by element(Element.Kind.Other, name = "Node") {
         parent(namedElement)
-        +field("op", StandardTypes.string, isChild = false)
+        +field("op", opKindType, isChild = false)
         +listField("inputs", valueRef)
         +listField("outputs", valueRef)
         +field("attributes", attributeMap, isChild = false)
@@ -45,9 +46,7 @@ object TreeBuilder : AbstractElementConfigurator<Element, Field, Element.Kind>()
 
     val valueRef: Element by element(Element.Kind.Other, name = "ValueRef") {
         +field("valueId", StandardTypes.string, isChild = false)
-        +field("ndim", StandardTypes.int, isChild = false, isMutable = true) {
-            defaultValueInBuilder = "1"
-        }
+        +field("type", tensorType, isChild = false)
     }
 
     val namedElement: Element by element(Element.Kind.Other, name = "NamedElement") {

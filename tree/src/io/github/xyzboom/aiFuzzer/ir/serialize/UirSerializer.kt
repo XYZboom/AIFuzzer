@@ -17,7 +17,7 @@ import kotlinx.serialization.json.*
  *
  *   {"kind":"visitMetadata","graphCount":1,"graphNames":["graph_0"]}
  *   {"kind":"visitGraph","graph":0,"name":"graph_0","inputIds":["v_0"],"outputIds":["v_1"]}
- *   {"kind":"visitNode","graph":0,"name":"relu","op":"relu","inputIds":["v_0"],"outputIds":["v_2"],"attrs":{}}
+ *   {"kind":"visitNode","graph":0,"name":"relu","op":"RELU","inputIds":["v_0"],"outputIds":["v_2"],"attrs":{}}
  *   {"kind":"visitValue","id":"v_0","ndim":3}
  *
  * 使用 visitValue 将 valueRef 平面化，visitMetadata/visitGraph 作为结构标记，
@@ -58,7 +58,7 @@ object UirSerializer {
                 lines.add(encode(buildJsonObject {
                     put("kind", "visitValue")
                     put("id", vr.valueId)
-                    put("ndim", vr.ndim)
+                    put("ndim", vr.type.shape.dims.size)
                 }))
             }
         }
@@ -83,7 +83,7 @@ object UirSerializer {
                     put("kind", "visitNode")
                     put("graph", gidx)
                     put("name", node.name)
-                    put("op", node.op)
+                    put("op", node.op.name)
                     put("inputIds", buildJsonArray { node.inputs.forEach { add(it.valueId) } })
                     put("outputIds", buildJsonArray { node.outputs.forEach { add(it.valueId) } })
                     put("attrs", buildJsonObject {
@@ -182,13 +182,27 @@ object UirSerializer {
                 val graphInputs = ge.inputIds.map { id ->
                     buildValueRef {
                         valueId = id
-                        ndim = valueMap[id] ?: 1
+                        type = buildTensorType {
+                            typeKind = UirTypeKind.TENSOR
+                            shape = buildShape {
+                                val ndim = valueMap[id] ?: 1
+                                repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
+                            }
+                            dtype = buildDataType { name = "float32"; bits = 32 }
+                        }
                     }
                 }
                 val graphOutputs = ge.outputIds.map { id ->
                     buildValueRef {
                         valueId = id
-                        ndim = valueMap[id] ?: 1
+                        type = buildTensorType {
+                            typeKind = UirTypeKind.TENSOR
+                            shape = buildShape {
+                                val ndim = valueMap[id] ?: 1
+                                repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
+                            }
+                            dtype = buildDataType { name = "float32"; bits = 32 }
+                        }
                     }
                 }
 
@@ -197,13 +211,27 @@ object UirSerializer {
                     val nodeInputs = ne.inputIds.map { id ->
                         buildValueRef {
                             valueId = id
-                            ndim = valueMap[id] ?: error("Unknown valueRef '$id' referenced by node '${ne.name}'")
+                            type = buildTensorType {
+                                typeKind = UirTypeKind.TENSOR
+                                shape = buildShape {
+                                    val ndim = valueMap[id] ?: error("Unknown valueRef '$id' referenced by node '${ne.name}'")
+                                    repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
+                                }
+                                dtype = buildDataType { name = "float32"; bits = 32 }
+                            }
                         }
                     }
                     val nodeOutputs = ne.outputIds.map { id ->
                         buildValueRef {
                             valueId = id
-                            ndim = valueMap[id] ?: error("Unknown valueRef '$id' referenced by node '${ne.name}'")
+                            type = buildTensorType {
+                                typeKind = UirTypeKind.TENSOR
+                                shape = buildShape {
+                                    val ndim = valueMap[id] ?: error("Unknown valueRef '$id' referenced by node '${ne.name}'")
+                                    repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
+                                }
+                                dtype = buildDataType { name = "float32"; bits = 32 }
+                            }
                         }
                     }
                     val attrs = mutableMapOf<String, Attribute>()
@@ -222,7 +250,7 @@ object UirSerializer {
 
                     buildNode {
                         name = ne.name
-                        op = ne.op
+                        op = UirOpKind.valueOf(ne.op)
                         nodeInputs.forEach { inputs.add(it) }
                         nodeOutputs.forEach { outputs.add(it) }
                         this.attributes = attrs

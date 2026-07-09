@@ -9,6 +9,7 @@ package io.github.xyzboom.aiFuzzer.ir.builder
 
 import io.github.xyzboom.aiFuzzer.ir.Attribute
 import io.github.xyzboom.aiFuzzer.ir.UirNode
+import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import io.github.xyzboom.aiFuzzer.ir.UirValueRef
 import io.github.xyzboom.aiFuzzer.ir.impl.UirNodeImpl
 import kotlin.contracts.*
@@ -16,7 +17,7 @@ import kotlin.contracts.*
 @BuilderDsl
 class UirNodeBuilder {
     lateinit var name: String
-    lateinit var op: String
+    lateinit var op: UirOpKind
     val inputs: MutableList<UirValueRef> = mutableListOf()
     val outputs: MutableList<UirValueRef> = mutableListOf()
     var attributes: MutableMap<String, Attribute> = mutableMapOf()

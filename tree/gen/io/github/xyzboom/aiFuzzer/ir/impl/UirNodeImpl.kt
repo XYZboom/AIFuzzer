@@ -9,6 +9,7 @@ package io.github.xyzboom.aiFuzzer.ir.impl
 
 import io.github.xyzboom.aiFuzzer.ir.Attribute
 import io.github.xyzboom.aiFuzzer.ir.UirNode
+import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import io.github.xyzboom.aiFuzzer.ir.UirValueRef
 import io.github.xyzboom.aiFuzzer.ir.visitors.UirTransformer
 import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
@@ -16,7 +17,7 @@ import io.github.xyzboom.aiFuzzer.ir.visitors.transformInplace
 
 internal class UirNodeImpl(
     override var name: String,
-    override var op: String,
+    override var op: UirOpKind,
     override var inputs: MutableList<UirValueRef>,
     override var outputs: MutableList<UirValueRef>,
     override var attributes: MutableMap<String, Attribute>,

@@ -9,17 +9,18 @@ package io.github.xyzboom.aiFuzzer.ir.builder
 
 import io.github.xyzboom.aiFuzzer.ir.UirValueRef
 import io.github.xyzboom.aiFuzzer.ir.impl.UirValueRefImpl
+import io.github.xyzboom.aiFuzzer.ir.types.UirTensorType
 import kotlin.contracts.*
 
 @BuilderDsl
 class UirValueRefBuilder {
     lateinit var valueId: String
-    var ndim: Int by kotlin.properties.Delegates.notNull<Int>()
+    lateinit var type: UirTensorType
 
     fun build(): UirValueRef {
         return UirValueRefImpl(
             valueId,
-            ndim,
+            type,
         )
     }
 }
