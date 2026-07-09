@@ -2,7 +2,6 @@ package io.github.xyzboom.aiFuzzer.translator.tvm
 
 import io.github.xyzboom.aiFuzzer.ir.*
 import io.github.xyzboom.aiFuzzer.ir.types.*
-import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitorVoid
 import io.github.xyzboom.aiFuzzer.translator.UirTranslator
 
 /**
@@ -106,7 +105,7 @@ class TvmRelaxTranslator(
     /**
      * 将 UIR 程序翻译为 TVM Relax Python 代码。
      */
-    override fun translate(program: UirProgram): String {
+    override fun translate(element: UirProgram): String {
         val builder = StringBuilder()
         
         // 生成 Python 模板
@@ -122,7 +121,7 @@ class TvmRelaxTranslator(
         builder.appendLine()
         
         // 翻译每个图
-        for ((idx, graph) in program.graphs.withIndex()) {
+        for ((idx, graph) in element.graphs.withIndex()) {
             translateGraph(builder, graph, idx)
         }
         
@@ -130,10 +129,10 @@ class TvmRelaxTranslator(
         builder.appendLine("    return mod")
         builder.appendLine()
         builder.appendLine()
-        builder.appendLine("if __name__ == '__main__':")
-        builder.appendLine("    mod = build_mod()")
-        builder.appendLine("    print('Module built successfully')")
-        builder.appendLine("    # print(mod)")
+        // IMPORTANT: we should not use __name__ == "__main__" guard here, because the daemon will execute this script directly.
+        builder.appendLine("mod = build_mod()")
+        builder.appendLine("print('Module built successfully')")
+        builder.appendLine("# print(mod)")
         
         return builder.toString()
     }
