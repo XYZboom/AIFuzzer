@@ -16,8 +16,7 @@ import java.io.File
 
 fun main(args: Array<String>) {
     val model = TreeBuilder.build()
-    val outputDir = if (args.isNotEmpty()) args[0] else "tree/gen"
-    TreeGenerator(File(outputDir), "README.md").run {
+    TreeGenerator(File("tree/gen"), "README.md").run {
         model.inheritFields()
         detectBaseTransformerTypes(model)
 

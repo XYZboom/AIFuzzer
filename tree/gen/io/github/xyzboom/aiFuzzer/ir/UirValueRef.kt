@@ -5,6 +5,7 @@
 
 package io.github.xyzboom.aiFuzzer.ir
 
+import io.github.xyzboom.aiFuzzer.ir.types.UirTensorType
 import io.github.xyzboom.aiFuzzer.ir.visitors.UirTransformer
 import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
 
@@ -13,7 +14,7 @@ import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
  */
 abstract class UirValueRef : UirElement, UirPureAbstractElement {
     abstract var valueId: String
-    abstract var ndim: Int
+    abstract var type: UirTensorType
 
     override fun <R, D> accept(visitor: UirVisitor<R, D>, data: D): R =
         visitor.visitValueRef(this, data)

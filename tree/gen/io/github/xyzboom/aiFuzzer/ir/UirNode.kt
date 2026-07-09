@@ -13,7 +13,7 @@ import io.github.xyzboom.aiFuzzer.ir.visitors.UirVisitor
  */
 abstract class UirNode : UirNamedElement, UirPureAbstractElement {
     abstract override var name: String
-    abstract var op: String
+    abstract var op: UirOpKind
     abstract var inputs: MutableList<UirValueRef>
     abstract var outputs: MutableList<UirValueRef>
     abstract var attributes: MutableMap<String, Attribute>

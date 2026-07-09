@@ -63,7 +63,7 @@ class UirGeneratorTest {
         val validOps = GeneratorConfig().ops.toSet()
 
         for (node in graph.nodes) {
-            assertTrue(node.op in validOps, "Unknown op: ${node.op}")
+            assertTrue(node.op.name in validOps, "Unknown op: ${node.op}")
         }
     }
 
