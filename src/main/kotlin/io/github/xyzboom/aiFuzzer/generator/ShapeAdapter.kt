@@ -11,7 +11,7 @@ import kotlin.random.Random
  * 
  * 职责：
  * 1. 使用 ShapeInferer 推导每个 ValueRef 的形状
- * 2. 在形状不兼容时插入适配算子（expand_dims/squeeze/reshape）
+ * 2. 在形状推导失败时，尝试自动适配（增加维度）
  * 
  * 注意：这是形状推导的唯一实现点，遵循"单一源头原则"。
  */
@@ -21,32 +21,69 @@ class ShapeAdapter {
      * 适配图的形状。
      * 
      * 流程：
-     * 1. 为图输入分配初始形状（随机生成，遵循语义约束）
-     * 2. 拓扑遍历节点，调用 ShapeInferer 推导输出形状
-     * 3. 如果推导失败（形状不兼容），插入适配算子
+     * 1. 为图输入分配初始形状（随机生成）
+     * 2. 尝试使用 ShapeInferer 推导形状
+     * 3. 如果失败，增加输入维度后重试
+     * 4. 将推导结果填充到每个 ValueRef
      */
     fun adapt(graph: UirGraph, rand: Random) {
+        // 检查图中是否有需要高维输入的算子
+        val needHighDim = graph.nodes.any { it.op in UirOpKind.needNdimGe2 }
+        val hasMatmul = graph.nodes.any { it.op == UirOpKind.MATMUL }
+        
+        // 确定最小 ndim
+        val minNdim = when {
+            hasMatmul -> 2
+            needHighDim -> 2
+            else -> 1
+        }
+        
         // 1. 为图输入分配初始形状
-        for (input in graph.inputs) {
-            input.type.shape = generateRandomShape(rand, minNdim = 1, maxNdim = 4)
+        // 如果有多个输入，确保它们在最后几维上兼容（便于广播）
+        val targetNdim = if (graph.inputs.size > 1) rand.nextInt(2, 4) else rand.nextInt(minNdim, 4)
+        
+        for ((i, input) in graph.inputs.withIndex()) {
+            input.type.shape = generateRandomShape(rand, minNdim = minNdim, maxNdim = targetNdim.coerceAtLeast(minNdim))
         }
         
-        // 2. 使用 ShapeInferer 推导所有形状
-        val shapeMap = try {
-            ShapeInferer.inferGraphShapes(graph)
-        } catch (e: ShapeInferer.ShapeInferenceError) {
-            // 形状推导失败，尝试修复
-            // 简化处理：为失败的节点插入适配算子
-            System.err.println("[ShapeAdapter] Shape inference failed: ${e.message}")
-            return
-        }
+        // 2. 尝试形状推导，如果失败则增加维度重试
+        var attempt = 0
+        val maxAttempts = 5
         
-        // 3. 应用推导出的形状
-        for (node in graph.nodes) {
-            for (output in node.outputs) {
-                val shape = shapeMap[output.valueId]
-                if (shape != null) {
+        while (attempt < maxAttempts) {
+            try {
+                val shapeMap = ShapeInferer.inferGraphShapes(graph)
+                
+                // 3. 应用推导出的形状到每个输出
+                for (node in graph.nodes) {
+                    for (output in node.outputs) {
+                        val shape = shapeMap[output.valueId]
+                            ?: throw IllegalStateException("Shape not found for output ${output.valueId} in node ${node.name}")
+                        output.type.shape = shape
+                    }
+                }
+                
+                // 4. 更新图输出的形状
+                for (output in graph.outputs) {
+                    val shape = shapeMap[output.valueId]
+                        ?: throw IllegalStateException("Shape not found for graph output ${output.valueId}")
                     output.type.shape = shape
+                }
+                
+                // 成功，退出重试循环
+                return
+            } catch (e: ShapeInferer.ShapeInferenceError) {
+                attempt++
+                if (attempt >= maxAttempts) {
+                    throw IllegalStateException("Shape inference failed after $maxAttempts attempts: ${e.message}", e)
+                }
+                
+                // 增加输入维度后重试
+                for (input in graph.inputs) {
+                    val currentNdim = input.type.shape.dims.size
+                    if (currentNdim < 4) {
+                        input.type.shape = generateRandomShape(rand, minNdim = currentNdim + 1, maxNdim = 4)
+                    }
                 }
             }
         }
@@ -54,11 +91,12 @@ class ShapeAdapter {
     
     /**
      * 生成随机形状。
-     *
+     * 
      * 注意：不硬编码维度值，使用随机值测试编译器的各种场景。
      */
     private fun generateRandomShape(rand: Random, minNdim: Int, maxNdim: Int): UirShape {
-        val ndim = rand.nextInt(minNdim, maxNdim + 1)
+        val actualMinNdim = minNdim.coerceIn(1, maxNdim)
+        val ndim = rand.nextInt(actualMinNdim, maxNdim + 1)
         val dims = (0 until ndim).map { i ->
             // 维度值随机，范围 [1, 128]
             // 注意：不使用 0（避免空张量），不硬编码特定值
@@ -70,102 +108,5 @@ class ShapeAdapter {
         }
         
         return buildShape { dims.forEach { dim -> this.dims.add(dim) } }
-    }
-    
-    /**
-     * 验证所有 ValueRef 都有合法形状。
-     */
-    private fun validateShapes(graph: UirGraph) {
-        // 检查图输入
-        for (input in graph.inputs) {
-            validateValueRef(input, "graph input")
-        }
-        
-        // 检查节点输入输出
-        for (node in graph.nodes) {
-            for (input in node.inputs) {
-                validateValueRef(input, "node ${node.name} input")
-            }
-            for (output in node.outputs) {
-                validateValueRef(output, "node ${node.name} output")
-            }
-        }
-        
-        // 检查图输出
-        for (output in graph.outputs) {
-            validateValueRef(output, "graph output")
-        }
-    }
-    
-    private fun validateValueRef(ref: UirValueRef, context: String) {
-        val shape = ref.type.shape
-        if (shape.dims.isEmpty()) {
-            // 0-D 张量是合法的，但需要特殊处理
-            // System.err.println("[ShapeAdapter] Warning: $context has 0-D shape")
-        }
-        
-        for ((i, dim) in shape.dims.withIndex()) {
-            if (dim.dimKind == null) {
-                throw IllegalStateException("$context dim[$i] has null dimKind")
-            }
-        }
-    }
-    
-    /**
-     * 检查形状是否需要适配。
-     * 
-     * 返回需要插入的适配算子列表。
-     */
-    private fun checkNeedAdaptation(
-        node: UirNode,
-        inputValueRefs: Map<String, UirValueRef>
-    ): List<Adaptation> {
-        val adaptations = mutableListOf<Adaptation>()
-        
-        // 检查 MATMUL 的输入维度
-        if (node.op == UirOpKind.MATMUL) {
-            for (input in node.inputs) {
-                val ndim = input.type.shape.dims.size
-                if (ndim < 2) {
-                    // 需要扩维到至少 2-D
-                    adaptations.add(Adaptation(
-                        targetValueId = input.valueId,
-                        requiredNdim = 2,
-                        kind = AdaptationKind.EXPAND
-                    ))
-                }
-            }
-        }
-        
-        // 检查 TRIL/TRIU 的输入维度
-        if (node.op in listOf(UirOpKind.TRIL, UirOpKind.TRIU)) {
-            for (input in node.inputs) {
-                val ndim = input.type.shape.dims.size
-                if (ndim < 2) {
-                    adaptations.add(Adaptation(
-                        targetValueId = input.valueId,
-                        requiredNdim = 2,
-                        kind = AdaptationKind.EXPAND
-                    ))
-                }
-            }
-        }
-        
-        return adaptations
-    }
-    
-    /**
-     * 适配操作。
-     */
-    data class Adaptation(
-        val targetValueId: String,
-        val requiredNdim: Int,
-        val kind: AdaptationKind
-    )
-    
-    enum class AdaptationKind {
-        EXPAND,     // 扩展维度（expand_dims）
-        SQUEEZE,    // 压缩维度（squeeze）
-        RESHAPE     // 重塑形状（reshape）
     }
 }

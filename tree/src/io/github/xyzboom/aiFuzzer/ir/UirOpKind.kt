@@ -90,6 +90,7 @@ enum class UirOpKind {
             TRANSPOSE, BROADCAST_TO,
             TILE, SPLIT,
             STRIDED_SLICE,
+            GATHER,  // GATHER 当作单输入算子（假设 indices 是常量）
         )
 
         /** 双输入算子 */

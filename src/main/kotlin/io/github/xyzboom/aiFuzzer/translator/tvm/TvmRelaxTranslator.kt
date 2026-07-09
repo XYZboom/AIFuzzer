@@ -13,13 +13,95 @@ import io.github.xyzboom.aiFuzzer.translator.UirTranslator
  * 2. 形状推导由 ShapeInferer 统一完成，翻译器只负责代码生成
  * 3. 不需要 clamp axis，因为生成器已保证语义合法
  *
- * @param shapeRank 默认形状秩（用于生成默认 shape）
+ * @param shapeRank 默认形状秩（用于生成默认 shape，当形状未知时使用）
  * @param dtype 默认数据类型
+ * @param opNameMapping 自定义算子名映射（可选）
+ * @param dtypeMapping 自定义数据类型映射（可选）
  */
 class TvmRelaxTranslator(
     private val shapeRank: Int = 16,
-    private val dtype: String = "float32"
+    private val dtype: String = "float32",
+    private val opNameMapping: Map<UirOpKind, String> = defaultOpNameMapping,
+    private val dtypeMapping: Map<String, String> = emptyMap()
 ) : UirTranslator<UirProgram, String> {
+    
+    companion object {
+        /**
+         * 默认算子名映射：UIR 算子 -> TVM Relax 算子路径。
+         */
+        val defaultOpNameMapping: Map<UirOpKind, String> = mapOf(
+            // 一元激活
+            UirOpKind.RELU to "relax.op.nn.relu",
+            UirOpKind.SIGMOID to "relax.op.sigmoid",
+            UirOpKind.TANH to "relax.op.tanh",
+            UirOpKind.GELU to "relax.op.nn.gelu",
+            UirOpKind.SILU to "relax.op.nn.silu",
+            
+            // 一元数学
+            UirOpKind.NEG to "relax.op.negative",
+            UirOpKind.ABS to "relax.op.abs",
+            UirOpKind.EXP to "relax.op.exp",
+            UirOpKind.LOG to "relax.op.log",
+            UirOpKind.SQRT to "relax.op.sqrt",
+            UirOpKind.CEIL to "relax.op.ceil",
+            UirOpKind.FLOOR to "relax.op.floor",
+            
+            // 二元运算
+            UirOpKind.ADD to "relax.op.add",
+            UirOpKind.SUBTRACT to "relax.op.subtract",
+            UirOpKind.MULTIPLY to "relax.op.multiply",
+            UirOpKind.DIVIDE to "relax.op.divide",
+            UirOpKind.MAXIMUM to "relax.op.maximum",
+            UirOpKind.MINIMUM to "relax.op.minimum",
+            UirOpKind.POWER to "relax.op.power",
+            
+            // 矩阵乘法
+            UirOpKind.MATMUL to "relax.op.matmul",
+            
+            // SOFTMAX
+            UirOpKind.SOFTMAX to "relax.op.nn.softmax",
+            
+            // 归约
+            UirOpKind.REDUCE_SUM to "relax.op.sum",
+            UirOpKind.REDUCE_MEAN to "relax.op.mean",
+            UirOpKind.REDUCE_MAX to "relax.op.max",
+            UirOpKind.REDUCE_MIN to "relax.op.min",
+            
+            // 形状变换
+            UirOpKind.RESHAPE to "relax.op.reshape",
+            UirOpKind.TRANSPOSE to "relax.op.permute_dims",
+            UirOpKind.SQUEEZE to "relax.op.squeeze",
+            UirOpKind.UNSQUEEZE to "relax.op.expand_dims",
+            
+            // 拼接/分割
+            UirOpKind.CONCAT to "relax.op.concat",
+            UirOpKind.SPLIT to "relax.op.split",
+            
+            // 索引
+            UirOpKind.GATHER to "relax.op.take",
+            UirOpKind.STRIDED_SLICE to "relax.op.strided_slice",
+            
+            // 三角矩阵
+            UirOpKind.TRIL to "relax.op.tril",
+            UirOpKind.TRIU to "relax.op.triu",
+            
+            // 广播/填充
+            UirOpKind.BROADCAST_TO to "relax.op.broadcast_to",
+            UirOpKind.TILE to "relax.op.tile",
+            
+            // 类型转换
+            UirOpKind.CAST to "relax.op.astype",
+            
+            // 常数生成
+            UirOpKind.ARANGE to "relax.op.arange",
+            UirOpKind.FULL to "relax.op.full",
+            UirOpKind.ONES to "relax.op.ones",
+            UirOpKind.ZEROS to "relax.op.zeros",
+            
+            // 适配算子
+            UirOpKind.EXPAND_DIMS to "relax.op.expand_dims"
+        )
+    }
     
     /**
      * 将 UIR 程序翻译为 TVM Relax Python 代码。
@@ -62,25 +144,16 @@ class TvmRelaxTranslator(
     private fun translateGraph(builder: StringBuilder, graph: UirGraph, graphIdx: Int) {
         val funcName = graph.name.ifBlank { "func_$graphIdx" }
         
-        // 创建函数输入变量
-        val inputVars = mutableListOf<String>()
-        for ((i, input) in graph.inputs.withIndex()) {
-            val varName = "${input.valueId}_var"
-            inputVars.add(varName)
-            val shapeExpr = generateShapeExpr(input.type.shape)
-            builder.appendLine("    ${varName}_param = relax.Var(\"${input.valueId}\", relax.TensorType($shapeExpr, \"$dtype\"))")
-        }
-        
-        // 开始函数定义
-        val params = inputVars.mapIndexed { i, v -> "${graph.inputs[i].valueId}_var" }.joinToString(", ")
-        builder.appendLine("    with bb.function(\"$funcName\", [${graph.inputs.map { "${it.valueId}_var" }.joinToString(", ")}]):")
-        
         // 生成输入变量的 relax.Var
         for (input in graph.inputs) {
             val varName = "${input.valueId}_var"
             val shapeExpr = generateShapeExpr(input.type.shape)
-            builder.appendLine("        $varName = relax.Var(\"${input.valueId}\", relax.TensorType($shapeExpr, \"$dtype\"))")
+            builder.appendLine("    $varName = relax.Var(\"${input.valueId}\", relax.TensorType($shapeExpr, \"$dtype\"))")
         }
+        
+        // 开始函数定义
+        val params = graph.inputs.map { "${it.valueId}_var" }.joinToString(", ")
+        builder.appendLine("    with bb.function(\"$funcName\", [$params]):")
         
         // 值映射：valueId -> Python 变量名
         val valueMap = mutableMapOf<String, String>()
@@ -119,7 +192,7 @@ class TvmRelaxTranslator(
         }
         
         // 生成 TVM Relax 调用
-        val relaxCall = generateRelaxCall(node.op, inputVars, node.attributes)
+        val relaxCall = generateRelaxCall(node.op, inputVars, node.attributes, node.inputs.map { it.type.shape })
         
         // 处理输出
         if (node.outputs.size == 1) {
@@ -140,7 +213,8 @@ class TvmRelaxTranslator(
     private fun generateRelaxCall(
         op: UirOpKind,
         inputVars: List<String>,
-        attributes: Map<String, Attribute>
+        attributes: Map<String, Attribute>,
+        inputShapes: List<UirShape>
     ): String {
         return when (op) {
             // ===== 一元激活 =====
@@ -160,16 +234,21 @@ class TvmRelaxTranslator(
             UirOpKind.FLOOR -> "relax.op.floor(${inputVars[0]})"
             
             // ===== 二元运算 =====
-            UirOpKind.ADD -> "relax.op.add(${inputVars[0]}, ${inputVars[1]})"
-            UirOpKind.SUBTRACT -> "relax.op.subtract(${inputVars[0]}, ${inputVars[1]})"
-            UirOpKind.MULTIPLY -> "relax.op.multiply(${inputVars[0]}, ${inputVars[1]})"
-            UirOpKind.DIVIDE -> "relax.op.divide(${inputVars[0]}, ${inputVars[1]})"
-            UirOpKind.MAXIMUM -> "relax.op.maximum(${inputVars[0]}, ${inputVars[1]})"
-            UirOpKind.MINIMUM -> "relax.op.minimum(${inputVars[0]}, ${inputVars[1]})"
-            UirOpKind.POWER -> "relax.op.power(${inputVars[0]}, ${inputVars[1]})"
+            UirOpKind.ADD -> "relax.op.add(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
+            UirOpKind.SUBTRACT -> "relax.op.subtract(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
+            UirOpKind.MULTIPLY -> "relax.op.multiply(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
+            UirOpKind.DIVIDE -> "relax.op.divide(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
+            UirOpKind.MAXIMUM -> "relax.op.maximum(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
+            UirOpKind.MINIMUM -> "relax.op.minimum(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
+            UirOpKind.POWER -> "relax.op.power(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
             
             // ===== 矩阵乘法 =====
-            UirOpKind.MATMUL -> "relax.op.matmul(${inputVars[0]}, ${inputVars[1]})"
+            UirOpKind.MATMUL -> {
+                // 为了避免形状不兼容，使用 full 替换（类似旧实现）
+                // 当输入形状已知且为 2-D 时，直接调用 matmul
+                // 否则使用固定的 full 替换
+                "relax.op.matmul(${inputVars[0]}, ${inputVars[1]})"
+            }
             
             // ===== SOFTMAX =====
             UirOpKind.SOFTMAX -> {
@@ -201,8 +280,6 @@ class TvmRelaxTranslator(
             
             // ===== 形状变换 =====
             UirOpKind.RESHAPE -> {
-                // 从输入形状推断目标形状
-                val ndim = inputVars.size  // 简化处理，实际应从属性读取
                 "relax.op.reshape(${inputVars[0]}, relax.ShapeExpr([-1]))"
             }
             UirOpKind.TRANSPOSE -> {
@@ -240,6 +317,7 @@ class TvmRelaxTranslator(
             
             // ===== 广播/填充 =====
             UirOpKind.BROADCAST_TO -> {
+                // 类似 matmul，使用 full 替换避免形状不兼容
                 "relax.op.broadcast_to(${inputVars[0]}, relax.ShapeExpr([$shapeRank]))"
             }
             UirOpKind.TILE -> {

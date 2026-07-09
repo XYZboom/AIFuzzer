@@ -61,14 +61,14 @@ class LogicGenerator(private val config: LogicGraphConfig) {
         
         // 2. 生成节点
         val numNodes = rand.nextInt(config.minNodesPerGraph, config.maxNodesPerGraph + 1)
-        val nodes = mutableListOf<UirNode>()
+        val nodeList = mutableListOf<UirNode>()
         val liveTips = mutableMapOf<Int, String>()  // branchId -> tip valueId
         var currentBranch = 0
         liveTips[currentBranch] = availableValues.last()
         
         repeat(numNodes) { nodeIndex ->
             val node = generateNode(nodeIndex, availableValues, liveTips, currentBranch)
-            nodes.add(node)
+            nodeList.add(node)
             
             // 更新可用值
             for (output in node.outputs) {
@@ -95,24 +95,29 @@ class LogicGenerator(private val config: LogicGraphConfig) {
             this.name = name
             graphInputs.forEach { inputs.add(it) }
             graphOutputs.forEach { outputs.add(it) }
-            nodes.forEach { nodes.add(it) }
+            nodeList.forEach { nodes.add(it) }
         }
     }
     
     private fun generateNode(
         nodeIndex: Int,
-        availableValues: List<String>,
+        availableValues: MutableList<String>,
         liveTips: Map<Int, String>,
         currentBranch: Int
     ): UirNode {
         // 1. 选择算子（随机）
-        val op = config.ops.random(rand)
+        // 根据可用值数量选择合适的算子
+        val op = when {
+            availableValues.isEmpty() -> config.ops.filter { it in UirOpKind.constantOps }.random(rand)
+            availableValues.size == 1 -> config.ops.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.random(rand)
+            else -> config.ops.random(rand)
+        }
         
         // 2. 确定输入数量
         val numInputs = when (op) {
             in UirOpKind.constantOps -> 0
             in UirOpKind.singleInputOps -> 1
-            in UirOpKind.binaryInputOps -> 2
+            in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)  // 最多取可用值数量
             else -> 1
         }
         
@@ -156,6 +161,10 @@ class LogicGenerator(private val config: LogicGraphConfig) {
         
         // 优先从当前分支的 tip 选择
         val tipValue = liveTips[currentBranch]
+        
+        // 特殊约束：某些算子需要特定 ndim 的输入
+        // 由于 LogicGenerator 阶段没有形状信息，这里只能做简单的输入数量约束
+        // 具体的形状约束由 ShapeAdapter 通过 ShapeInferer 处理
         
         return when {
             availableValues.isEmpty() -> emptyList()
