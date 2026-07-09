@@ -81,7 +81,6 @@ class FuzzingPipeline(
             // 串行模式
             for (i in 0 until count) {
                 val seed = startSeed + i
-                System.err.println("[${i + 1}/$count] seed=$seed")
                 try {
                     val results = runOnce(seed)
                     allResults.addAll(results)
