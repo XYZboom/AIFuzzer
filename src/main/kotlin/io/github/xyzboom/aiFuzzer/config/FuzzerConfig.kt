@@ -46,8 +46,6 @@ data class FuzzerGenConfig(
             maxNodesPerGraph = maxNodesPerGraph,
             minInputs = minInputs,
             maxInputs = maxInputs,
-            minInputNdim = minInputNdim,
-            maxInputNdim = maxInputNdim,
             graphCount = graphCount,
             ops = resolvedOps,
         )

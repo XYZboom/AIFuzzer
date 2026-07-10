@@ -38,8 +38,6 @@ class NewOpFuzzingTest {
                 ops = testOps,
                 minNodesPerGraph = 2,
                 maxNodesPerGraph = 5,
-                minInputNdim = 1,
-                maxInputNdim = 2,
             ))
             val program = gen.generate()
             val pythonCode = translator.translate(program)

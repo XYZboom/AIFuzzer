@@ -1,5 +1,6 @@
 package io.github.xyzboom.aiFuzzer.generator
 
+import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 
@@ -60,10 +61,10 @@ class UirGeneratorTest {
         val gen = UirGenerator(GeneratorConfig(seed = 99))
         val program = gen.generate()
         val graph = program.graphs.first()
-        val validOps = GeneratorConfig().ops.toSet()
+        val validOps = UirOpKind.values().toSet()
 
         for (node in graph.nodes) {
-            assertTrue(node.op.name in validOps, "Unknown op: ${node.op}")
+            assertTrue(node.op in validOps, "Unknown op: ${node.op}")
         }
     }
 
