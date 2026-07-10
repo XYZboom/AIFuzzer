@@ -21,6 +21,8 @@ data class LogicGraphConfig(
     val graphCount: Int = 1,
     val minNdim: Int = 2,  // 至少 2D
     val maxNdim: Int = 4,
+    val dtype: String = "float32",
+    val dtypeBits: Int = 32,
 )
 
 /**
@@ -37,7 +39,13 @@ class LogicGenerator(private val config: LogicGraphConfig) {
     
     // 形状管理：valueId -> shape
     private val valueShapes = mutableMapOf<String, UirShape>()
-    
+
+    /** 创建 dtype（从 config.dtype/config.dtypeBits） */
+    private fun mkDataType(): UirDataType = buildDataType {
+        this.name = config.dtype
+        this.bits = config.dtypeBits
+    }
+
     /**
      * 生成完整的 UIR 程序（逻辑图，无形状）。
      */
@@ -69,10 +77,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
                     this.shape = shape
-                    this.dtype = buildDataType {
-                        this.name = "float32"
-                        this.bits = 32
-                    }
+                    this.dtype = mkDataType()
                 }
             }
         }
@@ -109,10 +114,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
                     this.shape = valueShapes[valueId] ?: buildShape { }
-                    this.dtype = buildDataType {
-                        this.name = "float32"
-                        this.bits = 32
-                    }
+                    this.dtype = mkDataType()
                 }
             }
         }
@@ -165,10 +167,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
                     this.shape = shape
-                    this.dtype = buildDataType {
-                        this.name = "float32"
-                        this.bits = 32
-                    }
+                    this.dtype = mkDataType()
                 }
             }
         }
@@ -222,10 +221,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                     this.type = buildTensorType {
                         this.typeKind = UirTypeKind.TENSOR
                         this.shape = shape2Existing
-                        this.dtype = buildDataType {
-                            this.name = "float32"
-                            this.bits = 32
-                        }
+                        this.dtype = mkDataType()
                     }
                 }
             } else {
@@ -236,10 +232,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                     this.type = buildTensorType {
                         this.typeKind = UirTypeKind.TENSOR
                         this.shape = shape2Existing
-                        this.dtype = buildDataType {
-                            this.name = "float32"
-                            this.bits = 32
-                        }
+                        this.dtype = mkDataType()
                     }
                 }
                 
@@ -251,10 +244,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
                     this.shape = shape1
-                    this.dtype = buildDataType {
-                        this.name = "float32"
-                        this.bits = 32
-                    }
+                    this.dtype = mkDataType()
                 }
             }
             
@@ -274,10 +264,7 @@ class LogicGenerator(private val config: LogicGraphConfig) {
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
                     this.shape = valueShapes[valueId] ?: buildShape { }
-                    this.dtype = buildDataType {
-                        this.name = "float32"
-                        this.bits = 32
-                    }
+                    this.dtype = mkDataType()
                 }
             }
         }

@@ -17,6 +17,8 @@ data class GeneratorConfig(
     val branchProbability: Double = 0.3,
     val ops: List<String> = DefaultOps.map { it.name },
     val graphCount: Int = 1,
+    val dtype: String = "float32",
+    val dtypeBits: Int = 32,
 )
 
 /**
@@ -40,6 +42,8 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             branchProbability = config.branchProbability,
             ops = opsEnum,
             graphCount = config.graphCount,
+            dtype = config.dtype,
+            dtypeBits = config.dtypeBits,
         )
     )
 
