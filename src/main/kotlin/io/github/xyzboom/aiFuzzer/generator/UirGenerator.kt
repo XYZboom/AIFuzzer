@@ -49,6 +49,12 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
     // 形状管理：valueId -> shape
     private val valueShapes = mutableMapOf<String, UirShape>()
 
+    /** 生成随机 ID 后缀（用于追踪） */
+    private fun randomIdSuffix(): String {
+        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+        return (1..8).map { chars.random(rand) }.joinToString("")
+    }
+
     /** 创建 dtype（从 config.dtype/config.dtypeBits） */
     private fun mkDataType(): UirDataType = buildDataType {
         this.name = config.dtype
@@ -208,7 +214,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         
         // 6. 创建主节点
         val mainNode = buildNode {
-            name = "${op.name.lowercase()}_$nodeIndex"
+            name = "${op.name.lowercase()}_${nodeIndex}_${randomIdSuffix()}"
             this.op = op
             inputValueRefs.forEach { ref -> inputs.add(ref) }
             outputValueRefs.forEach { ref -> outputs.add(ref) }
@@ -390,7 +396,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         }
     }
     
-    private fun newValueId(): String = "v_${valueCounter++}"
+    private fun newValueId(): String = "v_${valueCounter++}_${randomIdSuffix()}"
     
     /**
      * 对算子的所有输入进行形状适配，必要时插入 wrapper 节点。
@@ -482,7 +488,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         valueShapes[outputRef.valueId] = outputShape
         
         val node = buildNode {
-            this.name = "expand_dims_${nodeCounter++}"
+            this.name = "expand_dims_${nodeCounter++}_${randomIdSuffix()}"
             this.op = UirOpKind.EXPAND_DIMS
             this.inputs.add(input)
             this.outputs.add(outputRef)
@@ -537,7 +543,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         valueShapes[outputRef.valueId] = outputShape
         
         val node = buildNode {
-            this.name = "reshape_${nodeCounter++}"
+            this.name = "reshape_${nodeCounter++}_${randomIdSuffix()}"
             this.op = UirOpKind.RESHAPE
             this.inputs.add(input)
             this.outputs.add(outputRef)
@@ -564,7 +570,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         valueShapes[outputRef.valueId] = targetShape
         
         val node = buildNode {
-            this.name = "broadcast_to_${nodeCounter++}"
+            this.name = "broadcast_to_${nodeCounter++}_${randomIdSuffix()}"
             this.op = UirOpKind.BROADCAST_TO
             this.inputs.add(input)
             this.outputs.add(outputRef)
