@@ -48,6 +48,8 @@ data class FuzzerGenConfig(
             maxInputs = maxInputs,
             graphCount = graphCount,
             ops = resolvedOps,
+            dtype = "float32",  // TODO: 从配置传参
+            dtypeBits = 32,
         )
     }
 
