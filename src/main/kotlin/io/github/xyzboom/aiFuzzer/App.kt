@@ -9,6 +9,7 @@ import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.types.file
 import com.github.ajalt.clikt.parameters.types.int
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.config.ConfigLoader
 import io.github.xyzboom.aiFuzzer.config.FuzzerConfig
 import io.github.xyzboom.aiFuzzer.fuzzer.Backend
@@ -21,6 +22,8 @@ import java.io.File
 import java.io.PrintWriter
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+
+private val log = KotlinLogging.logger {}
 
 /**
  * AiFuzzer CLI 入口 —— 使用 CLIKT 命令行解析。
@@ -59,17 +62,28 @@ class AiFuzzerCommand : CliktCommand(
         .help("Output directory for reports (overrides config)")
 
     override fun run() {
+        LogUtils.withTrace {
+            runWithLog()
+        }
+    }
+    
+    private fun runWithLog() {
         // 1. 加载配置
         val config = if (configPath != null) {
             val overridesMap = buildOverridesMap()
+            log.info { "加载配置: ${configPath!!.absolutePath}" }
             echo("Loading config from: ${configPath!!.absolutePath}")
             ConfigLoader.load(configPath!!.absolutePath, overridesMap)
         } else {
             val config = ConfigLoader.default()
             applyOverrides(config)
+            log.info { "使用默认配置" }
             echo("Using default config")
             config
         }
+
+        log.info { "描述: ${config.run.description}" }
+        log.info { "后端: ${config.backends.enabled}" }
 
         echo("Description: ${config.run.description}")
         echo("Backends: ${config.backends.enabled}")
@@ -176,7 +190,7 @@ class AiFuzzerCommand : CliktCommand(
                 }
             }
         }
-        echo("Report saved to: ${reportFile.absolutePath}")
+        log.info { "报告已保存: ${reportFile.absolutePath}" }
     }
 
     private fun buildOverridesMap(): Map<String, Any> {

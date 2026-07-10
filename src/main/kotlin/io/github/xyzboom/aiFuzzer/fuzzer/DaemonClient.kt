@@ -1,5 +1,6 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
@@ -15,6 +16,8 @@ import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.util.concurrent.TimeUnit
+
+private val log = KotlinLogging.logger {}
 
 /**
  * TVM Daemon HTTP 客户端。
@@ -108,10 +111,12 @@ class DaemonClient(
     fun start(): Boolean {
         synchronized(this) {
             if (process != null && process!!.isAlive) {
+                log.debug { "daemon 已运行: port=$port" }
                 return true
             }
             try {
                 val daemonPort = findFreePort()
+                log.info { "启动 daemon: python=$pythonPath, port=$daemonPort" }
 
                 val pb = ProcessBuilder(pythonPath, daemonScriptPath, "--port", daemonPort.toString())
                 val env = pb.environment()
@@ -132,17 +137,19 @@ class DaemonClient(
                         ready = true
                         tvmAvailable = msg.tvmAvailable
                         if (!tvmAvailable) {
-                            System.err.println("[DaemonClient] TVM import failed: ${msg.importError}")
+                            log.error { "TVM import failed: ${msg.importError}" }
+                        } else {
+                            log.info { "daemon 就绪: port=$port, tvmAvailable=$tvmAvailable" }
                         }
                     } catch (e: Exception) {
-                        System.err.println("[DaemonClient] Failed to parse ready message: '$readyLine', error: ${e.message}")
+                        log.error(e) { "解析就绪消息失败: '$readyLine'" }
                         destroy()
                         return false
                     }
                 } else {
                     process?.waitFor(3, TimeUnit.SECONDS)
                     val exitCode = process?.exitValue()
-                    println("[DaemonClient] Daemon process exited with code $exitCode on start (no ready message)")
+                    log.error { "daemon 启动失败，退出码 $exitCode（无就绪消息）" }
                     destroy()
                     return false
                 }
@@ -150,7 +157,7 @@ class DaemonClient(
                 retries = 0
                 return true
             } catch (e: Exception) {
-                System.err.println("[DaemonClient] Failed to start daemon: ${e.message}")
+                log.error(e) { "启动 daemon 失败" }
                 destroy()
                 return false
             }
@@ -169,6 +176,7 @@ class DaemonClient(
      */
     fun sendAndWait(source: String): DaemonResult {
         ensureRunning()
+        log.debug { "发送请求: source.length=${source.length}" }
 
         val requestBody = json.encodeToString(RunRequestBody(source = source))
 
@@ -181,6 +189,8 @@ class DaemonClient(
 
                 val body = response.bodyAsText()
                 val msg = json.decodeFromString<ResultMessage>(body)
+                
+                log.debug { "收到响应: success=${msg.success}, elapsed=${msg.elapsedMs}ms" }
 
                 DaemonResult(
                     success = msg.success,
@@ -230,6 +240,7 @@ class DaemonClient(
      * 关闭 daemon 进程。
      */
     override fun close() {
+        log.info { "关闭 daemon" }
         destroy()
     }
 
@@ -239,7 +250,7 @@ class DaemonClient(
                 throw DaemonException("Daemon not running and max retries ($maxRetries) exceeded")
             }
             retries++
-            System.err.println("[DaemonClient] Daemon not running, restarting (retry $retries/$maxRetries)...")
+            log.warn { "daemon 未运行，重启中 (重试 $retries/$maxRetries)" }
             val started = restart()
             if (!started) {
                 throw DaemonException("Failed to restart daemon (retry $retries/$maxRetries)")

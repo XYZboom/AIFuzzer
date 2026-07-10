@@ -1,8 +1,11 @@
 package io.github.xyzboom.aiFuzzer.translator.tvm
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.ir.*
 import io.github.xyzboom.aiFuzzer.ir.types.*
 import io.github.xyzboom.aiFuzzer.translator.UirTranslator
+
+private val log = KotlinLogging.logger {}
 
 /**
  * UIR 到 TVM Relax Python 代码的翻译器。
@@ -106,6 +109,8 @@ class TvmRelaxTranslator(
      * 将 UIR 程序翻译为 TVM Relax Python 代码。
      */
     override fun translate(element: UirProgram): String {
+        log.debug { "开始翻译 UIR 程序: ${element.graphs.size} 个图" }
+        val startTime = System.currentTimeMillis()
         val builder = StringBuilder()
 
         // 生成 Python 模板
@@ -122,6 +127,7 @@ class TvmRelaxTranslator(
 
         // 翻译每个图
         for ((idx, graph) in element.graphs.withIndex()) {
+            log.trace { "翻译图 $idx: ${graph.name}" }
             translateGraph(builder, graph, idx)
         }
 
@@ -134,6 +140,8 @@ class TvmRelaxTranslator(
         builder.appendLine("print('Module built successfully')")
         builder.appendLine("# print(mod)")
 
+        val elapsed = System.currentTimeMillis() - startTime
+        log.debug { "翻译完成，耗时 ${elapsed}ms，输出 ${builder.length} 字符" }
         return builder.toString()
     }
 

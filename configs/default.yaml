@@ -10,8 +10,8 @@ run:
 
 # 生成器设置
 generator:
-  min_nodes_per_graph: 3
-  max_nodes_per_graph: 25
+  min_nodes_per_graph: 20
+  max_nodes_per_graph: 80
   min_inputs: 2
   max_inputs: 15
   min_input_ndim: 1
@@ -63,6 +63,6 @@ bug_collector:
 
 # Fuzzing 流水线
 pipeline:
-  workers: 16
-  batch_size: 5000
+  workers: 1
+  batch_size: 50
   run_timeout_seconds: 60

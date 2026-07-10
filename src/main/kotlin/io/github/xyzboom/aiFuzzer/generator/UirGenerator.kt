@@ -1,11 +1,14 @@
 package io.github.xyzboom.aiFuzzer.generator
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.infer.ShapeInferer
 import io.github.xyzboom.aiFuzzer.ir.*
 import io.github.xyzboom.aiFuzzer.ir.builder.*
 import io.github.xyzboom.aiFuzzer.ir.types.*
 import io.github.xyzboom.aiFuzzer.ir.types.builder.*
 import kotlin.random.Random
+
+private val log = KotlinLogging.logger {}
 
 /** 默认算子列表（所有已实现算子，除外适配算子） */
 val DefaultOps: List<UirOpKind> = UirOpKind.entries.filter { it !in UirOpKind.adapterOps }
@@ -56,18 +59,28 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * 生成完整的 UIR 程序。
      */
     fun generate(): UirProgram {
-        return buildProgram {
+        log.info { "开始生成 UIR 程序: seed=${config.seed}, graphCount=${config.graphCount}, ops=${opsEnum.size}" }
+        val startTime = System.currentTimeMillis()
+        
+        val program = buildProgram {
             for (i in 0 until config.graphCount) {
+                log.debug { "生成图 $i/${config.graphCount}" }
                 graphs.add(generateGraph("graph_$i"))
             }
         }
+        
+        val elapsed = System.currentTimeMillis() - startTime
+        log.info { "UIR 程序生成完成: ${program.graphs.size} 个图, 耗时 ${elapsed}ms" }
+        return program
     }
     
     private fun generateGraph(name: String): UirGraph {
+        log.debug { "生成图: $name" }
         valueCounter = 0
         
         // 1. 生成图输入
         val numInputs = rand.nextInt(config.minInputs, config.maxInputs + 1)
+        log.trace { "图输入数量: $numInputs" }
         val availableValues = mutableListOf<String>()
         
         val graphInputs = (0 until numInputs).map {
@@ -77,6 +90,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             // 为图输入生成形状
             val shape = generateRandomShape(config.minNdim, config.maxNdim)
             valueShapes[valueId] = shape
+            log.trace { "输入值 $valueId: 形状=${shapeDims(shape)}" }
             
             buildValueRef {
                 this.valueId = valueId
@@ -145,25 +159,39 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             availableValues.size == 1 -> opsEnum.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.random(rand)
             else -> opsEnum.random(rand)
         }
+        log.trace { "节点 $nodeIndex: 选择算子 $op (可用值=${availableValues.size})" }
         
-        // 2. 确定输入数量
+        // 2. 孜定输入数量
         val numInputs = when (op) {
             in UirOpKind.constantOps -> 0
             in UirOpKind.singleInputOps -> 1
             in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)
             else -> 1
         }
+        log.trace { "节点 $nodeIndex: 输入数量 $numInputs" }
         
         // 3. 选择输入值（可能插入转换节点）
         val conversionNodes = mutableListOf<UirNode>()
         val inputValueRefs = selectInputValues(op, numInputs, availableValues, liveTips, currentBranch, conversionNodes)
         
+        // 记录输入详情
+        if (inputValueRefs.isNotEmpty()) {
+            log.trace { 
+                "节点 $nodeIndex: 输入值 ${inputValueRefs.map { "${it.valueId}:${shapeDims(valueShapes[it.valueId]!!)}" }}" 
+            }
+        }
+        
         // 4. 先生成属性（形状推导需要属性信息）
         val attributes = generateAttributes(op)
+        if (attributes.isNotEmpty()) {
+            log.trace { "节点 $nodeIndex: 属性 $attributes" }
+        }
         
         // 5. 推导并生成输出值（委托给 ShapeInferer）
         val inputShapes = inputValueRefs.map { valueShapes[it.valueId]!! }
         val outputShapes = inferOutputShapes(op, inputShapes, attributes)
+        
+        log.trace { "节点 $nodeIndex: 输出形状 ${outputShapes.map(::shapeDims)}" }
         
         val outputValueRefs = outputShapes.map { shape ->
             val valueId = newValueId()
@@ -187,6 +215,10 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             this.attributes = attributes
         }
         
+        log.debug { "创建节点: ${mainNode.name} (op=$op)" }
+        log.debug { "  输入: ${inputValueRefs.map { "${it.valueId} ${shapeDims(valueShapes[it.valueId]!!)}" }}" }
+        log.debug { "  输出: ${outputValueRefs.map { "${it.valueId} ${shapeDims(valueShapes[it.valueId]!!)}" }}" }
+        
         // 7. 返回：转换节点 + 主节点
         return conversionNodes + mainNode
     }
@@ -203,24 +235,29 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         
         // 优先从当前分支的 tip 选择
         val tipValue = liveTips[currentBranch]
+        log.trace { "选择输入: op=$op, numInputs=$numInputs, tip=$tipValue, 可用=${availableValues.take(5)}${if (availableValues.size > 5) "..." else ""}" }
         
         // 特殊处理：二元运算
         if (op in UirOpKind.binaryInputOps && numInputs == 2 && availableValues.size >= 2) {
             // 选择第一个输入
             val input1ValueId = if (tipValue != null && tipValue in availableValues) {
+                log.trace { "二元运算: 使用 tip 作为第一个输入" }
                 tipValue
             } else {
                 availableValues.random(rand)
             }
             
             val shape1 = valueShapes[input1ValueId]!!
+            log.trace { "二元运算: 输入1 = $input1ValueId, 形状 = ${shapeDims(shape1)}" }
             
             // 选择第二个输入
             val input2ValueId = availableValues.filter { it != input1ValueId }.random(rand)
             val shape2Existing = valueShapes[input2ValueId]!!
+            log.trace { "二元运算: 输入2 候选 = $input2ValueId, 形状 = ${shapeDims(shape2Existing)}" }
             
             // 检查是否兼容
             val input2Ref = if (ShapeConstraints.areBroadcastable(shape1, shape2Existing)) {
+                log.trace { "二元运算: 形状兼容，直接使用" }
                 // 兼容：直接使用
                 buildValueRef {
                     this.valueId = input2ValueId
@@ -231,6 +268,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                     }
                 }
             } else {
+                log.debug { "二元运算: 形状不兼容，插入转换节点 ${shapeDims(shape1)} vs ${shapeDims(shape2Existing)}" }
                 // 不兼容：插入转换节点
                 val shape2Expected = generateBroadcastableShape(shape1)
                 val input2ExistingRef = buildValueRef {
@@ -394,21 +432,26 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         expectedShape: UirShape,
         nodeList: MutableList<UirNode>
     ): UirValueRef {
+        log.debug { "插入转换节点: ${input.valueId} ${shapeDims(input.type.shape)} -> ${shapeDims(expectedShape)}" }
         var current = input
         val currentShape = input.type.shape
         
         // 步骤 1：对齐维度数
         if (currentShape.dims.size < expectedShape.dims.size) {
+            log.trace { "  增维: ${currentShape.dims.size}D -> ${expectedShape.dims.size}D" }
             current = insertExpandDims(current, expectedShape.dims.size - currentShape.dims.size, nodeList)
         } else if (currentShape.dims.size > expectedShape.dims.size) {
+            log.trace { "  减维: ${currentShape.dims.size}D -> ${expectedShape.dims.size}D" }
             current = insertReshapeForDimReduce(current, expectedShape.dims.size, nodeList)
         }
         
         // 步骤 2：对齐维度值
         if (!ShapeConstraints.areBroadcastable(current.type.shape, expectedShape)) {
+            log.trace { "  广播: ${shapeDims(current.type.shape)} -> ${shapeDims(expectedShape)}" }
             current = insertBroadcastTo(current, expectedShape, nodeList)
         }
         
+        log.debug { "转换完成: ${current.valueId} ${shapeDims(current.type.shape)}" }
         return current
     }
     
@@ -529,5 +572,10 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         
         nodeList.add(node)
         return outputRef
+    }
+    
+    /** 格式化形状为易读字符串 */
+    private fun shapeDims(shape: UirShape): String {
+        return shape.dims.map { it.valueOrNull() ?: "?" }.joinToString(", ", "[", "]")
     }
 }
