@@ -30,12 +30,14 @@ data class FuzzerGenConfig(
     var maxNodesPerGraph: Int = 8,
     var minInputs: Int = 1,
     var maxInputs: Int = 3,
-    var minInputNdim: Int = 1,
-    var maxInputNdim: Int = 3,
+    var minInputNdim: Int = 2,  // 至少 2D
+    var maxInputNdim: Int = 4,
     var graphCount: Int = 1,
     var ops: OpsConfig = OpsConfig(),
     var strategy: String = "random",
     var mutation: MutationConfig = MutationConfig(),
+    var dtype: String = "float32",
+    var dtypeBits: Int = 32,
 ) {
     /** 转换为 backend 使用的 GeneratorConfig */
     fun toGeneratorConfig(seed: Long): GeneratorConfig {
@@ -48,8 +50,10 @@ data class FuzzerGenConfig(
             maxInputs = maxInputs,
             graphCount = graphCount,
             ops = resolvedOps,
-            dtype = "float32",  // TODO: 从配置传参
-            dtypeBits = 32,
+            minNdim = minInputNdim,
+            maxNdim = maxInputNdim,
+            dtype = dtype,
+            dtypeBits = dtypeBits,
         )
     }
 
