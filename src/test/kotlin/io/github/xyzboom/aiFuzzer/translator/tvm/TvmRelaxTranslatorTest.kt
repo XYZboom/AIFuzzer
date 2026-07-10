@@ -225,7 +225,7 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("y = bb.emit(relax.op.sum(x_var, axis=[2], keepdims=false))")) {
+        assertTrue(result.contains("y = bb.emit(relax.op.sum(x_var, axis=[2], keepdims=False))")) {
             "Expected reduce_sum with axis=2, got:\n$result"
         }
     }

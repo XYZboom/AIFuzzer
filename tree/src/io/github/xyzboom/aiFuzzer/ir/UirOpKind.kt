@@ -127,6 +127,6 @@ enum class UirOpKind {
         )
 
         /** 适配算子（由 ShapeAdapter 插入，不参与逻辑图生成） */
-        val adapterOps = setOf(EXPAND_DIMS, SQUEEZE, RESHAPE)
+        val adapterOps = setOf(EXPAND_DIMS, SQUEEZE, RESHAPE, BROADCAST_TO, CONCAT, SPLIT, MATMUL)
     }
 }
