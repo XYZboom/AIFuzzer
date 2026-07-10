@@ -1,5 +1,7 @@
 # aiFuzzer 文档结构
 
+> **更新 2026-07-10**：`LogicGenerator` 已合并到 `UirGenerator`，相关架构文档已更新。
+
 ## 文档分类
 
 ### 📌 核心文档（保留）

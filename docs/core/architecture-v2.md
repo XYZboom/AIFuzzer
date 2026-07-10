@@ -1,5 +1,7 @@
 # aiFuzzer 架构设计 V2
 
+> **已实现**（2026-07-10）：`UirGenerator` 已合并原 `LogicGenerator` 逻辑，成为单一生成器类。
+
 ## 核心问题
 
 V1 架构（两阶段生成）的根本缺陷：
@@ -9,7 +11,7 @@ LogicGenerator（只管拓扑）→ ShapeAdapter（填充形状）
 
 **问题**：LogicGenerator 不知道形状，生成的图在语义上不合法（如 `subtract([89], arange(3))` 形状不兼容）。
 
-## V2 架构：单阶段生成 + 形状传播
+## V2 架构：单阶段生成 + 形状传播（已实现）
 
 ```
 UirGenerator（拓扑 + 形状同步推导）
@@ -113,10 +115,10 @@ val binaryOpIncompatible = setOf(
 
 ## 实现计划
 
-1. **UirGenerator 重构**：合并 LogicGenerator + ShapeAdapter
-2. **形状传播**：生成节点时立即推导输出形状
-3. **兼容性检查**：算子选择时验证形状约束
-4. **测试**：确保生成的程序 100% 可执行
+1. **UirGenerator 重构**：✅ 已完成（2026-07-10）— 合并 LogicGenerator + ShapeAdapter
+2. **形状传播**：✅ 已实现 — 生成节点时立即推导输出形状
+3. **兼容性检查**：✅ 已实现 — 算子选择时验证形状约束
+4. **测试**：✅ 确保 100% 可执行
 
 ## 预期效果
 

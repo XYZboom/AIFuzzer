@@ -71,6 +71,7 @@ Step 2: ADD(v1, v2)
 | 3 | 新增 `insertReshapeForDimReduce()` 支持减维 | ✅ 已完成 |
 | 4 | 调整 `generateAttributes()` 调用顺序到 `inferOutputShapes` 之前 | ✅ 已完成 |
 | 5 | 删除私有 `areBroadcastable`/`broadcastShapes`/`valueOrNull` | ✅ 已完成 |
+| 6 | `insertConversionNode` 用 `canBroadcastTo` 替代 `areBroadcastable` | ✅ 已完成 |
 
 ### 修复后关键流程
 
@@ -85,6 +86,23 @@ generateNode() {
     ⑤ 创建主节点
 }
 ```
+
+### 额外发现：`areBroadcastable` vs `canBroadcastTo` 语义差异
+
+`insertConversionNode` 原使用 `areBroadcastable`（对称检查）判断是否需要
+`broadcast_to`，但 `broadcast_to` 要求的是非对称检查：源每个维度必须等于目标
+或为 1。
+
+```kotlin
+// 错误：对称检查
+areBroadcastable([1,1,5], [2,3,1]) → true
+
+// 正确：非对称检查
+canBroadcastTo([1,1,5], [2,3,1]) → false
+// 5→1 无法通过 repeat 实现
+```
+
+已修复为 `canBroadcastTo`，避免生成 TVM 无法执行的 `broadcast_to`。
 
 ### 结果
 
