@@ -1,5 +1,9 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
+import io.github.oshai.kotlinlogging.KotlinLogging
+
+private val log = KotlinLogging.logger {}
+
 /**
  * 单次 Fuzzing 运行的结果。
  */
@@ -47,24 +51,27 @@ data class FuzzingSummary(
     }
 
     fun printReport() {
-        println("=".repeat(60))
-        println("Fuzzing Report")
-        println("=".repeat(60))
-        println("Total runs:      $total")
-        println("Successes:       $successes (${"%.1f".format(successRate * 100)}%)")
-        println("Failures:        $failures")
-        println("Total time:      ${"%.1f".format(totalTimeMs / 1000.0)}s")
-        println()
-        println("Error breakdown:")
+        val sb = StringBuilder()
+        sb.appendLine("=".repeat(60))
+        sb.appendLine("Fuzzing Report")
+        sb.appendLine("=".repeat(60))
+        sb.appendLine("Total runs:      $total")
+        sb.appendLine("Successes:       $successes (${"%.1f".format(successRate * 100)}%)")
+        sb.appendLine("Failures:        $failures")
+        sb.appendLine("Total time:      ${"%.1f".format(totalTimeMs / 1000.0)}s")
+        sb.appendLine()
+        sb.appendLine("Error breakdown:")
         if (groupedErrors.isEmpty()) {
-            println("  (none)")
+            sb.appendLine("  (none)")
         } else {
             groupedErrors.entries
                 .sortedByDescending { it.value }
                 .forEach { (category, count) ->
-                    println("  ${"%-22s".format(category.name)}: $count")
+                    sb.appendLine("  ${"%-22s".format(category.name)}: $count")
                 }
         }
-        println("=".repeat(60))
+        sb.appendLine("=".repeat(60))
+        
+        log.info { "\n$sb" }
     }
 }

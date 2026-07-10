@@ -39,6 +39,10 @@ dependencies {
     // Ktor HTTP 客户端（与 daemon 通信）
     implementation("io.ktor:ktor-client-core:3.1.2")
     implementation("io.ktor:ktor-client-cio:3.1.2")
+    // Kotlin-logging（日志框架）
+    implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
+    // SLF4J 实现（Logback）
+    implementation("ch.qos.logback:logback-classic:1.5.18")
 }
 
 application {

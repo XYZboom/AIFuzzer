@@ -1,10 +1,13 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+
+private val log = KotlinLogging.logger {}
 
 /**
  * Bug 收集器：自动将疑似 bug 的测试程序存为文件夹形式的报告。
@@ -110,10 +113,20 @@ ${result.stderr.trimEnd()}
             irFile.writeText(irContent)
         }
 
-        println("  🔍 Bug saved to: ${bugDir.relativeTo(File(".").absoluteFile)}")
-        println("      ├── source.py")
-        println("      ├── stderr.log")
-        if (program != null) println("      └── ir.jsonl")
+        // 4. 复制日志文件
+        val logFile = File("logs/aifuzzer.log")
+        if (logFile.exists()) {
+            logFile.copyTo(File(bugDir, "aifuzzer.log"), overwrite = true)
+        }
+        
+        val traceLogFile = File("logs/aifuzzer-trace.log")
+        if (traceLogFile.exists()) {
+            traceLogFile.copyTo(File(bugDir, "aifuzzer-trace.log"), overwrite = true)
+        }
+
+        log.info { "Bug 已保存: ${bugDir.name} (seed=$seed, backend=$backendName)" }
+        log.info { "  路径: ${bugDir.relativeTo(File(".").absoluteFile)}" }
+        log.debug { "  文件: source.py, stderr.log${if (program != null) ", ir.jsonl" else ""}${if (logFile.exists()) ", aifuzzer.log" else ""}${if (traceLogFile.exists()) ", aifuzzer-trace.log" else ""}" }
     }
 
     /** 重置计数器（新的一轮 fuzzing 时调用） */

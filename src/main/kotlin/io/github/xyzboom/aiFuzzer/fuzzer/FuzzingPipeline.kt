@@ -1,10 +1,13 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
+
+private val log = KotlinLogging.logger {}
 
 /**
  * 可配置的 Fuzzing 流水线。
@@ -32,7 +35,9 @@ class FuzzingPipeline(
      * 单次 Fuzzing 运行（单线程，调用方负责上下文）。
      */
     fun runOnce(seed: Long = System.currentTimeMillis()): List<FuzzingResult> {
+        log.debug { "运行单次测试: seed=$seed" }
         val program = generator.generate()
+        log.trace { "生成程序: ${program.graphs.size} 个图" }
         return backends.map { backend ->
             runOnBackend(program, backend, seed)
         }
@@ -73,7 +78,7 @@ class FuzzingPipeline(
                 val elapsed = (System.currentTimeMillis() - startTime) / 1000
                 val ok = successCount.get()
                 val fail = failureCount.get()
-                System.err.println("[progress] $now/$count  S=$ok  F=$fail  ${elapsed}s  $rate")
+                log.info { "进度: $now/$count  成功=$ok  失败=$fail  耗时=${elapsed}s  速率=$rate" }
             }
         }
 
@@ -90,7 +95,7 @@ class FuzzingPipeline(
                     }
                 } catch (e: Exception) {
                     failureCount.addAndGet(backends.size)
-                    System.err.println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                    log.error(e) { "测试 seed=$seed 失败" }
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
@@ -150,7 +155,7 @@ class FuzzingPipeline(
                     future.cancel(true)
                     failureCount.addAndGet(backends.size)
                     completed.incrementAndGet()
-                    System.err.println("[!] Test seed=$seed timed out after ${config.runTimeoutSeconds}s")
+                    log.warn { "测试 seed=$seed 超时 (${config.runTimeoutSeconds}s)" }
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
@@ -165,7 +170,7 @@ class FuzzingPipeline(
                 } catch (e: Exception) {
                     failureCount.addAndGet(backends.size)
                     completed.incrementAndGet()
-                    System.err.println("[!] Test seed=$seed threw ${e.javaClass.simpleName}: ${e.message}")
+                    log.error(e) { "测试 seed=$seed 执行异常" }
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
