@@ -65,9 +65,6 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * 生成完整的 UIR 程序。
      */
     fun generate(): UirProgram {
-        log.info { "开始生成 UIR 程序: seed=${config.seed}, graphCount=${config.graphCount}, ops=${opsEnum.size}" }
-        val startTime = System.currentTimeMillis()
-        
         val program = buildProgram {
             for (i in 0 until config.graphCount) {
                 log.debug { "生成图 $i/${config.graphCount}" }
@@ -75,8 +72,6 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             }
         }
         
-        val elapsed = System.currentTimeMillis() - startTime
-        log.info { "UIR 程序生成完成: ${program.graphs.size} 个图, 耗时 ${elapsed}ms" }
         return program
     }
     
