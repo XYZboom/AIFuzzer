@@ -29,6 +29,8 @@ class FuzzingPipeline(
         val workers: Int = 1,
         /** 是否保留临时产物 */
         val keepArtifacts: Boolean = false,
+        /** 遇到失败是否立即终止 */
+        val failFast: Boolean = false,
     )
 
     /**
@@ -86,12 +88,20 @@ class FuzzingPipeline(
             // 串行模式
             for (i in 0 until count) {
                 val seed = startSeed + i
+                var shouldBreak = false
                 try {
                     val results = runOnce(seed)
                     allResults.addAll(results)
                     results.forEach {
                         if (it.backendResult.success) successCount.incrementAndGet()
-                        else failureCount.incrementAndGet()
+                        else {
+                            failureCount.incrementAndGet()
+                            // failFast: 遇到失败立即终止
+                            if (config.failFast) {
+                                log.error { "failFast=true: 检测到失败，终止测试" }
+                                shouldBreak = true
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     failureCount.addAndGet(backends.size)
@@ -107,14 +117,23 @@ class FuzzingPipeline(
                             )
                         }
                     )
+                    // failFast: 异常也终止
+                    if (config.failFast) {
+                        log.error { "failFast=true: 检测到异常，终止测试" }
+                        shouldBreak = true
+                    }
                 }
                 completed.incrementAndGet()
+                if (shouldBreak) break
             }
         } else {
             // 并行模式
             val executor = java.util.concurrent.Executors.newFixedThreadPool(config.workers) { r ->
                 Thread(r, "fuzzer-worker").also { it.isDaemon = true }
             }
+            
+            // failFast 标志：使用 AtomicBoolean 确保线程安全
+            val failFastTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
 
             val futures = (0 until count).map { i ->
                 val seed = startSeed + i
@@ -123,13 +142,23 @@ class FuzzingPipeline(
                         val results = runOnce(seed)
                         results.forEach {
                             if (it.backendResult.success) successCount.incrementAndGet()
-                            else failureCount.incrementAndGet()
+                            else {
+                                failureCount.incrementAndGet()
+                                // failFast: 遇到失败立即终止
+                                if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
+                                    log.error { "failFast=true: 检测到失败，终止测试" }
+                                }
+                            }
                         }
                         completed.incrementAndGet()
                         results
                     } catch (e: Exception) {
                         failureCount.addAndGet(backends.size)
                         completed.incrementAndGet()
+                        // failFast: 异常也终止
+                        if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
+                            log.error(e) { "failFast=true: 检测到异常，终止测试" }
+                        }
                         backends.map { backend ->
                             FuzzingResult(
                                 seed = seed,
@@ -143,7 +172,12 @@ class FuzzingPipeline(
                 }
             }
 
-            futures.forEachIndexed { i, future ->
+            for ((i, future) in futures.withIndex()) {
+                // 如果 failFast 已触发，立即终止
+                if (failFastTriggered.get()) {
+                    executor.shutdownNow()
+                    break
+                }
                 val seed = startSeed + i
                 try {
                     val results = future.get(

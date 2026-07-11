@@ -127,12 +127,18 @@ data class PipelineConfig(
     var batchSize: Int = 100,
     var reportInterval: Int = 10,
     var runTimeoutSeconds: Int = 60,
+    /**
+     * 遇到测试失败时是否立即终止程序。
+     * 默认 false（继续执行，收集所有失败）。
+     */
+    var failFast: Boolean = false,
 ) {
     fun toFuzzingConfig(): FuzzingPipeline.FuzzingConfig {
         return FuzzingPipeline.FuzzingConfig(
             runTimeoutSeconds = runTimeoutSeconds,
             workers = workers,
             keepArtifacts = false,
+            failFast = failFast,
         )
     }
 }

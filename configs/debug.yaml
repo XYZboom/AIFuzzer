@@ -1,21 +1,29 @@
-# AiFuzzer 调试配置
-# 小规模快速测试
+# Debug 配置：遇到错误立即终止
+# 用法: ./gradlew run --args="--config configs/debug.yaml"
 
 run:
-  description: "Debug run - small scale"
-  seed: 42
+  description: "Debug run - fail fast on any error"
+  logLevel: debug
 
 generator:
-  min_nodes_per_graph: 2
-  max_nodes_per_graph: 4
-  min_inputs: 1
-  max_inputs: 2
-  graph_count: 1
-
-backends:
-  enabled: ["tvm"]
+  minNodesPerGraph: 3
+  maxNodesPerGraph: 8
+  minInputs: 1
+  maxInputs: 3
+  graphCount: 1
 
 pipeline:
   workers: 1
-  batch_size: 20
-  run_timeout_seconds: 30
+  batchSize: 10
+  failFast: true
+
+backends:
+  enabled:
+    - tvm
+  tvm:
+    mode: daemon
+    daemonCount: 1
+    timeoutSeconds: 30
+
+bugCollector:
+  enabled: true
