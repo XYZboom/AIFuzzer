@@ -60,6 +60,9 @@ class TvmRelaxTranslator(
             // 矩阵乘法
             UirOpKind.MATMUL to "relax.op.matmul",
 
+            // 卷积
+            UirOpKind.CONV2D to "relax.op.nn.conv2d",
+
             // SOFTMAX
             UirOpKind.SOFTMAX to "relax.op.nn.softmax",
 
@@ -270,6 +273,19 @@ class TvmRelaxTranslator(
                 // 当输入形状已知且为 2-D 时，直接调用 matmul
                 // 否则使用固定的 full 替换
                 "relax.op.matmul(${inputVars[0]}, ${inputVars[1]})"
+            }
+
+            // ===== 卷积 =====
+            UirOpKind.CONV2D -> {
+                val stride = (attributes["stride"] as? UirIntAttr)?.value ?: 1
+                val padding = (attributes["padding"] as? UirIntAttr)?.value ?: 0
+                val dilation = (attributes["dilation"] as? UirIntAttr)?.value ?: 1
+                val groups = (attributes["groups"] as? UirIntAttr)?.value ?: 1
+                "relax.op.nn.conv2d(${inputVars[0]}, ${inputVars[1]}, " +
+                    "strides=[$stride, $stride], " +
+                    "padding=[$padding, $padding], " +
+                    "dilation=[$dilation, $dilation], " +
+                    "groups=$groups)"
             }
 
             // ===== SOFTMAX =====

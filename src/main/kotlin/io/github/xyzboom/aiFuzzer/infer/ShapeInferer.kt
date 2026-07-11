@@ -110,6 +110,11 @@ object ShapeInferer {
             UirOpKind.MATMUL -> {
                 inferMatmulShape(inputShapes)
             }
+
+            // ===== 分类 C.2：卷积 =====
+            UirOpKind.CONV2D -> {
+                inferConv2dShape(inputShapes, attributes)
+            }
             
             // ===== 分类 D：归约运算 =====
             UirOpKind.REDUCE_SUM,
@@ -343,6 +348,119 @@ object ShapeInferer {
         return listOf(shapeFromDims(resultDims))
     }
     
+    /**
+     * CONV2D 形状推导。
+     *
+     * 假设 NCHW 格式：
+     *   input:  [N, C_in, H, W]
+     *   weight: [C_out, C_in/groups, kH, kW]
+     *   output: [N, C_out, H_out, W_out]
+     *
+     * 属性：
+     *   stride (int, 默认 1) - H 和 W 共用的步长
+     *   padding (int, 默认 0) - H 和 W 共用的填充
+     *   dilation (int, 默认 1) - H 和 W 共用的膨胀率
+     *   groups (int, 默认 1) - 分组卷积的组数
+     *
+     * H_out = floor((H + 2*padding - dilation*(kH-1) - 1) / stride + 1)
+     * W_out = floor((W + 2*padding - dilation*(kW-1) - 1) / stride + 1)
+     */
+    private fun inferConv2dShape(
+        inputShapes: List<UirShape>,
+        attributes: Map<String, Attribute>
+    ): List<UirShape> {
+        requireBinaryInput(UirOpKind.CONV2D, inputShapes)
+
+        val inputShape = inputShapes[0]
+        val weightShape = inputShapes[1]
+
+        // 读取属性（默认值：stride=1, padding=0, dilation=1, groups=1）
+        val stride = when (val attr = attributes["stride"]) {
+            is UirIntAttr -> attr.value
+            else -> 1
+        }
+        val padding = when (val attr = attributes["padding"]) {
+            is UirIntAttr -> attr.value
+            else -> 0
+        }
+        val dilation = when (val attr = attributes["dilation"]) {
+            is UirIntAttr -> attr.value
+            else -> 1
+        }
+
+        // 检查输入是否为 4D
+        if (inputShape.dims.size < 4 || weightShape.dims.size < 4) {
+            // 维度不足时，假设为 4D 并补齐
+            val paddedInput = if (inputShape.dims.size < 4) {
+                val missing = 4 - inputShape.dims.size
+                val extra = (1..missing).map { constantDim(16) }
+                shapeFromDims(extra + inputShape.dims)
+            } else inputShape
+
+            val paddedWeight = if (weightShape.dims.size < 4) {
+                val missing = 4 - weightShape.dims.size
+                val extra = (1..missing).map { constantDim(16) }
+                shapeFromDims(extra + weightShape.dims)
+            } else weightShape
+
+            return inferConv2dShapeFrom4D(paddedInput, paddedWeight, stride, padding, dilation)
+        }
+
+        return inferConv2dShapeFrom4D(inputShape, weightShape, stride, padding, dilation)
+    }
+
+    /**
+     * 从 4D 输入推导 CONV2D 输出形状。
+     */
+    private fun inferConv2dShapeFrom4D(
+        inputShape: UirShape,
+        weightShape: UirShape,
+        stride: Int,
+        padding: Int,
+        dilation: Int
+    ): List<UirShape> {
+        // input: [N, C_in, H, W]
+        val n = inputShape.dims[0]
+        val cIn = inputShape.dims[1]
+        val h = inputShape.dims[2]
+        val w = inputShape.dims[3]
+
+        // weight: [C_out, C_in/groups, kH, kW]
+        val cOut = weightShape.dims[0]
+        val kH = weightShape.dims[2]
+        val kW = weightShape.dims[3]
+
+        // 计算输出空间维度
+        val hOut = computeConvOutputDim(h, kH, stride, padding, dilation)
+        val wOut = computeConvOutputDim(w, kW, stride, padding, dilation)
+
+        val outputDims = listOf(n, cOut, hOut, wOut)
+        return listOf(shapeFromDims(outputDims))
+    }
+
+    /**
+     * 计算卷积输出维度：
+     * out = floor((in + 2*padding - dilation*(kernel-1) - 1) / stride + 1)
+     */
+    private fun computeConvOutputDim(
+        inputDim: UirDim,
+        kernelDim: UirDim,
+        stride: Int,
+        padding: Int,
+        dilation: Int
+    ): UirDim {
+        val inVal = inputDim.value
+        val kVal = kernelDim.value
+
+        if (inVal == null || kVal == null) {
+            // 任一维度未知，输出未知维度
+            return unknownDim()
+        }
+
+        val outVal = (inVal + 2 * padding - dilation * (kVal - 1) - 1) / stride + 1
+        return constantDim(outVal.coerceAtLeast(1))
+    }
+
     /**
      * REDUCE_* 形状推导。
      * 

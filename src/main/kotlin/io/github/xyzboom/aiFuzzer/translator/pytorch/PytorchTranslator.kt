@@ -39,6 +39,9 @@ class PytorchTranslator(
             // 矩阵乘法
             UirOpKind.MATMUL to "torch.matmul",
 
+            // 卷积
+            UirOpKind.CONV2D to "F.conv2d",
+
             // 一元激活
             UirOpKind.RELU to "F.relu",
             UirOpKind.SIGMOID to "torch.sigmoid",
@@ -228,6 +231,16 @@ class PytorchTranslator(
 
             // ===== 矩阵乘法 =====
             UirOpKind.MATMUL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs[1].valueId]})"
+
+            // ===== 卷积 =====
+            UirOpKind.CONV2D -> {
+                val stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: 1
+                val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                val dilation = (node.attributes["dilation"] as? UirIntAttr)?.value ?: 1
+                val groups = (node.attributes["groups"] as? UirIntAttr)?.value ?: 1
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs[1].valueId]}, " +
+                    "stride=$stride, padding=$padding, dilation=$dilation, groups=$groups)"
+            }
 
             // ===== SOFTMAX =====
             UirOpKind.SOFTMAX -> {

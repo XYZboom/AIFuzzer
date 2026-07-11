@@ -78,7 +78,7 @@ class FuzzerFrameworkTest {
             TvmBackend(File(System.getProperty("java.io.tmpdir"), "test_fuzzer_multi"))
         )
         val pipeline = FuzzingPipeline(
-            generator = generator,
+            generatorConfig = GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 3),
             backends = backends,
             config = FuzzingPipeline.FuzzingConfig(keepArtifacts = false)
         )
@@ -95,7 +95,7 @@ class FuzzerFrameworkTest {
             TvmBackend(File(System.getProperty("java.io.tmpdir"), "test_fuzzer_batch"))
         )
         val pipeline = FuzzingPipeline(
-            generator = generator,
+            generatorConfig = GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 3),
             backends = backends,
             config = FuzzingPipeline.FuzzingConfig(
                 keepArtifacts = false,

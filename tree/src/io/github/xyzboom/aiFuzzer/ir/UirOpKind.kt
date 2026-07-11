@@ -69,6 +69,9 @@ enum class UirOpKind {
     ONES,
     ZEROS,
 
+    // 卷积
+    CONV2D,
+
     // 三角
     TRIL,
     TRIU,
@@ -99,6 +102,7 @@ enum class UirOpKind {
             MAXIMUM, MINIMUM, POWER,
             CONCAT,
             MATMUL,
+            CONV2D,
         )
 
         /** 常数生成算子（无输入） */
@@ -110,6 +114,7 @@ enum class UirOpKind {
         /** 需要 ndim >= 2 的算子 */
         val needNdimGe2 = setOf(
             TRANSPOSE, TRIL, TRIU, STRIDED_SLICE,
+            CONV2D,
         )
 
         /** reduce 类算子 */
@@ -124,6 +129,7 @@ enum class UirOpKind {
             SOFTMAX, CAST,
             SPLIT, CONCAT, TILE,
             TRANSPOSE,
+            CONV2D,
         )
 
         /** 适配算子（由 ShapeAdapter 插入，不参与逻辑图生成） */

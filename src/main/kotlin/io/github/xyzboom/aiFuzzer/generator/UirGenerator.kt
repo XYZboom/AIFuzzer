@@ -346,6 +346,12 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             UirOpKind.GATHER -> {
                 attrs["axis"] = buildIntAttr { value = 0 }
             }
+            UirOpKind.CONV2D -> {
+                attrs["stride"] = buildIntAttr { value = 1 }
+                attrs["padding"] = buildIntAttr { value = 0 }
+                attrs["dilation"] = buildIntAttr { value = 1 }
+                attrs["groups"] = buildIntAttr { value = 1 }
+            }
             else -> { /* 无特殊属性 */ }
         }
         
