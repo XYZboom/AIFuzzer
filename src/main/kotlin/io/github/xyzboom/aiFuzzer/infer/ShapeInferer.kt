@@ -597,7 +597,17 @@ object ShapeInferer {
     /**
      * STRIDED_SLICE 形状推导。
      * 
-     * 规则：取决于切片范围
+     * 规则：输出形状取决于切片范围
+     * - 对于被切片的维度，输出维度值 = end - begin
+     * - 对于未切片的维度，输出维度值 = 输入维度值
+     * 
+     * TVM 的 strided_slice 参数格式：
+     * - axes: 被切片的轴列表
+     * - begin: 各轴的起始索引
+     * - end: 各轴的终止索引
+     * 
+     * 默认行为（无属性时）：
+     * - axes=[0], begin=[0], end=[-1] → 在 axis=0 切掉最后一个元素
      */
     private fun inferStridedSliceShape(
         inputShapes: List<UirShape>,
@@ -605,10 +615,45 @@ object ShapeInferer {
     ): List<UirShape> {
         requireSingleInput(UirOpKind.STRIDED_SLICE, inputShapes)
         
-        // 简化处理：返回未知形状
         val inputShape = inputShapes[0]
+        val ndim = inputShape.dims.size
         
-        return listOf(shapeFromDims(inputShape.dims.map { unknownDim() }))
+        // 默认切片参数：axes=[0], begin=[0], end=[-1]
+        // 即：在第一个维度去掉最后一个元素
+        val axes = listOf(0)  // 默认 axis=0
+        val begins = listOf(0)  // 默认 begin=0
+        val ends = listOf(-1)  // 默认 end=-1
+        
+        // 计算输出形状
+        val outputDims = inputShape.dims.toMutableList()
+        
+        for ((axisIdx, axis) in axes.withIndex()) {
+            // 规范化 axis（处理负数）
+            val normalizedAxis = if (axis < 0) axis + ndim else axis
+            if (normalizedAxis < 0 || normalizedAxis >= ndim) continue
+            
+            val begin = begins.getOrElse(axisIdx) { 0 }
+            val end = ends.getOrElse(axisIdx) { -1 }
+            
+            val inputDim = inputShape.dims[normalizedAxis]
+            val inputDimValue: Int? = inputDim.value
+            
+            // 计算切片后的维度值
+            if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT) {
+                // 规范化 begin/end
+                val normalizedBegin = if (begin < 0) begin + inputDimValue else begin
+                val normalizedEnd = if (end < 0) end + inputDimValue else end
+                
+                // 计算切片后的维度值
+                val sliceLength = normalizedEnd - normalizedBegin
+                outputDims[normalizedAxis] = constantDim(sliceLength)
+            } else {
+                // 输入维度未知，切片后也未知
+                outputDims[normalizedAxis] = unknownDim()
+            }
+        }
+        
+        return listOf(shapeFromDims(outputDims))
     }
     
     /**
