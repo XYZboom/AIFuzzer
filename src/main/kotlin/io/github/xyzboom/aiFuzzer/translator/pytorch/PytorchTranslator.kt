@@ -41,6 +41,12 @@ class PytorchTranslator(
 
             // 卷积
             UirOpKind.CONV2D to "F.conv2d",
+            UirOpKind.MAX_POOL2D to "F.max_pool2d",
+            UirOpKind.AVG_POOL2D to "F.avg_pool2d",
+
+            // 归一化
+            UirOpKind.LAYER_NORM to "F.layer_norm",
+            UirOpKind.BATCH_NORM to "F.batch_norm",
 
             // 一元激活
             UirOpKind.RELU to "F.relu",
@@ -240,6 +246,37 @@ class PytorchTranslator(
                 val groups = (node.attributes["groups"] as? UirIntAttr)?.value ?: 1
                 "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs[1].valueId]}, " +
                     "stride=$stride, padding=$padding, dilation=$dilation, groups=$groups)"
+            }
+
+            // ===== 池化 =====
+            UirOpKind.MAX_POOL2D -> {
+                val kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                val stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, " +
+                    "kernel_size=$kernelSize, stride=$stride, padding=$padding)"
+            }
+            UirOpKind.AVG_POOL2D -> {
+                val kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                val stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, " +
+                    "kernel_size=$kernelSize, stride=$stride, padding=$padding)"
+            }
+
+            // ===== 归一化 =====
+            UirOpKind.LAYER_NORM -> {
+                val inputShape = node.inputs[0].type.shape
+                val lastDim = inputShape.dims.last().value ?: 64
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, $lastDim)"
+            }
+            UirOpKind.BATCH_NORM -> {
+                // BatchNorm 需要 running_mean, running_var, weight, bias
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                val inputShape = node.inputs[0].type.shape
+                val numFeatures = inputShape.dims.getOrNull(1)?.value ?: 64
+                // 简化：使用默认参数
+                "F.batch_norm($inputVar, running_mean=None, running_var=None, training=True)"
             }
 
             // ===== SOFTMAX =====

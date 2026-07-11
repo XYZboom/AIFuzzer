@@ -62,6 +62,12 @@ class TvmRelaxTranslator(
 
             // 卷积
             UirOpKind.CONV2D to "relax.op.nn.conv2d",
+            UirOpKind.MAX_POOL2D to "relax.op.nn.max_pool2d",
+            UirOpKind.AVG_POOL2D to "relax.op.nn.avg_pool2d",
+
+            // 归一化
+            UirOpKind.LAYER_NORM to "relax.op.nn.layer_norm",
+            UirOpKind.BATCH_NORM to "relax.op.nn.batch_norm",
 
             // SOFTMAX
             UirOpKind.SOFTMAX to "relax.op.nn.softmax",
@@ -286,6 +292,36 @@ class TvmRelaxTranslator(
                     "padding=[$padding, $padding], " +
                     "dilation=[$dilation, $dilation], " +
                     "groups=$groups)"
+            }
+
+            // ===== 池化 =====
+            UirOpKind.MAX_POOL2D -> {
+                val kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                val stride = (attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                val padding = (attributes["padding"] as? UirIntAttr)?.value ?: 0
+                "relax.op.nn.max_pool2d(${inputVars[0]}, " +
+                    "pool_size=[$kernelSize, $kernelSize], " +
+                    "strides=[$stride, $stride], " +
+                    "padding=[$padding, $padding])"
+            }
+            UirOpKind.AVG_POOL2D -> {
+                val kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                val stride = (attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                val padding = (attributes["padding"] as? UirIntAttr)?.value ?: 0
+                "relax.op.nn.avg_pool2d(${inputVars[0]}, " +
+                    "pool_size=[$kernelSize, $kernelSize], " +
+                    "strides=[$stride, $stride], " +
+                    "padding=[$padding, $padding])"
+            }
+
+            // ===== 归一化 =====
+            UirOpKind.LAYER_NORM -> {
+                // LayerNorm: 对最后一个维度归一化
+                "relax.op.nn.layer_norm(${inputVars[0]})"
+            }
+            UirOpKind.BATCH_NORM -> {
+                // BatchNorm: 需要运行统计信息，这里简化处理
+                "relax.op.nn.batch_norm(${inputVars[0]})"
             }
 
             // ===== SOFTMAX =====

@@ -352,6 +352,17 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 attrs["dilation"] = buildIntAttr { value = 1 }
                 attrs["groups"] = buildIntAttr { value = 1 }
             }
+            UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
+                attrs["kernel_size"] = buildIntAttr { value = 2 }
+                attrs["stride"] = buildIntAttr { value = 2 }
+                attrs["padding"] = buildIntAttr { value = 0 }
+            }
+            UirOpKind.LAYER_NORM -> {
+                attrs["eps"] = buildIntAttr { value = 1 }  // 1e-5
+            }
+            UirOpKind.BATCH_NORM -> {
+                attrs["eps"] = buildIntAttr { value = 1 }  // 1e-5
+            }
             else -> { /* 无特殊属性 */ }
         }
         

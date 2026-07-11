@@ -52,6 +52,10 @@ enum class UirOpKind {
     REDUCE_MAX,
     REDUCE_MIN,
 
+    // 归一化
+    LAYER_NORM,
+    BATCH_NORM,
+
     // 索引/切片
     GATHER,
     STRIDED_SLICE,
@@ -71,6 +75,8 @@ enum class UirOpKind {
 
     // 卷积
     CONV2D,
+    MAX_POOL2D,
+    AVG_POOL2D,
 
     // 三角
     TRIL,
@@ -94,6 +100,8 @@ enum class UirOpKind {
             TILE, SPLIT,
             STRIDED_SLICE,
             GATHER,  // GATHER 当作单输入算子（假设 indices 是常量）
+            MAX_POOL2D, AVG_POOL2D,
+            LAYER_NORM, BATCH_NORM,
         )
 
         /** 双输入算子 */
@@ -114,7 +122,7 @@ enum class UirOpKind {
         /** 需要 ndim >= 2 的算子 */
         val needNdimGe2 = setOf(
             TRANSPOSE, TRIL, TRIU, STRIDED_SLICE,
-            CONV2D,
+            CONV2D, MAX_POOL2D, AVG_POOL2D,
         )
 
         /** reduce 类算子 */
@@ -129,7 +137,8 @@ enum class UirOpKind {
             SOFTMAX, CAST,
             SPLIT, CONCAT, TILE,
             TRANSPOSE,
-            CONV2D,
+            CONV2D, MAX_POOL2D, AVG_POOL2D,
+            LAYER_NORM, BATCH_NORM,
         )
 
         /** 适配算子（由 ShapeAdapter 插入，不参与逻辑图生成） */

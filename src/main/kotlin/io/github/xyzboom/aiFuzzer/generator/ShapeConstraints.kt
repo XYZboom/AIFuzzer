@@ -204,6 +204,30 @@ object ShapeConstraints {
             },
             description = "2D 卷积，需要 4D 输入（NCHW）和权重，C_in 维度匹配"
         ),
+
+        // ===== 分类 C.3：池化运算 =====
+        UirOpKind.MAX_POOL2D to OpShapeConstraint(
+            minNdim = 4,  // 输入必须 4D (NCHW)
+            numInputs = 1..1,
+            description = "2D 最大池化，需要 4D 输入（NCHW）"
+        ),
+        UirOpKind.AVG_POOL2D to OpShapeConstraint(
+            minNdim = 4,  // 输入必须 4D (NCHW)
+            numInputs = 1..1,
+            description = "2D 平均池化，需要 4D 输入（NCHW）"
+        ),
+
+        // ===== 分类 D.2：归一化运算 =====
+        UirOpKind.LAYER_NORM to OpShapeConstraint(
+            numInputs = 1..1,
+            minNdim = 1,
+            description = "层归一化，输出形状不变"
+        ),
+        UirOpKind.BATCH_NORM to OpShapeConstraint(
+            minNdim = 2,  // 至少 [N, C] 或 [N, C, H, W]
+            numInputs = 1..1,
+            description = "批归一化，输出形状不变"
+        ),
         // 单输入，无维度要求
         UirOpKind.REDUCE_SUM to OpShapeConstraint(
             numInputs = 1..1,

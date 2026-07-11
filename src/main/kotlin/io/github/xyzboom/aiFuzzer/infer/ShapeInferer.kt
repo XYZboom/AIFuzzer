@@ -115,6 +115,12 @@ object ShapeInferer {
             UirOpKind.CONV2D -> {
                 inferConv2dShape(inputShapes, attributes)
             }
+
+            // ===== 分类 C.3：池化 =====
+            UirOpKind.MAX_POOL2D,
+            UirOpKind.AVG_POOL2D -> {
+                inferPool2dShape(inputShapes, attributes)
+            }
             
             // ===== 分类 D：归约运算 =====
             UirOpKind.REDUCE_SUM,
@@ -122,6 +128,14 @@ object ShapeInferer {
             UirOpKind.REDUCE_MAX,
             UirOpKind.REDUCE_MIN -> {
                 inferReduceShape(inputShapes, attributes)
+            }
+
+            // ===== 分类 D.2：归一化运算 =====
+            UirOpKind.LAYER_NORM,
+            UirOpKind.BATCH_NORM -> {
+                // 归一化算子形状不变
+                requireSingleInput(op, inputShapes)
+                listOf(inputShapes.first())
             }
             
             // ===== 分类 E：形状变换 =====
@@ -458,6 +472,99 @@ object ShapeInferer {
         }
 
         val outVal = (inVal + 2 * padding - dilation * (kVal - 1) - 1) / stride + 1
+        return constantDim(outVal.coerceAtLeast(1))
+    }
+
+    /**
+     * MAX_POOL2D / AVG_POOL2D 形状推导。
+     *
+     * 假设 NCHW 格式：
+     *   input:  [N, C, H, W]
+     *   output: [N, C, H_out, W_out]
+     *
+     * 属性：
+     *   kernel_size (int, 默认 2) - 池化窗口大小
+     *   stride (int, 默认等于 kernel_size) - 步长
+     *   padding (int, 默认 0) - 填充
+     *
+     * H_out = floor((H + 2*padding - kernel_size) / stride + 1)
+     * W_out = floor((W + 2*padding - kernel_size) / stride + 1)
+     */
+    private fun inferPool2dShape(
+        inputShapes: List<UirShape>,
+        attributes: Map<String, Attribute>
+    ): List<UirShape> {
+        requireSingleInput(UirOpKind.MAX_POOL2D, inputShapes)
+
+        val inputShape = inputShapes[0]
+
+        // 读取属性
+        val kernelSize = when (val attr = attributes["kernel_size"]) {
+            is UirIntAttr -> attr.value
+            else -> 2
+        }
+        val stride = when (val attr = attributes["stride"]) {
+            is UirIntAttr -> attr.value
+            else -> kernelSize  // 默认 stride = kernel_size
+        }
+        val padding = when (val attr = attributes["padding"]) {
+            is UirIntAttr -> attr.value
+            else -> 0
+        }
+
+        // 检查输入是否为 4D
+        if (inputShape.dims.size < 4) {
+            // 维度不足时，假设为 4D 并补齐
+            val missing = 4 - inputShape.dims.size
+            val extra = (1..missing).map { constantDim(16) }
+            val paddedInput = shapeFromDims(extra + inputShape.dims)
+            return inferPool2dShapeFrom4D(paddedInput, kernelSize, stride, padding)
+        }
+
+        return inferPool2dShapeFrom4D(inputShape, kernelSize, stride, padding)
+    }
+
+    /**
+     * 从 4D 输入推导池化输出形状。
+     */
+    private fun inferPool2dShapeFrom4D(
+        inputShape: UirShape,
+        kernelSize: Int,
+        stride: Int,
+        padding: Int
+    ): List<UirShape> {
+        // input: [N, C, H, W]
+        val n = inputShape.dims[0]
+        val c = inputShape.dims[1]
+        val h = inputShape.dims[2]
+        val w = inputShape.dims[3]
+
+        // 计算输出空间维度
+        val hOut = computePoolOutputDim(h, kernelSize, stride, padding)
+        val wOut = computePoolOutputDim(w, kernelSize, stride, padding)
+
+        val outputDims = listOf(n, c, hOut, wOut)
+        return listOf(shapeFromDims(outputDims))
+    }
+
+    /**
+     * 计算池化输出维度：
+     * out = floor((in + 2*padding - kernel) / stride + 1)
+     */
+    private fun computePoolOutputDim(
+        inputDim: UirDim,
+        kernelSize: Int,
+        stride: Int,
+        padding: Int
+    ): UirDim {
+        val inVal = inputDim.value
+
+        if (inVal == null) {
+            // 维度未知，输出未知维度
+            return unknownDim()
+        }
+
+        val outVal = (inVal + 2 * padding - kernelSize) / stride + 1
         return constantDim(outVal.coerceAtLeast(1))
     }
 
