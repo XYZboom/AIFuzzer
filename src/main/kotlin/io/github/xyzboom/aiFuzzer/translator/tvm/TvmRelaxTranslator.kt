@@ -199,7 +199,7 @@ class TvmRelaxTranslator(
         }
 
         // 生成 TVM Relax 调用
-        val relaxCall = generateRelaxCall(node.op, inputVars, node.attributes, node.inputs.map { it.type.shape })
+        val relaxCall = generateRelaxCall(node.op, inputVars, node.attributes, node.inputs.map { it.type.shape }, node.outputs.map { it.type.shape })
 
         // 处理输出
         if (node.outputs.size == 1) {
@@ -221,7 +221,8 @@ class TvmRelaxTranslator(
         op: UirOpKind,
         inputVars: List<String>,
         attributes: Map<String, Attribute>,
-        inputShapes: List<UirShape>
+        inputShapes: List<UirShape>,
+        outputShapes: List<UirShape>
     ): String {
         return when (op) {
             // ===== 一元激活 =====
@@ -340,8 +341,12 @@ class TvmRelaxTranslator(
 
             // ===== 广播/填充 =====
             UirOpKind.BROADCAST_TO -> {
-                // 类似 matmul，使用 full 替换避免形状不兼容
-                "relax.op.broadcast_to(${inputVars[0]}, relax.ShapeExpr([$shapeRank]))"
+                // 从节点输出读取目标形状
+                val targetShape = outputShapes[0]
+                val shapeStr = targetShape.dims.map { dim ->
+                    if (dim.dimKind == UirDimKind.CONSTANT) dim.value.toString() else "?"
+                }.joinToString(", ")
+                "relax.op.broadcast_to(${inputVars[0]}, relax.ShapeExpr([$shapeStr]))"
             }
 
             UirOpKind.TILE -> {
@@ -355,19 +360,35 @@ class TvmRelaxTranslator(
 
             // ===== 常数生成 =====
             UirOpKind.ARANGE -> {
-                "relax.op.arange(0, $shapeRank, dtype=\"$dtype\")"
+                val targetShape = outputShapes[0]
+                val shapeStr = targetShape.dims.map { dim ->
+                    if (dim.dimKind == UirDimKind.CONSTANT) dim.value.toString() else "?"
+                }.joinToString(", ")
+                "relax.op.arange(0, $shapeStr)"
             }
 
             UirOpKind.FULL -> {
-                "relax.op.full(relax.ShapeExpr([$shapeRank]), relax.const(0, dtype=\"$dtype\"))"
+                val targetShape = outputShapes[0]
+                val shapeStr = targetShape.dims.map { dim ->
+                    if (dim.dimKind == UirDimKind.CONSTANT) dim.value.toString() else "?"
+                }.joinToString(", ")
+                "relax.op.full(relax.ShapeExpr([$shapeStr]), relax.const(0, dtype=\"$dtype\"))"
             }
 
             UirOpKind.ONES -> {
-                "relax.op.ones(relax.ShapeExpr([$shapeRank]), dtype=\"$dtype\")"
+                val targetShape = outputShapes[0]
+                val shapeStr = targetShape.dims.map { dim ->
+                    if (dim.dimKind == UirDimKind.CONSTANT) dim.value.toString() else "?"
+                }.joinToString(", ")
+                "relax.op.ones(relax.ShapeExpr([$shapeStr]), dtype=\"$dtype\")"
             }
 
             UirOpKind.ZEROS -> {
-                "relax.op.zeros(relax.ShapeExpr([$shapeRank]), dtype=\"$dtype\")"
+                val targetShape = outputShapes[0]
+                val shapeStr = targetShape.dims.map { dim ->
+                    if (dim.dimKind == UirDimKind.CONSTANT) dim.value.toString() else "?"
+                }.joinToString(", ")
+                "relax.op.zeros(relax.ShapeExpr([$shapeStr]), dtype=\"$dtype\")"
             }
 
             // ===== 适配算子 =====

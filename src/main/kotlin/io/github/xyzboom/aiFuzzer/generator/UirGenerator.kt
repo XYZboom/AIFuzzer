@@ -193,9 +193,22 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             log.trace { "节点 $nodeIndex: 属性 $attributes" }
         }
         
-        // 5. 推导并生成输出值（委托给 ShapeInferer）
-        val inputShapes = inputValueRefs.map { valueShapes[it.valueId]!! }
-        val outputShapes = inferOutputShapes(op, inputShapes, attributes)
+        // 5. 形状适配：检查输入形状是否满足算子约束，必要时插入 wrapper
+        val adaptResult = ShapeAdapter.adaptInputs(
+            op, inputValueRefs, valueShapes, valueCounter, nodeCounter
+        )
+        
+        // 记录适配信息
+        if (adaptResult.wrapperNodes.isNotEmpty()) {
+            log.debug { "节点 $nodeIndex: 插入 ${adaptResult.wrapperNodes.size} 个 wrapper 节点" }
+        }
+        
+        val adaptedInputRefs = adaptResult.adaptedRefs
+        val adaptedInputShapes = adaptResult.adaptedShapes
+        conversionNodes.addAll(adaptResult.wrapperNodes)
+        
+        // 6. 推导并生成输出值（委托给 ShapeInferer）
+        val outputShapes = inferOutputShapes(op, adaptedInputShapes, attributes)
         
         log.trace { "节点 $nodeIndex: 输出形状 ${outputShapes.map(::shapeDims)}" }
         
@@ -212,20 +225,20 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             }
         }
         
-        // 6. 创建主节点
+        // 7. 创建主节点（使用适配后的输入）
         val mainNode = buildNode {
             name = "${op.name.lowercase()}_${nodeIndex}_${randomIdSuffix()}"
             this.op = op
-            inputValueRefs.forEach { ref -> inputs.add(ref) }
+            adaptedInputRefs.forEach { ref -> inputs.add(ref) }  // 使用适配后的输入
             outputValueRefs.forEach { ref -> outputs.add(ref) }
             this.attributes = attributes
         }
         
         log.debug { "创建节点: ${mainNode.name} (op=$op)" }
-        log.debug { "  输入: ${inputValueRefs.map { "${it.valueId} ${shapeDims(valueShapes[it.valueId]!!)}" }}" }
+        log.debug { "  输入: ${adaptedInputRefs.map { "${it.valueId} ${shapeDims(valueShapes[it.valueId]!!)}" }}" }
         log.debug { "  输出: ${outputValueRefs.map { "${it.valueId} ${shapeDims(valueShapes[it.valueId]!!)}" }}" }
         
-        // 7. 返回：转换节点 + 主节点
+        // 8. 返回：转换节点 + wrapper节点 + 主节点
         return conversionNodes + mainNode
     }
     
@@ -253,47 +266,23 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 availableValues.random(rand)
             }
             
-            val shape1 = valueShapes[input1ValueId]!!
-            log.trace { "二元运算: 输入1 = $input1ValueId, 形状 = ${shapeDims(shape1)}" }
-            
-            // 选择第二个输入
+            // 选择第二个输入（随机，不检查形状兼容性，由 ShapeAdapter 处理）
             val input2ValueId = availableValues.filter { it != input1ValueId }.random(rand)
-            val shape2Existing = valueShapes[input2ValueId]!!
-            log.trace { "二元运算: 输入2 候选 = $input2ValueId, 形状 = ${shapeDims(shape2Existing)}" }
-            
-            // 检查是否兼容
-            val input2Ref = if (ShapeConstraints.areBroadcastable(shape1, shape2Existing)) {
-                log.trace { "二元运算: 形状兼容，直接使用" }
-                // 兼容：直接使用
-                buildValueRef {
-                    this.valueId = input2ValueId
-                    this.type = buildTensorType {
-                        this.typeKind = UirTypeKind.TENSOR
-                        this.shape = shape2Existing
-                        this.dtype = mkDataType()
-                    }
-                }
-            } else {
-                log.debug { "二元运算: 形状不兼容，插入转换节点 ${shapeDims(shape1)} vs ${shapeDims(shape2Existing)}" }
-                // 不兼容：插入转换节点
-                val shape2Expected = generateBroadcastableShape(shape1)
-                val input2ExistingRef = buildValueRef {
-                    this.valueId = input2ValueId
-                    this.type = buildTensorType {
-                        this.typeKind = UirTypeKind.TENSOR
-                        this.shape = shape2Existing
-                        this.dtype = mkDataType()
-                    }
-                }
-                
-                insertConversionNode(input2ExistingRef, shape2Expected, nodeList)
-            }
             
             val input1Ref = buildValueRef {
                 this.valueId = input1ValueId
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
-                    this.shape = shape1
+                    this.shape = valueShapes[input1ValueId]!!
+                    this.dtype = mkDataType()
+                }
+            }
+            
+            val input2Ref = buildValueRef {
+                this.valueId = input2ValueId
+                this.type = buildTensorType {
+                    this.typeKind = UirTypeKind.TENSOR
+                    this.shape = valueShapes[input2ValueId]!!
                     this.dtype = mkDataType()
                 }
             }
@@ -319,8 +308,8 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             }
         }
         
-        // 形状适配：为每个输入插入 wrapper 节点
-        return adaptInputShapes(op, inputRefs, nodeList)
+        // 形状适配由 ShapeAdapter 处理，这里直接返回
+        return inputRefs
     }
     
     private fun generateAttributes(op: UirOpKind): MutableMap<String, Attribute> {
@@ -405,182 +394,9 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * - 如果输入维度不足，插入 EXPAND_DIMS 增维
      * - 如果输入维度多余，插入 RESHAPE 减维
      */
-    private fun adaptInputShapes(
-        op: UirOpKind,
-        inputRefs: List<UirValueRef>,
-        nodeList: MutableList<UirNode>
-    ): List<UirValueRef> {
-        val constraint = ShapeConstraints.getConstraint(op)
-        val minNdim = constraint.minNdim
-        
-        return inputRefs.map { ref ->
-            var adapted = ref
-            val ndim = ref.type.shape.dims.size
-            
-            // 确保满足最小维度要求
-            if (ndim < minNdim) {
-                adapted = insertExpandDims(adapted, minNdim - ndim, nodeList)
-            }
-            adapted
-        }
-    }
-    
     /**
-     * 插入转换节点：将 input 转换为 expectedShape。
-     *
-     * 支持：
-     * - 维度不足时插入 EXPAND_DIMS
-     * - 维度多余时插入 RESHAPE 压缩
-     * - 维度值不匹配时插入 BROADCAST_TO
+     * 格式化形状为易读字符串
      */
-    private fun insertConversionNode(
-        input: UirValueRef,
-        expectedShape: UirShape,
-        nodeList: MutableList<UirNode>
-    ): UirValueRef {
-        log.debug { "插入转换节点: ${input.valueId} ${shapeDims(input.type.shape)} -> ${shapeDims(expectedShape)}" }
-        var current = input
-        val currentShape = input.type.shape
-        
-        // 步骤 1：对齐维度数
-        if (currentShape.dims.size < expectedShape.dims.size) {
-            log.trace { "  增维: ${currentShape.dims.size}D -> ${expectedShape.dims.size}D" }
-            current = insertExpandDims(current, expectedShape.dims.size - currentShape.dims.size, nodeList)
-        } else if (currentShape.dims.size > expectedShape.dims.size) {
-            log.trace { "  减维: ${currentShape.dims.size}D -> ${expectedShape.dims.size}D" }
-            current = insertReshapeForDimReduce(current, expectedShape.dims.size, nodeList)
-        }
-        
-        // 步骤 2：对齐维度值
-        if (!ShapeConstraints.areBroadcastable(current.type.shape, expectedShape)) {
-            log.trace { "  广播: ${shapeDims(current.type.shape)} -> ${shapeDims(expectedShape)}" }
-            current = insertBroadcastTo(current, expectedShape, nodeList)
-        }
-        
-        log.debug { "转换完成: ${current.valueId} ${shapeDims(current.type.shape)}" }
-        return current
-    }
-    
-    private fun insertExpandDims(
-        input: UirValueRef,
-        numDims: Int,
-        nodeList: MutableList<UirNode>
-    ): UirValueRef {
-        val outputShape = buildShape {
-            repeat(numDims) {
-                this.dims.add(buildDim {
-                    this.dimKind = UirDimKind.CONSTANT
-                    this.value = 1
-                })
-            }
-            input.type.shape.dims.forEach { this.dims.add(it) }
-        }
-        
-        val outputRef = buildValueRef {
-            this.valueId = newValueId()
-            this.type = buildTensorType {
-                this.typeKind = UirTypeKind.TENSOR
-                this.shape = outputShape
-                this.dtype = input.type.dtype
-            }
-        }
-        
-        valueShapes[outputRef.valueId] = outputShape
-        
-        val node = buildNode {
-            this.name = "expand_dims_${nodeCounter++}_${randomIdSuffix()}"
-            this.op = UirOpKind.EXPAND_DIMS
-            this.inputs.add(input)
-            this.outputs.add(outputRef)
-        }
-        
-        nodeList.add(node)
-        return outputRef
-    }
-    
-    /**
-     * 插入 RESHAPE 节点降低维度数（当前形状 ndim > 目标 ndim）。
-     *
-     * 策略：展平前 (ndim - targetNdim + 1) 维，保持最后 (targetNdim - 1) 维不变。
-     * 例如 [4,3,5,2] 降到 3D → 展平前 2 维为 [12,5,2]
-     */
-    private fun insertReshapeForDimReduce(
-        input: UirValueRef,
-        targetNdim: Int,
-        nodeList: MutableList<UirNode>
-    ): UirValueRef {
-        val currentShape = input.type.shape
-        val flattenDims = currentShape.dims.size - targetNdim + 1
-        val outputDims = mutableListOf<UirDim>()
-        
-        // 前 flattenDims 维展平
-        var product = 1
-        for (i in 0 until flattenDims) {
-            val v = currentShape.dims[i].valueOrNull()
-            if (v != null) product *= v
-        }
-        outputDims.add(buildDim {
-            this.dimKind = UirDimKind.CONSTANT
-            this.value = product
-        })
-        
-        // 后 (targetNdim - 1) 维不变
-        for (i in flattenDims until currentShape.dims.size) {
-            outputDims.add(currentShape.dims[i])
-        }
-        
-        val outputShape = buildShape { outputDims.forEach { this.dims.add(it) } }
-        
-        val outputRef = buildValueRef {
-            this.valueId = newValueId()
-            this.type = buildTensorType {
-                this.typeKind = UirTypeKind.TENSOR
-                this.shape = outputShape
-                this.dtype = input.type.dtype
-            }
-        }
-        
-        valueShapes[outputRef.valueId] = outputShape
-        
-        val node = buildNode {
-            this.name = "reshape_${nodeCounter++}_${randomIdSuffix()}"
-            this.op = UirOpKind.RESHAPE
-            this.inputs.add(input)
-            this.outputs.add(outputRef)
-        }
-        
-        nodeList.add(node)
-        return outputRef
-    }
-    
-    private fun insertBroadcastTo(
-        input: UirValueRef,
-        targetShape: UirShape,
-        nodeList: MutableList<UirNode>
-    ): UirValueRef {
-        val outputRef = buildValueRef {
-            this.valueId = newValueId()
-            this.type = buildTensorType {
-                this.typeKind = UirTypeKind.TENSOR
-                this.shape = targetShape
-                this.dtype = input.type.dtype
-            }
-        }
-        
-        valueShapes[outputRef.valueId] = targetShape
-        
-        val node = buildNode {
-            this.name = "broadcast_to_${nodeCounter++}_${randomIdSuffix()}"
-            this.op = UirOpKind.BROADCAST_TO
-            this.inputs.add(input)
-            this.outputs.add(outputRef)
-        }
-        
-        nodeList.add(node)
-        return outputRef
-    }
-    
-    /** 格式化形状为易读字符串 */
     private fun shapeDims(shape: UirShape): String {
         return shape.dims.map { it.valueOrNull() ?: "?" }.joinToString(", ", "[", "]")
     }
