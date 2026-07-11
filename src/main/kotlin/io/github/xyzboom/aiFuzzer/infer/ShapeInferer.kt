@@ -546,17 +546,31 @@ object ShapeInferer {
     /**
      * GATHER 形状推导。
      * 
-     * 规则：output_ndim = input_ndim + indices_ndim - 1
-     * 当前实现：假设 indices 是常量 0-D 或 1-D
+     * 规则：单输入模式（indices 是标量常量）会移除 axis 维度
+     * TVM 的 take(tensor, scalar_index, axis) 会减少一个维度
      */
     private fun inferGatherShape(
         inputShapes: List<UirShape>,
         attributes: Map<String, Attribute>
     ): List<UirShape> {
-        // GATHER 可以是单输入（indices 是常量）或双输入
+        // GATHER 单输入模式：假设 indices 是 0-D 标量
+        // 规则：移除 axis 维度（类似 reduce with keepdims=False）
         if (inputShapes.size == 1) {
-            // 单输入模式：假设 indices 是 0-D 标量，输出形状不变
-            return listOf(inputShapes[0])
+            val dataShape = inputShapes[0]
+            val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+            val ndim = dataShape.dims.size
+            
+            // 规范化 axis
+            val normalizedAxis = if (axis < 0) axis + ndim else axis
+            
+            if (normalizedAxis in 0 until ndim) {
+                // 移除 axis 维度
+                val outputDims = dataShape.dims.filterIndexed { i, _ -> i != normalizedAxis }
+                // 确保至少 1D
+                val finalDims = if (outputDims.isEmpty()) listOf(constantDim(1)) else outputDims
+                return listOf(shapeFromDims(finalDims))
+            }
+            return listOf(shapeFromDims(listOf(unknownDim())))
         }
         
         requireBinaryInput(UirOpKind.GATHER, inputShapes)
