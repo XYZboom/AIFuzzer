@@ -209,11 +209,22 @@ class TvmRelaxTranslator(
             val outputVar = node.outputs[0].valueId
             builder.appendLine("        $outputVar = bb.emit($relaxCall)")
             valueMap[outputVar] = outputVar
+            
+            // 添加形状断言
+            val expectedShape = node.outputs[0].type.shape
+            addShapeAssertion(builder, outputVar, expectedShape)
         } else {
             // 多输出
             val outputVars = node.outputs.map { it.valueId }
             builder.appendLine("        ${outputVars.joinToString(", ")} = bb.emit($relaxCall)")
             outputVars.forEach { valueMap[it] = it }
+            
+            // 为每个输出添加形状断言
+            for (i in node.outputs.indices) {
+                val outputVar = outputVars[i]
+                val expectedShape = node.outputs[i].type.shape
+                addShapeAssertion(builder, outputVar, expectedShape)
+            }
         }
     }
 
@@ -413,6 +424,37 @@ class TvmRelaxTranslator(
                 "relax.op.expand_dims(${inputVars[0]}, axis=$axis)"
             }
         }
+    }
+
+    /**
+     * 添加形状断言。
+     * 断言输出的实际形状与推断的形状一致。
+     */
+    private fun addShapeAssertion(builder: StringBuilder, outputVar: String, expectedShape: UirShape) {
+        // 生成期望形状的字符串表示
+        val expectedShapeStr = generateShapeAssertionExpr(expectedShape)
+        
+        // 使用 relax 的结构信息检查
+        builder.appendLine("        assert str($outputVar.struct_info.shape) == \"$expectedShapeStr\", f\"Shape mismatch: expected $expectedShapeStr, got {$outputVar.struct_info.shape}\"")
+    }
+
+    /**
+     * 生成用于断言的形状表达式字符串。
+     */
+    private fun generateShapeAssertionExpr(shape: UirShape): String {
+        if (shape.dims.isEmpty()) {
+            return "R.shape([])"
+        }
+
+        val dims = shape.dims.map { dim ->
+            when (dim.dimKind) {
+                UirDimKind.CONSTANT -> dim.value?.toString() ?: shapeRank.toString()
+                UirDimKind.SYMBOLIC -> shapeRank.toString()  // 符号维度暂时用固定值
+                UirDimKind.UNKNOWN -> shapeRank.toString()    // 未知维度暂时用固定值
+            }
+        }
+
+        return "R.shape([${dims.joinToString(", ")}])"
     }
 
     /**
