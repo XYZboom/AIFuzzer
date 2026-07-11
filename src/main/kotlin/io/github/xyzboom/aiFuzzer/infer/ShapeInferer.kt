@@ -617,7 +617,7 @@ object ShapeInferer {
             inputShape
         }
         
-        return listOf(shapeFromDims(inputShape.dims))
+        return listOf(shapeFromDims(adaptedShape.dims))  // 修复：返回适配后的形状
     }
     
     /**
