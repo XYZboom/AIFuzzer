@@ -1,6 +1,7 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import java.util.concurrent.atomic.AtomicInteger
@@ -16,9 +17,12 @@ private val log = KotlinLogging.logger {}
  *
  * 并行模式使用 Java ThreadPool + Future 确保可中断超时。
  * 串行模式直接在主线程执行。
+ *
+ * 注意：[generatorConfig] 用于每次生成时创建新的 [UirGenerator] 实例，
+ * 避免16线程并发共享可变状态的问题。
  */
 class FuzzingPipeline(
-    private val generator: UirGenerator = UirGenerator(),
+    private val generatorConfig: GeneratorConfig = GeneratorConfig(),
     private val backends: List<Backend<*>>,
     private val config: FuzzingConfig = FuzzingConfig(),
 ) {
@@ -35,9 +39,12 @@ class FuzzingPipeline(
 
     /**
      * 单次 Fuzzing 运行（单线程，调用方负责上下文）。
+     * 每次调用创建新的 [UirGenerator] 实例，确保线程安全。
      */
     fun runOnce(seed: Long = System.currentTimeMillis()): List<FuzzingResult> {
         log.debug { "运行单次测试: seed=$seed" }
+        // 每次创建新的 generator，避免共享可变状态
+        val generator = UirGenerator(generatorConfig.copy(seed = seed))
         val program = generator.generate()
         log.trace { "生成程序: ${program.graphs.size} 个图" }
         return backends.map { backend ->
@@ -137,9 +144,17 @@ class FuzzingPipeline(
 
             val futures = (0 until count).map { i ->
                 val seed = startSeed + i
+                // 为每个任务预创建 generator 配置（seed 已确定）
+                val taskGenConfig = generatorConfig.copy(seed = seed)
                 executor.submit<List<FuzzingResult>> {
+                    // 每个任务创建独立的 generator 实例，完全避免共享状态
+                    val taskGenerator = UirGenerator(taskGenConfig)
                     try {
-                        val results = runOnce(seed)
+                        // 内联 runOnce 逻辑，使用任务专属的 generator
+                        val program = taskGenerator.generate()
+                        val results = backends.map { backend ->
+                            runOnBackend(program, backend, seed)
+                        }
                         results.forEach {
                             if (it.backendResult.success) successCount.incrementAndGet()
                             else {

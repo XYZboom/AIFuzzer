@@ -230,7 +230,9 @@ class DaemonClient(
 
     /**
      * 重启 daemon。
+     * 同步方法，防止多个线程同时重启。
      */
+    @Synchronized
     fun restart(): Boolean {
         destroy()
         return start()
@@ -244,6 +246,11 @@ class DaemonClient(
         destroy()
     }
 
+    /**
+     * 确保 daemon 正在运行，若未运行则重启。
+     * 同步方法，防止多个线程同时进入重启逻辑。
+     */
+    @Synchronized
     private fun ensureRunning() {
         if (!isAlive() || !ready) {
             if (retries >= maxRetries) {
@@ -258,6 +265,11 @@ class DaemonClient(
         }
     }
 
+    /**
+     * 销毁 daemon 进程。
+     * 同步方法，防止与 start() 竞争。
+     */
+    @Synchronized
     private fun destroy() {
         val p = process
         val oldPort = port
