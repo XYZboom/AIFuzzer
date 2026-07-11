@@ -346,6 +346,27 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         inputShapes: List<UirShape>,
         attributes: Map<String, Attribute>
     ): List<UirShape> {
+        // 特殊处理：常数生成算子直接生成随机形状
+        if (op in UirOpKind.constantOps) {
+            return when (op) {
+                UirOpKind.ARANGE -> {
+                    // ARANGE 生成 1-D 张量，随机长度
+                    val length = rand.nextInt(16, 257)  // 16-256
+                    listOf(buildShape {
+                        dims.add(buildDim {
+                            dimKind = UirDimKind.CONSTANT
+                            value = length
+                        })
+                    })
+                }
+                UirOpKind.FULL, UirOpKind.ONES, UirOpKind.ZEROS -> {
+                    // 生成随机形状（至少 2D）
+                    listOf(generateRandomShape(config.minNdim, config.maxNdim))
+                }
+                else -> listOf(generateRandomShape(1, 4))
+            }
+        }
+        
         if (inputShapes.isEmpty()) {
             return listOf(generateRandomShape(1, 4))
         }

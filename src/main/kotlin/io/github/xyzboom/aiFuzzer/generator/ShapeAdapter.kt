@@ -506,10 +506,10 @@ object ShapeAdapter {
                     dimKind = UirDimKind.CONSTANT
                     value = v1
                 }
-                // 都不为 1 且不相等：都设置为 1（两者都可以广播）
+                // 都不为 1 且不相等：使用较大值（允许通过 RESHAPE 或 BROADCAST_TO 调整）
                 else -> buildDim {
                     dimKind = UirDimKind.CONSTANT
-                    value = 1  // 都设置为1，都可以广播
+                    value = maxOf(v1, v2)  // 使用较大值
                 }
             }
         }
