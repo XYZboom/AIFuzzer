@@ -11,6 +11,7 @@ import io.github.xyzboom.aiFuzzer.ir.types.UirDim
 import io.github.xyzboom.aiFuzzer.ir.types.UirShape
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDataType
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDim
+import io.github.xyzboom.aiFuzzer.ir.types.builder.buildIntAttr
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildShape
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildTensorType
 
@@ -726,15 +727,18 @@ object ShapeAdapter {
         
         // 步骤 1：对齐维度数
         if (originalNdim < targetNdim) {
-            // 增加维度：插入 EXPAND_DIMS
+            // 增加维度：需要插入多个 EXPAND_DIMS 节点
             val numDimsToAdd = targetNdim - originalNdim
-            val (newRef, newNode) = insertExpandDims(
-                currentRef, currentShape, numDimsToAdd,
-                valueShapes, counter++, nodeCounter + wrapperNodes.size
-            )
-            wrapperNodes.add(newNode)
-            currentRef = newRef
-            currentShape = valueShapes[newRef.valueId]!!
+            // 为每个要插入的维度创建一个 EXPAND_DIMS 节点
+            for (i in 0 until numDimsToAdd) {
+                val (newRef, newNode) = insertSingleExpandDims(
+                    currentRef, currentShape, axis = 0,
+                    valueShapes, counter++, nodeCounter + wrapperNodes.size
+                )
+                wrapperNodes.add(newNode)
+                currentRef = newRef
+                currentShape = valueShapes[newRef.valueId]!!
+            }
         } else if (originalNdim > targetNdim) {
             // 错误情况：目标维度数少于原始维度数
             // 这不应该发生！说明 deriveTargetShape 返回了错误的形状
@@ -784,10 +788,66 @@ object ShapeAdapter {
     }
     
     /**
-     * 插入 EXPAND_DIMS wrapper 节点。
+     * 插入单个 EXPAND_DIMS 节点，在指定位置插入一个 size=1 的维度。
+     *
+     * @param axis 插入维度的位置（0 表示在最前面）
+     */
+    private fun insertSingleExpandDims(
+        inputRef: UirValueRef,
+        inputShape: UirShape,
+        axis: Int,
+        valueShapes: MutableMap<String, UirShape>,
+        valueIdCounter: Int,
+        nodeIdCounter: Int
+    ): Pair<UirValueRef, UirNode> {
+        // 构造输出形状：在 axis 位置插入一个维度 1
+        val normalizedAxis = axis.coerceIn(0, inputShape.dims.size)
+        val outputShape = buildShape {
+            // 在 normalizedAxis 位置插入 size=1 的维度
+            for (i in 0 until normalizedAxis) {
+                dims.add(inputShape.dims[i])
+            }
+            dims.add(buildDim {
+                dimKind = UirDimKind.CONSTANT
+                value = 1
+            })
+            for (i in normalizedAxis until inputShape.dims.size) {
+                dims.add(inputShape.dims[i])
+            }
+        }
+        
+        val outputValueId = "v_${valueIdCounter}_wrapper"
+        valueShapes[outputValueId] = outputShape
+        
+        val outputRef = buildValueRef {
+            valueId = outputValueId
+            type = buildTensorType {
+                typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
+                shape = outputShape
+                dtype = inputRef.type.dtype
+            }
+        }
+        
+        val node = buildNode {
+            name = "expand_dims_${nodeIdCounter}_wrapper"
+            op = UirOpKind.EXPAND_DIMS
+            inputs.add(inputRef)
+            outputs.add(outputRef)
+            // 设置 axis 属性
+            attributes["axis"] = buildIntAttr { value = normalizedAxis }
+        }
+        
+        return Pair(outputRef, node)
+    }
+    
+    /**
+     * 插入 EXPAND_DIMS wrapper 节点（已废弃）。
      *
      * 在前面插入 numDims 个 size=1 的维度。
+     * 注意：这个方法一次插入多个维度，但 TVM 的 expand_dims 只支持插入一个维度。
+     * 请使用 insertSingleExpandDims 代替。
      */
+    @Deprecated("Use insertSingleExpandDims instead")
     private fun insertExpandDims(
         inputRef: UirValueRef,
         inputShape: UirShape,
@@ -819,12 +879,18 @@ object ShapeAdapter {
             }
         }
         
+        // 重要：虽然一次插入 numDims 个维度，但只创建一个节点
+        // axis=0 表示在最前面插入维度
         val node = buildNode {
             name = "expand_dims_${nodeIdCounter}_wrapper"
             op = UirOpKind.EXPAND_DIMS
             inputs.add(inputRef)
             outputs.add(outputRef)
-            // EXPAND_DIMS 的 axis 属性可以省略（默认行为）
+            // 设置 axis 属性：在前面插入维度
+            // 注意：TVM 的 expand_dims 一次只能插入一个维度
+            // 如果需要插入多个维度，应该生成多个节点，或者使用其他方法
+            // 这里暂时保持简单，axis=0 表示在最前面插入
+            attributes["axis"] = buildIntAttr { value = 0 }
         }
         
         return Pair(outputRef, node)
