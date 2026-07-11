@@ -28,12 +28,12 @@ class TvmBench {
             log.warn { "TVM 不可用，跳过" }
             return
         }
-        val generator = UirGenerator(GeneratorConfig(
+        val genConfig = GeneratorConfig(
             seed = 42, minNodesPerGraph = 2, maxNodesPerGraph = 5,
             graphCount = 1, minInputs = 1, maxInputs = 3,
-        ))
+        )
         val pipeline = FuzzingPipeline(
-            generator = generator, backends = listOf(backend),
+            generatorConfig = genConfig, backends = listOf(backend),
             config = FuzzingPipeline.FuzzingConfig(
                 keepArtifacts = true,
                 workers = 16

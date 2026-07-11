@@ -6,6 +6,7 @@ import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicInteger
 
 private val log = KotlinLogging.logger {}
 
@@ -16,6 +17,8 @@ private val log = KotlinLogging.logger {}
  *   - source.py       ：生成的 Python 源文件（AI 编译器的输入）
  *   - stderr.log      ：错误堆栈的完整信息
  *   - ir.jsonl        ：IR 序列化文件（JSON Lines 格式）
+ *
+ * 线程安全：使用 AtomicInteger 确保 bugCounter 在多线程环境下正确递增。
  */
 object BugCollector {
 
@@ -26,7 +29,8 @@ object BugCollector {
         dir
     }
 
-    private var bugCounter = 0
+    // 使用 AtomicInteger 确保线程安全
+    private val bugCounter = AtomicInteger(0)
 
     /**
      * 所有非成功的执行结果都视为 bug。
@@ -55,11 +59,12 @@ object BugCollector {
         if (!isWorthyBug(result)) return
 
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        bugCounter++
+        // 使用 getAndIncrement 确保 bugId 是唯一的
+        val bugId = bugCounter.getAndIncrement() + 1
 
         // 创建 bug 文件夹
         val bugDirName = "bug_%03d_%s_seed%s_%s_%s".format(
-            bugCounter,
+            bugId,
             backendName.replace(" ", "_"),
             seed,
             result.exitCode,
@@ -131,6 +136,6 @@ ${result.stderr.trimEnd()}
 
     /** 重置计数器（新的一轮 fuzzing 时调用） */
     fun reset() {
-        bugCounter = 0
+        bugCounter.set(0)
     }
 }

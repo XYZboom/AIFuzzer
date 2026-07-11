@@ -93,9 +93,8 @@ class AiFuzzerCommand : CliktCommand(
         val seed = config.run.seed?.toLongOrNull() ?: System.currentTimeMillis()
         echo("Seed: $seed")
 
-        // 3. 创建生成器
+        // 3. 创建生成器配置（不再直接创建 generator 实例）
         val genConfig = config.generator.toGeneratorConfig(seed)
-        val generator = UirGenerator(genConfig)
 
         // 4. 创建后端
         val backends = mutableListOf<Backend<*>>()
@@ -138,7 +137,7 @@ class AiFuzzerCommand : CliktCommand(
 
         // 6. 创建流水线
         val pipeline = FuzzingPipeline(
-            generator = generator,
+            generatorConfig = genConfig,
             backends = backends,
             config = config.pipeline.toFuzzingConfig(),
         )
