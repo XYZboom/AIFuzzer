@@ -636,7 +636,12 @@ object ShapeInferer {
                 val normalizedEnd = if (end < 0) end + inputDimValue else end
                 
                 // 计算切片后的维度值
-                val sliceLength = normalizedEnd - normalizedBegin
+                // 特殊处理：如果输入维度为 0，切片后也为 0（空张量保持为空）
+                val sliceLength = if (inputDimValue == 0) {
+                    0  // 空张量切片后仍为空张量
+                } else {
+                    normalizedEnd - normalizedBegin
+                }
                 outputDims[normalizedAxis] = constantDim(sliceLength)
             } else {
                 // 输入维度未知，切片后也未知
