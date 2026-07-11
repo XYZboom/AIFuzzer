@@ -392,13 +392,8 @@ object ShapeInferer {
                 if (i in normalizedAxes) constantDim(1) else dim
             }
         } else {
-            val filtered = inputShape.dims.filterIndexed { i, _ -> i !in normalizedAxes }
-            // 确保输出至少为 1-D（避免 0-D 传播到后续算子）
-            if (filtered.isEmpty()) {
-                listOf(constantDim(1))
-            } else {
-                filtered
-            }
+            // 移除归约维度，可能产生 0-D tensor（标量）
+            inputShape.dims.filterIndexed { i, _ -> i !in normalizedAxes }
         }
         
         return listOf(shapeFromDims(outputDims))
@@ -553,8 +548,6 @@ object ShapeInferer {
         inputShapes: List<UirShape>,
         attributes: Map<String, Attribute>
     ): List<UirShape> {
-        // GATHER 单输入模式：假设 indices 是 0-D 标量
-        // 规则：移除 axis 维度（类似 reduce with keepdims=False）
         if (inputShapes.size == 1) {
             val dataShape = inputShapes[0]
             val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
@@ -564,11 +557,9 @@ object ShapeInferer {
             val normalizedAxis = if (axis < 0) axis + ndim else axis
             
             if (normalizedAxis in 0 until ndim) {
-                // 移除 axis 维度
+                // 移除 axis 维度，可能产生 0-D tensor（标量）
                 val outputDims = dataShape.dims.filterIndexed { i, _ -> i != normalizedAxis }
-                // 确保至少 1D
-                val finalDims = if (outputDims.isEmpty()) listOf(constantDim(1)) else outputDims
-                return listOf(shapeFromDims(finalDims))
+                return listOf(shapeFromDims(outputDims))
             }
             return listOf(shapeFromDims(listOf(unknownDim())))
         }
