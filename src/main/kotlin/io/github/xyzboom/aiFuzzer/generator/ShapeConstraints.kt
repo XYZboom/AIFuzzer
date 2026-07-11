@@ -59,7 +59,8 @@ object ShapeConstraints {
         ),
         UirOpKind.SOFTMAX to OpShapeConstraint(
             numInputs = 1..1,
-            description = "逐元素激活，形状不变"
+            minNdim = 1,
+            description = "归一化，有 axis 参数"
         ),
         UirOpKind.NEG to OpShapeConstraint(
             numInputs = 1..1,
@@ -187,18 +188,22 @@ object ShapeConstraints {
         // 单输入，无维度要求
         UirOpKind.REDUCE_SUM to OpShapeConstraint(
             numInputs = 1..1,
+            minNdim = 1,
             description = "归约运算，输出维度减少"
         ),
         UirOpKind.REDUCE_MEAN to OpShapeConstraint(
             numInputs = 1..1,
+            minNdim = 1,
             description = "归约运算，输出维度减少"
         ),
         UirOpKind.REDUCE_MAX to OpShapeConstraint(
             numInputs = 1..1,
+            minNdim = 1,
             description = "归约运算，输出维度减少"
         ),
         UirOpKind.REDUCE_MIN to OpShapeConstraint(
             numInputs = 1..1,
+            minNdim = 1,
             description = "归约运算，输出维度减少"
         ),
         
