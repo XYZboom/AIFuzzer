@@ -127,9 +127,28 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             }
         }
         
-        // 3. 选择图输出
-        val numOutputs = rand.nextInt(1, minOf(3, availableValues.size) + 1)
-        val graphOutputs = availableValues.takeLast(numOutputs).map { valueId ->
+        // 3. 选择图输出：选择所有未被使用的值
+        // 找出未被任何节点使用的值（即图的叶子节点）
+        val usedValues = mutableSetOf<String>()
+        nodeList.forEach { node ->
+            node.inputs.forEach { input ->
+                usedValues.add(input.valueId)
+            }
+        }
+        
+        // 未被使用的值 = 所有可用值 - 被使用的值
+        val unusedValues = availableValues.filter { it !in usedValues }
+        
+        // 如果没有未被使用的值，则使用最后一个值作为输出（避免空输出）
+        val outputValues = if (unusedValues.isNotEmpty()) {
+            unusedValues
+        } else {
+            listOf(availableValues.last())
+        }
+        
+        log.debug { "图输出: ${outputValues.size} 个未被使用的值" }
+        
+        val graphOutputs = outputValues.map { valueId ->
             buildValueRef {
                 this.valueId = valueId
                 this.type = buildTensorType {

@@ -250,7 +250,8 @@ object ShapeConstraints {
         // ===== 分类 G：索引/切片 =====
         UirOpKind.GATHER to OpShapeConstraint(
             numInputs = 1..1,  // 单输入模式（indices 是常量）
-            description = "索引操作"
+            minNdim = 1,
+            description = "索引操作，需要至少 1D"
         ),
         UirOpKind.STRIDED_SLICE to OpShapeConstraint(
             minNdim = 2,
@@ -305,7 +306,8 @@ object ShapeConstraints {
         ),
         UirOpKind.TILE to OpShapeConstraint(
             numInputs = 1..1,
-            description = "复制填充"
+            minNdim = 1,
+            description = "复制填充，需要至少 1D"
         ),
         
         // ===== 分类 K：适配算子 =====
