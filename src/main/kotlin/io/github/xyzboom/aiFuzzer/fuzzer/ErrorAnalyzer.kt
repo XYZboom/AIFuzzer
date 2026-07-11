@@ -20,6 +20,12 @@ enum class ErrorCategory {
     OP_NOT_IMPLEMENTED,
     // 其他 TVM 编译错误
     TVM_COMPILE_ERROR,
+    // Dynamo 捕获错误（PyTorch）
+    DYNAMO_ERROR,
+    // Inductor 编译错误（PyTorch）
+    INDUCTOR_ERROR,
+    // PyTorch 运行时错误
+    PYTORCH_RUNTIME_ERROR,
     // 超时
     TIMEOUT,
     // 未分类错误
@@ -76,6 +82,28 @@ object ErrorAnalyzer {
             stderr.contains("ImportError") -> {
                 val msg = extractLine(stderr, "ImportError")
                 ErrorInfo(ErrorCategory.UNKNOWN, msg)
+            }
+            // PyTorch Dynamo 错误
+            stderr.contains("TorchDynamo") || stderr.contains("torch._dynamo") || stderr.contains("torch._guards") -> {
+                val msg = when {
+                    stderr.contains("TorchDynamo") -> extractLine(stderr, "TorchDynamo")
+                    stderr.contains("torch._dynamo") -> extractLine(stderr, "torch._dynamo")
+                    else -> extractLine(stderr, "torch._guards")
+                }
+                ErrorInfo(ErrorCategory.DYNAMO_ERROR, msg)
+            }
+            // PyTorch Inductor 错误
+            stderr.contains("Inductor") || stderr.contains("torch._inductor") -> {
+                val msg = when {
+                    stderr.contains("Inductor") -> extractLine(stderr, "Inductor")
+                    else -> extractLine(stderr, "torch._inductor")
+                }
+                ErrorInfo(ErrorCategory.INDUCTOR_ERROR, msg)
+            }
+            // PyTorch 运行时错误
+            stderr.contains("RuntimeError") && (stderr.contains("torch") || stderr.contains("cuda") || stderr.contains("CUDA")) -> {
+                val msg = extractLine(stderr, "RuntimeError")
+                ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
             }
             else -> {
                 ErrorInfo(ErrorCategory.UNKNOWN, stderr.take(200))

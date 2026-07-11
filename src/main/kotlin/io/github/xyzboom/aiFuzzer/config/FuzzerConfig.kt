@@ -84,6 +84,7 @@ data class BackendsConfig(
     var tvm: TvmConfig = TvmConfig(),
     var onnx: OnnxConfig = OnnxConfig(),
     var iree: IreeConfig = IreeConfig(),
+    var pytorch: PytorchConfig = PytorchConfig(),
 )
 
 data class TvmConfig(
@@ -111,6 +112,20 @@ data class IreeConfig(
     var target: String = "llvm-cpu",
     var driver: String = "local-sync",
     var mlirFlags: List<String> = emptyList(),
+)
+
+data class PytorchConfig(
+    var python: String = "python3",
+    /** 执行模式: "daemon" (常驻进程) */
+    var mode: String = "daemon",
+    var timeoutSeconds: Int = 120,
+    var keepArtifacts: Boolean = false,
+    var workDir: String = System.getProperty("java.io.tmpdir", "/tmp") + "/aiFuzzer_pytorch",
+    var dtype: String = "float32",
+    /** 执行设备: "cpu" 或 "cuda" */
+    var device: String = "cpu",
+    /** torch.compile 模式: "default", "reduce-overhead", "max-autotune" */
+    var compileMode: String = "default",
 )
 
 data class BugCollectorConfig(

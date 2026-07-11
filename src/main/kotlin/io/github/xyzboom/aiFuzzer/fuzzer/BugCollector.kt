@@ -81,6 +81,7 @@ object BugCollector {
             // 从 BackendResult 中取出 sourceFile 路径
             val srcPath = when (result) {
                 is TvmBackend.TvmResult -> result.sourceFile
+                is PytorchDaemonBackend.PytorchResult -> result.sourceFile
                 else -> null
             }
             if (srcPath != null) {
