@@ -49,6 +49,25 @@ class TvmDaemonBackend(
         dtype = dtype,
     )
 
+    /**
+     * 创建 Backend 的独立副本（新的 daemon 实例）。
+     * 用于多线程场景，每个 worker 线程有独立的 daemon。
+     */
+    override fun createCopy(): Backend<TvmBackend.TvmResult> {
+        val newWorkDir = File(
+            workDir.parent,
+            "${workDir.name}_thread_${Thread.currentThread().id}"
+        )
+        return TvmDaemonBackend(
+            pythonPath = pythonPath,
+            daemonScriptPath = daemonScriptPath,
+            daemonCount = daemonCount,
+            shapeRank = shapeRank,
+            dtype = dtype,
+            workDir = newWorkDir,
+        )
+    }
+
     override fun checkEnvironment(): Boolean {
         // 确保 daemon 脚本存在于工作目录相对路径上
         val scriptFile = File(daemonScriptPath)

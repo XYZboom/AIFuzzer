@@ -12,6 +12,9 @@ import io.github.xyzboom.aiFuzzer.ir.UirProgram
  * - 每轮启动子进程的 [TvmBackend]
  * - 通过常驻 daemon 通信的 [TvmDaemonBackend]
  * - 未来新增的任何后端
+ *
+ * 线程安全：多线程并发时，每个线程应有独立的 Backend 实例。
+ * 实现类应提供 [createCopy] 方法来创建副本。
  */
 interface Backend<T : BackendResult> : AutoCloseable {
     /** 后端名称，用于标识和日志 */
@@ -41,6 +44,13 @@ interface Backend<T : BackendResult> : AutoCloseable {
      * 在 FuzzingPipeline 结束后自动调用。
      */
     override fun close() {}
+
+    /**
+     * 创建 Backend 的独立副本（用于多线程）。
+     * 默认实现返回 this（单线程场景）。
+     * 多线程场景下，实现类应返回新的独立实例（新的 daemon、新的工作目录等）。
+     */
+    fun createCopy(): Backend<T> = this
 }
 
 /**

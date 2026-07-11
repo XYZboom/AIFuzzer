@@ -20,6 +20,10 @@ private val log = KotlinLogging.logger {}
  *
  * 注意：[generatorConfig] 用于每次生成时创建新的 [UirGenerator] 实例，
  * 避免16线程并发共享可变状态的问题。
+ *
+ * 并行模式下，backend 列表会根据 workers 数量扩展：
+ * - 如果只有一个 backend 且 workers > 1，会创建 workers 个 backend 副本
+ * - 每个 worker 线程使用独立的 backend 实例（避免 daemon 竞争）
  */
 class FuzzingPipeline(
     private val generatorConfig: GeneratorConfig = GeneratorConfig(),
@@ -73,6 +77,14 @@ class FuzzingPipeline(
         val completed = AtomicInteger(0)
         val successCount = AtomicInteger(0)
         val failureCount = AtomicInteger(0)
+        
+        // 并行模式下，为每个 worker 创建独立的 backend 副本
+        // 这样每个线程有自己的 daemon，避免竞争
+        val backendPool: Array<List<Backend<*>>> = if (config.workers > 1) {
+            Array(config.workers) { backends.map { it.createCopy() } }
+        } else {
+            arrayOf(backends)
+        }
 
         // 定时报告线程（每 5 秒）
         val progressReporter = thread(name = "fuzzer-progress") {
@@ -92,7 +104,7 @@ class FuzzingPipeline(
         }
 
         if (config.workers <= 1) {
-            // 串行模式
+            // 串行模式：使用原始 backend
             for (i in 0 until count) {
                 val seed = startSeed + i
                 var shouldBreak = false
@@ -134,25 +146,44 @@ class FuzzingPipeline(
                 if (shouldBreak) break
             }
         } else {
-            // 并行模式
+            // 并行模式：每个 worker 线程使用独立的 backend 副本
+            // 启动所有 backend 副本（启动 daemon）
+            log.info { "并行模式: 启动 ${backendPool.size} 个 backend 实例" }
+            backendPool.forEachIndexed { idx, backends ->
+                backends.forEach { backend ->
+                    if (!backend.checkEnvironment()) {
+                        log.error { "Backend 副本 #$idx 初始化失败: ${backend.name}" }
+                    } else {
+                        log.debug { "Backend 副本 #$idx 就绪: ${backend.name}" }
+                    }
+                }
+            }
+            
             val executor = java.util.concurrent.Executors.newFixedThreadPool(config.workers) { r ->
                 Thread(r, "fuzzer-worker").also { it.isDaemon = true }
             }
             
             // failFast 标志：使用 AtomicBoolean 确保线程安全
             val failFastTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
+            
+            // 用 AtomicLong 分配 workerId
+            val nextWorkerId = AtomicLong(0)
 
             val futures = (0 until count).map { i ->
                 val seed = startSeed + i
                 // 为每个任务预创建 generator 配置（seed 已确定）
                 val taskGenConfig = generatorConfig.copy(seed = seed)
                 executor.submit<List<FuzzingResult>> {
+                    // 获取当前线程的 workerId 和专属 backend
+                    val workerId = (nextWorkerId.getAndIncrement() % config.workers).toInt()
+                    val threadBackends = backendPool[workerId]
+                    
                     // 每个任务创建独立的 generator 实例，完全避免共享状态
                     val taskGenerator = UirGenerator(taskGenConfig)
                     try {
-                        // 内联 runOnce 逻辑，使用任务专属的 generator
+                        // 内联 runOnce 逻辑，使用任务专属的 generator 和 backend
                         val program = taskGenerator.generate()
-                        val results = backends.map { backend ->
+                        val results = threadBackends.map { backend ->
                             runOnBackend(program, backend, seed)
                         }
                         results.forEach {
@@ -168,13 +199,13 @@ class FuzzingPipeline(
                         completed.incrementAndGet()
                         results
                     } catch (e: Exception) {
-                        failureCount.addAndGet(backends.size)
+                        failureCount.addAndGet(threadBackends.size)
                         completed.incrementAndGet()
                         // failFast: 异常也终止
                         if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
                             log.error(e) { "failFast=true: 检测到异常，终止测试" }
                         }
-                        backends.map { backend ->
+                        threadBackends.map { backend ->
                             FuzzingResult(
                                 seed = seed,
                                 backendName = backend.name,
@@ -242,10 +273,17 @@ class FuzzingPipeline(
         // 清理临时产物
         if (!config.keepArtifacts) {
             backends.filterIsInstance<TvmBackend>().forEach { it.cleanup() }
+            // 清理 backend 副本的临时产物
+            backendPool.forEach { backendList ->
+                backendList.filterIsInstance<TvmBackend>().forEach { it.cleanup() }
+            }
         }
 
-        // 关闭所有 backend（daemon 进程等）
+        // 关闭所有 backend（原始 + 副本）
         backends.forEach { it.close() }
+        backendPool.forEach { backendList ->
+            backendList.forEach { it.close() }
+        }
 
         return FuzzingSummary.fromResults(allResults, System.currentTimeMillis() - startTime)
     }
