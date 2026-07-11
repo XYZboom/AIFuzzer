@@ -201,6 +201,9 @@ class TvmRelaxTranslator(
         // 生成 TVM Relax 调用
         val relaxCall = generateRelaxCall(node.op, inputVars, node.attributes, node.inputs.map { it.type.shape }, node.outputs.map { it.type.shape })
 
+        builder.appendLine("        # input: ${node.inputs.map { it.type.shape }.joinToString { it.rawShapeString() }}")
+        builder.appendLine("        # output: ${node.outputs.map { it.type.shape }.joinToString { it.rawShapeString() }}")
+
         // 处理输出
         if (node.outputs.size == 1) {
             val outputVar = node.outputs[0].valueId
@@ -420,7 +423,11 @@ class TvmRelaxTranslator(
             return "relax.ShapeExpr([])"
         }
 
-        val dims = shape.dims.map { dim ->
+        return "relax.ShapeExpr(${shape.rawShapeString()})"
+    }
+
+    private fun UirShape.rawShapeString(): String {
+        val dims = dims.map { dim ->
             when (dim.dimKind) {
                 UirDimKind.CONSTANT -> dim.value?.toString() ?: shapeRank.toString()
                 UirDimKind.SYMBOLIC -> shapeRank.toString()  // 符号维度暂时用固定值
@@ -428,6 +435,6 @@ class TvmRelaxTranslator(
             }
         }
 
-        return "relax.ShapeExpr([${dims.joinToString(", ")}])"
+        return "[${dims.joinToString(", ")}]"
     }
 }
