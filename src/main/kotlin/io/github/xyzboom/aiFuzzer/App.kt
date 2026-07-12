@@ -62,6 +62,10 @@ class AiFuzzerCommand : CliktCommand(
     private val outputDir by option("--report", "-r")
         .help("Output directory for reports (overrides config)")
 
+    private val inputIR by option("--run-ir", "-i")
+        .file(mustExist = true, canBeFile = true, canBeDir = true, mustBeReadable = true)
+        .help("Run from IR file/dir instead of fuzzing. If directory, all *.jsonl files will be executed")
+
     override fun run() {
         LogUtils.withTrace {
             runWithLog()
@@ -69,6 +73,13 @@ class AiFuzzerCommand : CliktCommand(
     }
     
     private fun runWithLog() {
+        // 检查是否是复现模式
+        if (inputIR != null) {
+            runReproduceMode()
+            return
+        }
+
+        // 正常 fuzzing 模式
         // 1. 加载配置
         val config = if (configPath != null) {
             val overridesMap = buildOverridesMap()
@@ -217,6 +228,138 @@ class AiFuzzerCommand : CliktCommand(
             config.generator.ops.include = it.split(",").map { s -> s.trim() }
         }
         outputDir?.let { config.run.outputDir = it }
+    }
+
+    /**
+     * 复现模式：从 IR 文件执行，不启动 fuzzing
+     */
+    private fun runReproduceMode() {
+        log.info { "复现模式：从 IR 文件执行" }
+        echo("Reproduce mode: running from IR file(s)")
+        echo("Input: ${inputIR!!.absolutePath}")
+
+        // 1. 收集所有 IR 文件
+        val irFiles = if (inputIR!!.isDirectory) {
+            inputIR!!.listFiles()
+                ?.filter { it.extension == "jsonl" || it.extension == "json" }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+        } else {
+            listOf(inputIR!!)
+        }
+
+        if (irFiles.isEmpty()) {
+            echo("No IR files found!", err = true)
+            return
+        }
+
+        echo("Found ${irFiles.size} IR file(s)")
+        echo()
+
+        // 2. 加载配置（用于后端设置）
+        val config = if (configPath != null) {
+            log.info { "加载配置: ${configPath!!.absolutePath}" }
+            ConfigLoader.load(configPath!!.absolutePath, emptyMap())
+        } else {
+            log.info { "使用默认配置" }
+            ConfigLoader.default()
+        }
+
+        // 3. 创建后端
+        val backends = mutableListOf<Backend<*>>()
+        if ("tvm" in config.backends.enabled) {
+            val tvmCfg = config.backends.tvm
+            if (tvmCfg.mode == "daemon") {
+                echo("  TVM backend: daemon mode (python=${tvmCfg.python})")
+                backends.add(TvmDaemonBackend(tvmCfg))
+            } else {
+                echo("  TVM backend: process mode")
+                val workDir = File(tvmCfg.workDir)
+                backends.add(TvmBackend(workDir, tvmCfg))
+            }
+        }
+        if ("pytorch" in config.backends.enabled) {
+            val pytorchCfg = config.backends.pytorch
+            echo("  PyTorch backend: daemon mode (python=${pytorchCfg.python}, device=${pytorchCfg.device})")
+            backends.add(PytorchDaemonBackend(pytorchCfg))
+        }
+
+        if (backends.isEmpty()) {
+            echo("No backends enabled! Check config.", err = true)
+            return
+        }
+
+        // 4. 初始化后端
+        echo("Initializing backends...")
+        val readyBackends = backends.filter { backend ->
+            echo("  ${backend.name}: ")
+            val ok = backend.checkEnvironment()
+            if (ok) {
+                echo("✓")
+            } else {
+                echo("✗ FAILED")
+            }
+            ok
+        }
+        if (readyBackends.isEmpty()) {
+            echo("All backends failed to initialize! Aborting.", err = true)
+            backends.forEach { it.close() }
+            return
+        }
+        echo()
+
+        // 5. 执行每个 IR 文件
+        var totalSuccess = 0
+        var totalFail = 0
+
+        for (irFile in irFiles) {
+            echo("Processing: ${irFile.name}")
+            log.info { "加载 IR 文件: ${irFile.absolutePath}" }
+
+            try {
+                // 加载 IR
+                val jsonl = irFile.readText()
+                val program = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.fromJsonl(jsonl)
+
+                // 在每个后端执行
+                for (backend in readyBackends) {
+                    echo("  Running on ${backend.name}...")
+                    try {
+                        val result = backend.execute(program)
+                        if (result.success) {
+                            echo("    ✓ Success (${result.elapsedMs}ms)")
+                            totalSuccess++
+                        } else {
+                            val errorMsg = result.stderr.lines().firstOrNull()?.take(100) ?: "Unknown error"
+                            echo("    ✗ Failed: $errorMsg")
+                            totalFail++
+                        }
+                    } catch (e: Exception) {
+                        echo("    ✗ Exception: ${e.message}")
+                        log.error(e) { "执行失败" }
+                        totalFail++
+                    }
+                }
+            } catch (e: Exception) {
+                echo("  ✗ Failed to load IR: ${e.message}")
+                log.error(e) { "加载 IR 失败" }
+                totalFail++
+            }
+            echo()
+        }
+
+        // 6. 打印总结
+        echo("=" .repeat(60))
+        echo("Summary:")
+        echo("  Total IR files: ${irFiles.size}")
+        echo("  Total executions: ${totalSuccess + totalFail}")
+        echo("  Success: $totalSuccess")
+        echo("  Failed: $totalFail")
+        echo("=" .repeat(60))
+
+        // 7. 清理
+        backends.forEach { it.close() }
+        log.info { "复现模式完成" }
     }
 }
 
