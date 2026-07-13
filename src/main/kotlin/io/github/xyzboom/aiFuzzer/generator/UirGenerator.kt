@@ -379,6 +379,23 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
                 attrs["axis"] = buildIntAttr { value = -1 }
                 attrs["keepdims"] = buildIntAttr { value = 0 }
+                
+                // P0: 随机添加显式 dtype 参数（10% 概率）
+                if (rand.nextDouble() < 0.1) {
+                    attrs["dtype"] = buildStringAttr { value = randomDtype() }
+                }
+            }
+            // P0: cumsum/cumprod 支持 dtype（Issue #189518）
+            UirOpKind.CUMSUM, UirOpKind.CUMPROD -> {
+                attrs["axis"] = buildIntAttr { value = -1 }
+                
+                // 30% 概率添加显式 dtype
+                if (rand.nextDouble() < 0.3) {
+                    attrs["dtype"] = buildStringAttr { value = randomDtype() }
+                }
+            }
+            UirOpKind.ARGMAX, UirOpKind.ARGMIN -> {
+                attrs["axis"] = buildIntAttr { value = -1 }
             }
             UirOpKind.SPLIT -> {
                 attrs["axis"] = buildIntAttr { value = 0 }
@@ -405,6 +422,11 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             }
             UirOpKind.BATCH_NORM -> {
                 attrs["eps"] = buildIntAttr { value = 1 }  // 1e-5
+            }
+            // P2: Resize 算子属性
+            UirOpKind.INTERPOLATE, UirOpKind.RESIZE2D -> {
+                attrs["mode"] = buildStringAttr { value = "nearest" }
+                attrs["coordinate_transformation_mode"] = buildStringAttr { value = "half_pixel" }
             }
             else -> { /* 无特殊属性 */ }
         }
@@ -515,6 +537,26 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 })
             }
         }
+    }
+    
+    /**
+     * 随机选择数据类型（用于 dtype variation）。
+     * 
+     * 重点测试容易出错的类型组合：
+     * - bool -> bfloat16 (Issue #189518)
+     * - float16
+     * - int32 -> float32
+     */
+    private fun randomDtype(): String {
+        val dtypes = listOf(
+            "float32",    // 默认
+            "float16",    // 容易溢出
+            "bfloat16",   // type promotion bug 高发
+            "int32",      // 整数累加
+            "int64",      // 大整数
+            "bool",       // 布尔 -> 浮点转换
+        )
+        return dtypes.random(rand)
     }
     
     private fun newValueId(): String = "v_${valueCounter++}_${randomIdSuffix()}"

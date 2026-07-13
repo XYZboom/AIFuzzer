@@ -110,6 +110,16 @@ class PytorchTranslator(
             UirOpKind.TRIL to "torch.tril",
             UirOpKind.TRIU to "torch.triu",
 
+            // P0: 累积操作
+            UirOpKind.CUMSUM to "torch.cumsum",
+            UirOpKind.CUMPROD to "torch.cumprod",
+            UirOpKind.ARGMAX to "torch.argmax",
+            UirOpKind.ARGMIN to "torch.argmin",
+
+            // 插值
+            UirOpKind.INTERPOLATE to "F.interpolate",
+            UirOpKind.RESIZE2D to "F.interpolate",
+
             // 适配算子
             UirOpKind.EXPAND_DIMS to "torch.unsqueeze",
         )
@@ -269,7 +279,7 @@ class PytorchTranslator(
             UirOpKind.CEIL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.FLOOR -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
 
-            // ===== 二元运算 =====
+            // ===== 二元运算（单输入模式保护） =====
             UirOpKind.ADD -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
             UirOpKind.SUBTRACT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
             UirOpKind.MULTIPLY -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
@@ -316,8 +326,6 @@ class PytorchTranslator(
             UirOpKind.BATCH_NORM -> {
                 // BatchNorm 需要 running_mean, running_var, weight, bias
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                val inputShape = node.inputs[0].type.shape
-                val numFeatures = inputShape.dims.getOrNull(1)?.value ?: 64
                 // 简化：使用默认参数
                 "F.batch_norm($inputVar, running_mean=None, running_var=None, training=True)"
             }
@@ -332,12 +340,18 @@ class PytorchTranslator(
             UirOpKind.REDUCE_SUM -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
                 val keepdims = (node.attributes["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdims)"
+                val keepdimsStr = if (keepdims) "True" else "False"
+                val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
+                val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
             }
             UirOpKind.REDUCE_MEAN -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
                 val keepdims = (node.attributes["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdims)"
+                val keepdimsStr = if (keepdims) "True" else "False"
+                val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
+                val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
             }
             UirOpKind.REDUCE_MAX -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
@@ -359,6 +373,25 @@ class PytorchTranslator(
                 } else {
                     "torch.min($inputVar, dim=$axis, keepdim=False).values"
                 }
+            }
+
+            // ===== P0: 累积操作（支持显式 dtype） =====
+            UirOpKind.CUMSUM, UirOpKind.CUMPROD -> {
+                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
+                val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
+                val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis$dtypeStr)"
+            }
+
+            UirOpKind.ARGMAX, UirOpKind.ARGMIN -> {
+                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis)"
+            }
+
+            // ===== P2: 插值/Resize =====
+            UirOpKind.INTERPOLATE, UirOpKind.RESIZE2D -> {
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                "F.interpolate($inputVar, scale_factor=2.0, mode='nearest')"
             }
 
             // ===== 形状变换 =====
@@ -427,32 +460,37 @@ class PytorchTranslator(
 
             // ===== 类型转换 =====
             UirOpKind.CAST -> {
-                val targetDtype = dtypeMapping[dtype] ?: "torch.float32"
+                val outputDtype = node.outputs[0].type.dtype.name
+                val targetDtype = dtypeMapping[outputDtype] ?: "torch.float32"
                 "${valueMap[node.inputs[0].valueId]}.to($targetDtype)"
             }
 
             // ===== 常数生成 =====
             UirOpKind.ARANGE -> {
                 val outputShape = node.outputs[0].type.shape
+                val outputDtype = node.outputs[0].type.dtype.name
                 val totalSize = outputShape.dims.fold(1) { acc, dim ->
                     acc * (if (dim.dimKind == UirDimKind.CONSTANT) (dim.value ?: 1) else 1)
                 }
-                "$pytorchFunc(0, $totalSize, dtype=${dtypeMapping[dtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(0, $totalSize, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
             }
             UirOpKind.FULL -> {
                 val outputShape = node.outputs[0].type.shape
+                val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), 0.0, dtype=${dtypeMapping[dtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(($shapeStr), 0.0, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
             }
             UirOpKind.ONES -> {
                 val outputShape = node.outputs[0].type.shape
+                val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[dtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
             }
             UirOpKind.ZEROS -> {
                 val outputShape = node.outputs[0].type.shape
+                val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[dtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
             }
 
             // ===== 三角矩阵 =====

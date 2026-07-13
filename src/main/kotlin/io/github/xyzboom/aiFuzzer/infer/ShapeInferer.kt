@@ -178,6 +178,26 @@ object ShapeInferer {
                 inferTrilTriuShape(inputShapes, op)
             }
             
+            // ===== 分类 G2：累积操作（P0 新增） =====
+            UirOpKind.CUMSUM,
+            UirOpKind.CUMPROD -> {
+                // cumsum/cumprod 保持输入形状
+                inputShapes
+            }
+            
+            UirOpKind.ARGMAX,
+            UirOpKind.ARGMIN -> {
+                // argmax/argmin 在指定 axis 上降维
+                inferArgmaxArgminShape(inputShapes, attributes)
+            }
+            
+            // ===== 分类 G3：插值/Resize（P2 新增） =====
+            UirOpKind.INTERPOLATE,
+            UirOpKind.RESIZE2D -> {
+                // Resize 保持输入形状（实际 shape 由 scale 决定）
+                inputShapes
+            }
+            
             // ===== 分类 H：常数生成 =====
             UirOpKind.ARANGE -> {
                 inferArangeShape(attributes)
@@ -973,5 +993,35 @@ object ShapeInferer {
         outputDims.add(axis.coerceIn(0, outputDims.size), constantDim(1))
         
         return listOf(shapeFromDims(outputDims))
+    }
+    
+    /**
+     * ARGMAX/ARGMIN 形状推导（P0 新增）。
+     * 
+     * 规则：在 axis 维度上降维
+     */
+    private fun inferArgmaxArgminShape(
+        inputShapes: List<UirShape>,
+        attributes: Map<String, Attribute>
+    ): List<UirShape> {
+        requireSingleInput(UirOpKind.ARGMAX, inputShapes)
+        
+        val inputShape = inputShapes[0]
+        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+        val keepdims = (attributes["keepdims"] as? UirIntAttr)?.value ?: 0
+        
+        if (keepdims != 0) {
+            // keepdims=true: 形状不变，axis 维度变为 1
+            val outputDims = inputShape.dims.mapIndexed { i, dim ->
+                if (i == axis || (axis < 0 && i == inputShape.dims.size + axis)) constantDim(1)
+                else dim
+            }
+            return listOf(shapeFromDims(outputDims))
+        } else {
+            // keepdims=false: 移除 axis 维度
+            val actualAxis = if (axis < 0) inputShape.dims.size + axis else axis
+            val outputDims = inputShape.dims.filterIndexed { i, _ -> i != actualAxis }
+            return listOf(shapeFromDims(outputDims))
+        }
     }
 }

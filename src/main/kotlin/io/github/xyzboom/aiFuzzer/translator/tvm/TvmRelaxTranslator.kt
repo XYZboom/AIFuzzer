@@ -470,6 +470,36 @@ class TvmRelaxTranslator(
                 "relax.op.zeros(relax.ShapeExpr([$shapeStr]), dtype=\"$dtype\")"
             }
 
+            // ===== P0: 累积操作 =====
+            UirOpKind.CUMSUM -> {
+                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "relax.op.cumsum(${inputVars[0]}, axis=$axis)"
+            }
+
+            UirOpKind.CUMPROD -> {
+                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "relax.op.cumprod(${inputVars[0]}, axis=$axis)"
+            }
+
+            UirOpKind.ARGMAX -> {
+                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "relax.op.argmax(${inputVars[0]}, axis=$axis)"
+            }
+
+            UirOpKind.ARGMIN -> {
+                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "relax.op.argmin(${inputVars[0]}, axis=$axis)"
+            }
+
+            // ===== P2: 插值/Resize =====
+            UirOpKind.INTERPOLATE -> {
+                "relax.op.nn.interpolate(${inputVars[0]}, relax.ShapeExpr([2, 2]))"
+            }
+
+            UirOpKind.RESIZE2D -> {
+                "relax.op.image.resize2d(${inputVars[0]}, relax.ShapeExpr([2, 2]))"
+            }
+
             // ===== 适配算子 =====
             UirOpKind.EXPAND_DIMS -> {
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0

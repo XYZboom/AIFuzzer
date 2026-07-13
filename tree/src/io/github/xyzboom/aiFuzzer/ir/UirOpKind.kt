@@ -46,11 +46,15 @@ enum class UirOpKind {
     CONCAT,
     SPLIT,
 
-    // 归约
+    // 归约（支持显式 dtype）
     REDUCE_SUM,
     REDUCE_MEAN,
     REDUCE_MAX,
     REDUCE_MIN,
+    CUMSUM,       // 累积和（Issue #189518: dtype bug）
+    CUMPROD,      // 累积积
+    ARGMAX,       // 最大值索引
+    ARGMIN,       // 最小值索引
 
     // 归一化
     LAYER_NORM,
@@ -67,11 +71,15 @@ enum class UirOpKind {
     // 类型转换
     CAST,
 
-    // 常数生成
+    // 常数生成（支持显式 dtype）
     ARANGE,
     FULL,
     ONES,
     ZEROS,
+    
+    // 插值/Resize（Issue #19570: coordinate transformation bug）
+    INTERPOLATE,  // nn.interpolate
+    RESIZE2D,     // image.resize2d
 
     // 卷积
     CONV2D,
@@ -95,6 +103,7 @@ enum class UirOpKind {
             SOFTMAX,
             RESHAPE, SQUEEZE, UNSQUEEZE,
             REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN,
+            CUMSUM, CUMPROD, ARGMAX, ARGMIN,
             CAST, TRIL, TRIU,
             TRANSPOSE, BROADCAST_TO,
             TILE, SPLIT,
@@ -102,6 +111,7 @@ enum class UirOpKind {
             GATHER,  // GATHER 当作单输入算子（假设 indices 是常量）
             MAX_POOL2D, AVG_POOL2D,
             LAYER_NORM, BATCH_NORM,
+            INTERPOLATE, RESIZE2D,
         )
 
         /** 双输入算子 */
@@ -113,7 +123,7 @@ enum class UirOpKind {
             CONV2D,
         )
 
-        /** 常数生成算子（无输入） */
+        /** 常数生成算子（无输入，支持显式 dtype） */
         val constantOps = setOf(ARANGE, FULL, ONES, ZEROS)
 
         /** 多输出算子 */
@@ -125,9 +135,10 @@ enum class UirOpKind {
             CONV2D, MAX_POOL2D, AVG_POOL2D,
         )
 
-        /** reduce 类算子 */
+        /** reduce 类算子（支持显式 dtype） */
         val reducingOps = setOf(
             REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN,
+            CUMSUM, CUMPROD, ARGMAX, ARGMIN,
         )
 
         /** ndim 不变的算子 */
