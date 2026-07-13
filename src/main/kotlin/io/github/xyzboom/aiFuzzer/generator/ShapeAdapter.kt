@@ -77,6 +77,12 @@ object ShapeAdapter {
             return AdaptResult(inputValueRefs, emptyList(), inputShapes)
         }
         
+        // 特殊处理：需要精确 4D 的算子（conv2d, pool2d）必须优先于 binaryInputOps
+        // 这些算子必须 4D (NCHW)，多于4D需要squeeze，少于4D需要expand
+        if (op in setOf(UirOpKind.CONV2D, UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D)) {
+            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
+        }
+        
         // 特殊处理：二元运算需要推导公共目标形状
         if (op in UirOpKind.binaryInputOps && inputShapes.size == 2) {
             return adaptBinaryInputs(
@@ -104,12 +110,6 @@ object ShapeAdapter {
         // 特殊处理：需要至少 2D 的算子
         if (op in setOf(UirOpKind.TRANSPOSE, UirOpKind.TRIL, UirOpKind.TRIU, UirOpKind.STRIDED_SLICE)) {
             return adaptNdimConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, minNdim = 2)
-        }
-        
-        // 特殊处理：需要精确 4D 的算子（conv2d, pool2d）
-        // 这些算子必须 4D (NCHW)，多于4D需要squeeze，少于4D需要expand
-        if (op in setOf(UirOpKind.CONV2D, UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D)) {
-            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
         }
         
         // 特殊处理：GATHER

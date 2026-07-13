@@ -187,13 +187,14 @@ object ShapeConstraints {
         // ===== 分类 C.2：卷积运算 =====
         UirOpKind.CONV2D to OpShapeConstraint(
             minNdim = 4,  // 输入必须 4D (NCHW or NHWC)
+            maxNdim = 4,  // 必须精确 4D，多于 4D 需要 squeeze
             numInputs = 2..2,  // 输入 + 权重
             isApplicable = { shapes ->
                 // 简化约束：假设 NCHW 格式
                 // shapes[0]: [N, C_in, H, W]
                 // shapes[1]: [C_out, C_in/groups, kH, kW]
                 if (shapes.size != 2) false
-                else if (shapes[0].dims.size < 4 || shapes[1].dims.size < 4) false
+                else if (shapes[0].dims.size != 4 || shapes[1].dims.size != 4) false
                 else {
                     // 检查 C_in 维度匹配（假设 groups=1）
                     val cInInput = shapes[0].dims[1].valueOrNull()  // C_in
@@ -208,11 +209,13 @@ object ShapeConstraints {
         // ===== 分类 C.3：池化运算 =====
         UirOpKind.MAX_POOL2D to OpShapeConstraint(
             minNdim = 4,  // 输入必须 4D (NCHW)
+            maxNdim = 4,  // 必须精确 4D
             numInputs = 1..1,
             description = "2D 最大池化，需要 4D 输入（NCHW）"
         ),
         UirOpKind.AVG_POOL2D to OpShapeConstraint(
             minNdim = 4,  // 输入必须 4D (NCHW)
+            maxNdim = 4,  // 必须精确 4D
             numInputs = 1..1,
             description = "2D 平均池化，需要 4D 输入（NCHW）"
         ),

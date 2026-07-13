@@ -351,7 +351,13 @@ class PytorchTranslator(
                 val keepdimsStr = if (keepdims) "True" else "False"
                 val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
                 val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                // mean 要求浮点输入。如果没有显式 dtype，cast 到 float32 确保兼容
+                if (dtypeAttr != null) {
+                    "$pytorchFunc($inputVar, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                } else {
+                    "$pytorchFunc($inputVar.float(), dim=$axis, keepdim=$keepdimsStr)"
+                }
             }
             UirOpKind.REDUCE_MAX -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
@@ -385,7 +391,7 @@ class PytorchTranslator(
 
             UirOpKind.ARGMAX, UirOpKind.ARGMIN -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis)"
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis).float()"
             }
 
             // ===== P2: 插值/Resize =====

@@ -413,9 +413,9 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 attrs["groups"] = buildIntAttr { value = 1 }
             }
             UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
-                // 随机 kernel_size 和 stride，范围 1-3，避免输入空间维太小导致输出为 0
-                attrs["kernel_size"] = buildIntAttr { value = rand.nextInt(1, 4) }
-                val ks = (attrs["kernel_size"] as UirIntAttr).value
+                // 随机 kernel_size，范围 1-2（更大概率用 1，避免空间维太小导致输出为 0）
+                val ks = if (rand.nextDouble() < 0.6) 1 else 2
+                attrs["kernel_size"] = buildIntAttr { value = ks }
                 attrs["stride"] = buildIntAttr { value = rand.nextInt(1, ks + 1) }
                 attrs["padding"] = buildIntAttr { value = 0 }
             }
