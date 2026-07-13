@@ -11,6 +11,12 @@ private val log = KotlinLogging.logger {}
  * UIR 到 PyTorch Python 代码的翻译器。
  *
  * 将 UirProgram 翻译为 `torch.nn.Module` + `torch.compile` 形式的 Python 代码。
+ * 生成包含差异测试验证的完整脚本：
+ * 1. 定义 nn.Module
+ * 2. 生成随机输入（匹配 forward 参数形状）
+ * 3. Eager 模式执行（ground truth）
+ * 4. torch.compile 执行
+ * 5. torch.allclose 比较，输出 VERIFY: PASS/FAIL
  *
  * @param dtype 默认数据类型
  * @param device 执行设备（"cpu" 或 "cuda"）
@@ -145,15 +151,52 @@ class PytorchTranslator(
 
         // IMPORTANT: 不要使用 if __name__ == "__main__" 保护，因为 daemon 会直接 exec 脚本
         builder.appendLine("# Main execution")
-
-        // 实例化模块并编译（只编译不推理）
         builder.appendLine("model = TestModule_0()")
+
+        // === 生成随机输入 ===
+        val firstGraph = element.graphs.first()
+        builder.appendLine()
+        builder.appendLine("# Generate random inputs for verification")
+        builder.appendLine("torch.manual_seed(42)")
+        for (input in firstGraph.inputs) {
+            val shapeStr = shapeToPython(input.type.shape)
+            val ptDtype = dtypeMapping[dtype] ?: "torch.float32"
+            builder.appendLine("${input.valueId} = torch.randn($shapeStr, dtype=$ptDtype, device=\"$device\")")
+        }
+        builder.appendLine()
+
+        // === Eager 模式执行（ground truth）===
+        val inputArgs = firstGraph.inputs.map { it.valueId }.joinToString(", ")
+        builder.appendLine("# Eager execution (ground truth)")
+        builder.appendLine("with torch.no_grad():")
+        builder.appendLine("    ref_output = model($inputArgs)")
+        builder.appendLine()
+
+        // === Compiled 模式执行 ===
+        builder.appendLine("# Compiled execution")
         builder.appendLine("try:")
         builder.appendLine("    compiled = torch.compile(model, mode=\"$compileMode\")")
         builder.appendLine("except Exception as e:")
         builder.appendLine("    print(f'torch.compile failed: {e}')")
         builder.appendLine("    raise")
+        builder.appendLine()
+        builder.appendLine("with torch.no_grad():")
+        builder.appendLine("    cmp_output = compiled($inputArgs)")
+        builder.appendLine()
 
+        // === 差异测试 ===
+        builder.appendLine("# Differential testing: eager vs compile")
+        builder.appendLine("if isinstance(ref_output, tuple):")
+        builder.appendLine("    # Multi-output: compare element-wise")
+        builder.appendLine("    all_match = all(torch.allclose(r, c, atol=1e-3, rtol=1e-3, equal_nan=True)")
+        builder.appendLine("                    for r, c in zip(ref_output, cmp_output))")
+        builder.appendLine("else:")
+        builder.appendLine("    all_match = torch.allclose(ref_output, cmp_output, atol=1e-3, rtol=1e-3, equal_nan=True)")
+        builder.appendLine()
+        builder.appendLine("if all_match:")
+        builder.appendLine("    print('VERIFY: PASS')")
+        builder.appendLine("else:")
+        builder.appendLine("    raise RuntimeError('VERIFY: FAIL')\n")
         builder.appendLine()
         builder.appendLine("print('Module built successfully')")
 
