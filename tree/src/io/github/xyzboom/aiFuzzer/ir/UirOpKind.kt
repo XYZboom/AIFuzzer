@@ -21,20 +21,32 @@ enum class UirOpKind {
 
     // 一元激活
     RELU,
+    LEAKY_RELU,
+    ELU,
+    SELU,
+    MISH,
+    HARDTANH,
     SIGMOID,
     TANH,
     GELU,
     SILU,
     SOFTMAX,
+    LOG_SOFTMAX,
 
     // 一元数学
     NEG,
     ABS,
+    SIGN,
     EXP,
     LOG,
+    LOG2,
     SQRT,
+    RSQRT,
+    RECIPROCAL,
     CEIL,
     FLOOR,
+    ROUND,
+    CLAMP,
 
     // 形状变换
     RESHAPE,
@@ -80,10 +92,10 @@ enum class UirOpKind {
     companion object {
         /** 单输入算子 */
         val singleInputOps = setOf(
-            RELU, SIGMOID, TANH, GELU, SILU,
-            ABS, EXP, LOG, SQRT, NEG,
-            CEIL, FLOOR,
-            SOFTMAX,
+            RELU, LEAKY_RELU, ELU, SELU, MISH, HARDTANH, SIGMOID, TANH, GELU, SILU,
+            ABS, SIGN, EXP, LOG, LOG2, SQRT, RSQRT, RECIPROCAL, NEG,
+            CEIL, FLOOR, ROUND, CLAMP,
+            SOFTMAX, LOG_SOFTMAX,
             RESHAPE, SQUEEZE, UNSQUEEZE,
             REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN,
             CAST, TRIL, TRIU,
@@ -119,9 +131,9 @@ enum class UirOpKind {
 
         /** ndim 不变的算子 */
         val ndimStableOps = setOf(
-            RELU, SIGMOID, TANH, GELU, SILU,
-            NEG, ABS, EXP, LOG, SQRT, CEIL, FLOOR,
-            SOFTMAX, CAST,
+            RELU, LEAKY_RELU, ELU, SELU, MISH, HARDTANH, SIGMOID, TANH, GELU, SILU,
+            NEG, ABS, SIGN, EXP, LOG, LOG2, SQRT, RSQRT, RECIPROCAL, CEIL, FLOOR, ROUND, CLAMP,
+            SOFTMAX, LOG_SOFTMAX, CAST,
             SPLIT, CONCAT, TILE,
             TRANSPOSE,
         )

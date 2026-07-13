@@ -1,0 +1,45 @@
+# AiFuzzer large batch config for bug hunting
+run:
+  description: "AiFuzzer large batch PyTorch run"
+  seed: null
+  output_dir: "./reports"
+  log_level: "info"
+
+generator:
+  min_nodes_per_graph: 20
+  max_nodes_per_graph: 80
+  min_inputs: 2
+  max_inputs: 15
+  min_input_ndim: 1
+  max_input_ndim: 4
+  graph_count: 1
+  strategy: "random"
+  template_dir: "./templates"
+  ops:
+    include_all: true
+    include: []
+    exclude: []
+  mutation:
+    enabled: false
+    rate: 0.1
+
+backends:
+  enabled: ["pytorch"]
+  pytorch:
+    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
+    timeout_seconds: 120
+    keep_artifacts: false
+    work_dir: "%TEMP%/aiFuzzer_pytorch"
+    dtype: "float32"
+    device: "cpu"
+    compile_mode: "default"
+
+bug_collector:
+  enabled: true
+  ignore_patterns: []
+  output_dir: "./reports"
+
+pipeline:
+  workers: 1
+  batch_size: 200
+  run_timeout_seconds: 300

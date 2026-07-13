@@ -115,6 +115,16 @@ object ConfigLoader {
                 config.backends.iree.driver = ireeMap["driver"] as? String ?: config.backends.iree.driver
                 config.backends.iree.mlirFlags = (ireeMap["mlir_flags"] as? List<*>)?.filterIsInstance<String>() ?: config.backends.iree.mlirFlags
             }
+
+            (backendMap["pytorch"] as? Map<String, Any>)?.let { pytorchMap ->
+                config.backends.pytorch.python = pytorchMap["python"] as? String ?: config.backends.pytorch.python
+                config.backends.pytorch.timeoutSeconds = pytorchMap["timeout_seconds"] as? Int ?: config.backends.pytorch.timeoutSeconds
+                config.backends.pytorch.keepArtifacts = pytorchMap["keep_artifacts"] as? Boolean ?: config.backends.pytorch.keepArtifacts
+                config.backends.pytorch.workDir = pytorchMap["work_dir"] as? String ?: config.backends.pytorch.workDir
+                config.backends.pytorch.dtype = pytorchMap["dtype"] as? String ?: config.backends.pytorch.dtype
+                config.backends.pytorch.device = pytorchMap["device"] as? String ?: config.backends.pytorch.device
+                config.backends.pytorch.compileMode = pytorchMap["compile_mode"] as? String ?: config.backends.pytorch.compileMode
+            }
         }
 
         // 解析 bug_collector 部分

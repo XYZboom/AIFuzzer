@@ -63,6 +63,6 @@ bug_collector:
 
 # Fuzzing 流水线
 pipeline:
-  workers: 1
-  batch_size: 50
+  workers: 32
+  batch_size: 10000000
   run_timeout_seconds: 60

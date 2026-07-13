@@ -14,6 +14,12 @@ enum class ErrorCategory {
     ATTRIBUTE_ERROR,
     // 变量未定义（常见于翻译器 bug）
     NAME_ERROR,
+    // PyTorch 运行时错误（形状不匹配、内存分配等）
+    PYTORCH_RUNTIME_ERROR,
+    // PyTorch 编译错误（torch.compile 失败）
+    PYTORCH_COMPILE_ERROR,
+    // 验证失败（eager vs compile 结果不一致）
+    VERIFY_FAIL,
     // TVM 内部错误
     TVM_ERROR,
     // TVM 算子未实现
@@ -22,6 +28,8 @@ enum class ErrorCategory {
     TVM_COMPILE_ERROR,
     // 超时
     TIMEOUT,
+    // 内存不足
+    OOM_ERROR,
     // 未分类错误
     UNKNOWN,
 }
@@ -57,6 +65,35 @@ object ErrorAnalyzer {
             stderr.contains("NameError") -> {
                 val msg = extractLine(stderr, "NameError")
                 ErrorInfo(ErrorCategory.NAME_ERROR, msg)
+            }
+            stderr.contains("VERIFY: FAIL") -> {
+                ErrorInfo(ErrorCategory.VERIFY_FAIL, "eager vs compile mismatch")
+            }
+            stderr.contains("torch.compile failed") -> {
+                val msg = extractLine(stderr, "torch.compile failed")
+                ErrorInfo(ErrorCategory.PYTORCH_COMPILE_ERROR, msg)
+            }
+            stderr.contains("InductorError") -> {
+                // torch._inductor crashes (e.g., "sympy expression is NaN" from nan inputs)
+                val msg = extractLine(stderr, "InductorError")
+                ErrorInfo(ErrorCategory.PYTORCH_COMPILE_ERROR, msg)
+            }
+            stderr.contains("RuntimeError") -> {
+                val msg = extractLine(stderr, "RuntimeError")
+                // 区分 OOM 和其他 RuntimeError
+                if (stderr.contains("can't allocate memory") || stderr.contains("CUDA out of memory")) {
+                    ErrorInfo(ErrorCategory.OOM_ERROR, msg)
+                } else {
+                    ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
+                }
+            }
+            stderr.contains("IndexError") -> {
+                val msg = extractLine(stderr, "IndexError")
+                ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
+            }
+            stderr.contains("ValueError") -> {
+                val msg = extractLine(stderr, "ValueError")
+                ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
             }
             stderr.contains("OpNotImplemented") -> {
                 val msg = extractLine(stderr, "OpNotImplemented")

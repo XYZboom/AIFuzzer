@@ -255,13 +255,15 @@ class FuzzingPipeline(
         val result = backend.execute(program)
         val elapsed = System.currentTimeMillis() - startTime
 
-        // 如果后端返回的是 TvmResult 等具体类型，提取错误信息
+        // 如果后端返回的是 TvmResult 或 PytorchResult 等具体类型，提取错误信息
         val errorCategory = when (result) {
             is TvmBackend.TvmResult -> result.errorCategory
-            else -> ErrorCategory.UNKNOWN
+            is PytorchDaemonBackend.PytorchResult -> result.errorCategory
+            else -> ErrorAnalyzer.analyze(result.stderr, result.exitCode).category
         }
         val errorSummary = when (result) {
             is TvmBackend.TvmResult -> result.errorSummary
+            is PytorchDaemonBackend.PytorchResult -> result.errorSummary
             else -> result.stderr.take(200)
         }
 
@@ -269,6 +271,13 @@ class FuzzingPipeline(
         val sourceCode = when (result) {
             is TvmBackend.TvmResult -> {
                 // 从 TvmResult.sourceFile 读回源码
+                try {
+                    java.io.File(result.sourceFile).readText()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            is PytorchDaemonBackend.PytorchResult -> {
                 try {
                     java.io.File(result.sourceFile).readText()
                 } catch (_: Exception) {

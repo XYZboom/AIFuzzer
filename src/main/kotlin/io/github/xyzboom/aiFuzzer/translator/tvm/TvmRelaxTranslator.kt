@@ -34,6 +34,11 @@ class TvmRelaxTranslator(
         val defaultOpNameMapping: Map<UirOpKind, String> = mapOf(
             // 一元激活
             UirOpKind.RELU to "relax.op.nn.relu",
+            UirOpKind.LEAKY_RELU to "relax.op.nn.leaky_relu",
+            UirOpKind.ELU to "relax.op.nn.elu",
+            UirOpKind.SELU to "relax.op.nn.selu",
+            UirOpKind.MISH to "relax.op.nn.mish",
+            UirOpKind.HARDTANH to "relax.op.nn.hardtanh",
             UirOpKind.SIGMOID to "relax.op.sigmoid",
             UirOpKind.TANH to "relax.op.tanh",
             UirOpKind.GELU to "relax.op.nn.gelu",
@@ -42,11 +47,17 @@ class TvmRelaxTranslator(
             // 一元数学
             UirOpKind.NEG to "relax.op.negative",
             UirOpKind.ABS to "relax.op.abs",
+            UirOpKind.SIGN to "relax.op.sign",
             UirOpKind.EXP to "relax.op.exp",
             UirOpKind.LOG to "relax.op.log",
+            UirOpKind.LOG2 to "relax.op.log2",
             UirOpKind.SQRT to "relax.op.sqrt",
+            UirOpKind.RSQRT to "relax.op.rsqrt",
+            UirOpKind.RECIPROCAL to "relax.op.reciprocal",
             UirOpKind.CEIL to "relax.op.ceil",
             UirOpKind.FLOOR to "relax.op.floor",
+            UirOpKind.ROUND to "relax.op.round",
+            UirOpKind.CLAMP to "relax.op.clip",
 
             // 二元运算
             UirOpKind.ADD to "relax.op.add",
@@ -62,6 +73,7 @@ class TvmRelaxTranslator(
 
             // SOFTMAX
             UirOpKind.SOFTMAX to "relax.op.nn.softmax",
+            UirOpKind.LOG_SOFTMAX to "relax.op.nn.log_softmax",
 
             // 归约
             UirOpKind.REDUCE_SUM to "relax.op.sum",
@@ -241,6 +253,21 @@ class TvmRelaxTranslator(
         return when (op) {
             // ===== 一元激活 =====
             UirOpKind.RELU -> "relax.op.nn.relu(${inputVars[0]})"
+            UirOpKind.LEAKY_RELU -> {
+                val negativeSlope = (attributes["negative_slope"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.01
+                "relax.op.nn.leaky_relu(${inputVars[0]}, alpha=$negativeSlope)"
+            }
+            UirOpKind.ELU -> {
+                val alpha = (attributes["alpha"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
+                "relax.op.nn.elu(${inputVars[0]}, alpha=$alpha)"
+            }
+            UirOpKind.SELU -> "relax.op.nn.selu(${inputVars[0]})"
+            UirOpKind.MISH -> "relax.op.nn.mish(${inputVars[0]})"
+            UirOpKind.HARDTANH -> {
+                val minVal = (attributes["min_val"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: -1.0
+                val maxVal = (attributes["max_val"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
+                "relax.op.nn.hardtanh(${inputVars[0]}, min_val=$minVal, max_val=$maxVal)"
+            }
             UirOpKind.SIGMOID -> "relax.op.sigmoid(${inputVars[0]})"
             UirOpKind.TANH -> "relax.op.tanh(${inputVars[0]})"
             UirOpKind.GELU -> "relax.op.nn.gelu(${inputVars[0]})"
@@ -249,11 +276,22 @@ class TvmRelaxTranslator(
             // ===== 一元数学 =====
             UirOpKind.NEG -> "relax.op.negative(${inputVars[0]})"
             UirOpKind.ABS -> "relax.op.abs(${inputVars[0]})"
+            UirOpKind.SIGN -> "relax.op.sign(${inputVars[0]})"
             UirOpKind.EXP -> "relax.op.exp(${inputVars[0]})"
             UirOpKind.LOG -> "relax.op.log(${inputVars[0]})"
+            UirOpKind.LOG2 -> "relax.op.log2(${inputVars[0]})"
             UirOpKind.SQRT -> "relax.op.sqrt(${inputVars[0]})"
+            UirOpKind.RSQRT -> "relax.op.rsqrt(${inputVars[0]})"
+            UirOpKind.RECIPROCAL -> "relax.op.reciprocal(${inputVars[0]})"
             UirOpKind.CEIL -> "relax.op.ceil(${inputVars[0]})"
             UirOpKind.FLOOR -> "relax.op.floor(${inputVars[0]})"
+            UirOpKind.ROUND -> "relax.op.round(${inputVars[0]})"
+            UirOpKind.CLAMP -> {
+                // TVM uses relax.op.clip — read min/max from attributes
+                val minVal = (attributes["min"] as? UirStringAttr)?.value?.toDoubleOrNull()?.toInt() ?: 0
+                val maxVal = (attributes["max"] as? UirStringAttr)?.value?.toDoubleOrNull()?.toInt() ?: 1
+                "relax.op.clip(${inputVars[0]}, $minVal, $maxVal)"
+            }
 
             // ===== 二元运算 =====
             UirOpKind.ADD -> "relax.op.add(${inputVars[0]}, ${inputVars.getOrElse(1) { inputVars[0] }})"
@@ -276,6 +314,10 @@ class TvmRelaxTranslator(
             UirOpKind.SOFTMAX -> {
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
                 "relax.op.nn.softmax(${inputVars[0]}, axis=$axis)"
+            }
+            UirOpKind.LOG_SOFTMAX -> {
+                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "relax.op.nn.log_softmax(${inputVars[0]}, axis=$axis)"
             }
 
             // ===== 归约 =====

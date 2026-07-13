@@ -73,18 +73,30 @@ object ShapeInferer {
         return when (op) {
             // ===== 分类 A：形状不变（逐元素/激活） =====
             UirOpKind.RELU,
+            UirOpKind.LEAKY_RELU,
+            UirOpKind.ELU,
+            UirOpKind.SELU,
+            UirOpKind.MISH,
+            UirOpKind.HARDTANH,
             UirOpKind.SIGMOID,
             UirOpKind.TANH,
             UirOpKind.GELU,
             UirOpKind.SILU,
             UirOpKind.NEG,
             UirOpKind.ABS,
+            UirOpKind.SIGN,
             UirOpKind.EXP,
             UirOpKind.LOG,
+            UirOpKind.LOG2,
             UirOpKind.SQRT,
+            UirOpKind.RSQRT,
+            UirOpKind.RECIPROCAL,
             UirOpKind.CEIL,
             UirOpKind.FLOOR,
+            UirOpKind.ROUND,
+            UirOpKind.CLAMP,
             UirOpKind.SOFTMAX,
+            UirOpKind.LOG_SOFTMAX,
             UirOpKind.CAST -> {
                 requireSingleInput(op, inputShapes)
                 listOf(inputShapes.first())
@@ -435,10 +447,14 @@ object ShapeInferer {
         val inputShape = inputShapes[0]
         val ndim = inputShape.dims.size
         
-        // 默认反转所有维度
-        val perm = (ndim - 1 downTo 0).toList()
-        
-        val outputDims = perm.map { i -> inputShape.dims[i] }
+        // 与 PyTorch 翻译器对齐：torch.transpose(ndim-2, ndim-1)
+        // 即交换最后两个维度
+        val outputDims = inputShape.dims.toMutableList()
+        if (ndim >= 2) {
+            val tmp = outputDims[ndim - 2]
+            outputDims[ndim - 2] = outputDims[ndim - 1]
+            outputDims[ndim - 1] = tmp
+        }
         
         return listOf(shapeFromDims(outputDims))
     }
@@ -548,38 +564,14 @@ object ShapeInferer {
         inputShapes: List<UirShape>,
         attributes: Map<String, Attribute>
     ): List<UirShape> {
-        if (inputShapes.size == 1) {
-            val dataShape = inputShapes[0]
-            val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-            val ndim = dataShape.dims.size
-            
-            // 规范化 axis
-            val normalizedAxis = if (axis < 0) axis + ndim else axis
-            
-            if (normalizedAxis in 0 until ndim) {
-                // 移除 axis 维度，可能产生 0-D tensor（标量）
-                val outputDims = dataShape.dims.filterIndexed { i, _ -> i != normalizedAxis }
-                return listOf(shapeFromDims(outputDims))
-            }
-            return listOf(shapeFromDims(listOf(unknownDim())))
-        }
-        
-        requireBinaryInput(UirOpKind.GATHER, inputShapes)
-        
+        // 与 PyTorch 翻译器对齐：torch.gather(input, dim, index)
+        // 翻译器生成 indices 形状为 (min(d,1), ...) 与输入同维度
+        // torch.gather 的输出形状 = index 形状 = (1, 1, ..., 1) = 与输入同维度但每个维度为1
         val dataShape = inputShapes[0]
-        val indicesShape = inputShapes[1]
         
-        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-        
-        // output_shape = data_shape[0:axis] + indices_shape + data_shape[axis+1:]
-        val outputDims = dataShape.dims.toMutableList()
-        if (axis in 0 until outputDims.size) {
-            outputDims.removeAt(axis)
-            // 在 axis 位置插入 indices 的形状
-            // 简化处理：假设 indices 是 1-D 或 0-D
-            if (indicesShape.dims.isNotEmpty()) {
-                outputDims.addAll(axis, indicesShape.dims)
-            }
+        // 输出形状与输入同维度，但每个维度为1（因为 indices 是 min(d,1)）
+        val outputDims = dataShape.dims.map { dim ->
+            constantDim(1)
         }
         
         return listOf(shapeFromDims(outputDims))
@@ -607,45 +599,20 @@ object ShapeInferer {
         requireSingleInput(UirOpKind.STRIDED_SLICE, inputShapes)
         
         val inputShape = inputShapes[0]
-        val ndim = inputShape.dims.size
         
-        // 默认切片参数：axes=[0], begin=[0], end=[-1]
-        // 即：在第一个维度去掉最后一个元素
-        val axes = listOf(0)  // 默认 axis=0
-        val begins = listOf(0)  // 默认 begin=0
-        val ends = listOf(-1)  // 默认 end=-1
-        
-        // 计算输出形状
+        // 与 PyTorch 翻译器对齐：[:shape[0]//2]（取前半部分）
+        // 输出形状 = 输入形状，但 axis=0 的维度值变为 inputDim//2
         val outputDims = inputShape.dims.toMutableList()
         
-        for ((axisIdx, axis) in axes.withIndex()) {
-            // 规范化 axis（处理负数）
-            val normalizedAxis = if (axis < 0) axis + ndim else axis
-            if (normalizedAxis < 0 || normalizedAxis >= ndim) continue
-            
-            val begin = begins.getOrElse(axisIdx) { 0 }
-            val end = ends.getOrElse(axisIdx) { -1 }
-            
-            val inputDim = inputShape.dims[normalizedAxis]
+        if (outputDims.isNotEmpty()) {
+            val inputDim = outputDims[0]
             val inputDimValue: Int? = inputDim.value
             
-            // 计算切片后的维度值
             if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT) {
-                // 规范化 begin/end
-                val normalizedBegin = if (begin < 0) begin + inputDimValue else begin
-                val normalizedEnd = if (end < 0) end + inputDimValue else end
-                
-                // 计算切片后的维度值
-                // 特殊处理：如果输入维度为 0，切片后也为 0（空张量保持为空）
-                val sliceLength = if (inputDimValue == 0) {
-                    0  // 空张量切片后仍为空张量
-                } else {
-                    normalizedEnd - normalizedBegin
-                }
-                outputDims[normalizedAxis] = constantDim(sliceLength)
+                val sliceLength = maxOf(1, inputDimValue / 2)  // 至少为1，避免0维
+                outputDims[0] = constantDim(sliceLength)
             } else {
-                // 输入维度未知，切片后也未知
-                outputDims[normalizedAxis] = unknownDim()
+                outputDims[0] = unknownDim()
             }
         }
         

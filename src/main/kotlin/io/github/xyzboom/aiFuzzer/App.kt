@@ -17,6 +17,7 @@ import io.github.xyzboom.aiFuzzer.fuzzer.BugCollector
 import io.github.xyzboom.aiFuzzer.fuzzer.FuzzingPipeline
 import io.github.xyzboom.aiFuzzer.fuzzer.TvmBackend
 import io.github.xyzboom.aiFuzzer.fuzzer.TvmDaemonBackend
+import io.github.xyzboom.aiFuzzer.fuzzer.PytorchDaemonBackend
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import java.io.File
 import java.io.PrintWriter
@@ -108,6 +109,11 @@ class AiFuzzerCommand : CliktCommand(
                 val workDir = File(tvmCfg.workDir)
                 backends.add(TvmBackend(workDir, tvmCfg))
             }
+        }
+        if ("pytorch" in config.backends.enabled) {
+            val pytorchCfg = config.backends.pytorch
+            echo("  PyTorch backend: daemon mode (python=${pytorchCfg.python}, device=${pytorchCfg.device})")
+            backends.add(PytorchDaemonBackend(pytorchCfg))
         }
         // TODO: ONNX and IREE backends
 

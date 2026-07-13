@@ -333,6 +333,26 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             UirOpKind.SOFTMAX -> {
                 attrs["axis"] = buildIntAttr { value = -1 }
             }
+            UirOpKind.LOG_SOFTMAX -> {
+                attrs["axis"] = buildIntAttr { value = -1 }
+            }
+            UirOpKind.LEAKY_RELU -> {
+                // negative_slope: random small value 0.01-0.3
+                val negativeSlope = String.format("%.2f", rand.nextDouble() * 0.3 + 0.01)
+                attrs["negative_slope"] = buildStringAttr { value = negativeSlope }
+            }
+            UirOpKind.ELU -> {
+                // alpha: random value 0.5-2.0
+                val alpha = String.format("%.2f", rand.nextDouble() * 1.5 + 0.5)
+                attrs["alpha"] = buildStringAttr { value = alpha }
+            }
+            UirOpKind.HARDTANH -> {
+                // HardTanh: min_val and max_val (default -1.0 to 1.0)
+                val minVal = String.format("%.2f", rand.nextDouble() * -2.0 - 0.5)  // -2.5 to -0.5
+                val maxVal = String.format("%.2f", rand.nextDouble() * 2.0 + 0.5)   // 0.5 to 2.5
+                attrs["min_val"] = buildStringAttr { value = minVal }
+                attrs["max_val"] = buildStringAttr { value = maxVal }
+            }
             UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
                 attrs["axis"] = buildIntAttr { value = -1 }
                 attrs["keepdims"] = buildIntAttr { value = 0 }
@@ -345,6 +365,13 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             }
             UirOpKind.GATHER -> {
                 attrs["axis"] = buildIntAttr { value = 0 }
+            }
+            UirOpKind.CLAMP -> {
+                // Random min/max for torch.clamp — stored as string attrs
+                val minVal = rand.nextDouble() * -2.0  // -2.0 to 0.0
+                val maxVal = rand.nextDouble() * 2.0 + 0.5  // 0.5 to 2.5
+                attrs["min"] = buildStringAttr { value = String.format("%.2f", minVal) }
+                attrs["max"] = buildStringAttr { value = String.format("%.2f", maxVal) }
             }
             else -> { /* 无特殊属性 */ }
         }
@@ -389,15 +416,28 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
     
     /**
      * 生成随机形状。
+     * 限制总元素数不超过 maxElements，避免生成超大张量导致 OOM。
      */
-    private fun generateRandomShape(minNdim: Int, maxNdim: Int): UirShape {
+    private fun generateRandomShape(minNdim: Int, maxNdim: Int, maxElements: Int = 100_000): UirShape {
         // 至少 2D，避免很多算子不支持 1D
         val ndim = rand.nextInt(maxOf(2, minNdim), maxOf(2, maxNdim) + 1)
+        // 策略：先生成所有维度，如果总元素数超限则逐步缩小最大的维度
+        // 维度最小为2，避免 STRIDED_SLICE (dim//2) 产生0维
+        val dims = MutableList(ndim) { rand.nextInt(2, 65) }
+        var totalElements = dims.fold(1L) { acc, d -> acc * d }
+        while (totalElements > maxElements) {
+            // 找到最大的维度（>1），缩小它
+            val maxIdx = dims.indices.filter { dims[it] > 1 }.maxByOrNull { dims[it] } ?: break
+            val reduction = maxOf(1, dims[maxIdx] / 2)
+            dims[maxIdx] -= reduction
+            if (dims[maxIdx] < 1) dims[maxIdx] = 1
+            totalElements = dims.fold(1L) { acc, d -> acc * d }
+        }
         return buildShape {
-            repeat(ndim) {
+            dims.forEach { d ->
                 this.dims.add(buildDim {
                     this.dimKind = UirDimKind.CONSTANT
-                    this.value = rand.nextInt(1, 129)
+                    this.value = d
                 })
             }
         }
@@ -409,7 +449,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
     private fun generateBroadcastableShape(target: UirShape): UirShape {
         return buildShape {
             target.dims.forEach { dim ->
-                val targetValue = dim.valueOrNull() ?: rand.nextInt(1, 129)
+                val targetValue = dim.valueOrNull() ?: rand.nextInt(2, 65)
                 val value = if (rand.nextDouble() < 0.7) targetValue else 1
                 
                 this.dims.add(buildDim {

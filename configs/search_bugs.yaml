@@ -1,0 +1,21 @@
+run:
+  description: "Search for generated invalid code"
+  seed: 12345
+  output_dir: "./reports"
+
+generator:
+  min_nodes_per_graph: 3
+  max_nodes_per_graph: 12
+  min_inputs: 2
+  max_inputs: 6
+  min_input_ndim: 1
+  max_input_ndim: 4
+  graph_count: 1
+
+backends:
+  enabled: ["tvm"]
+
+pipeline:
+  workers: 1
+  batch_size: 200
+  run_timeout_seconds: 30
