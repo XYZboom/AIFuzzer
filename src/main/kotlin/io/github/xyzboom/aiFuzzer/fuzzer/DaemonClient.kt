@@ -373,6 +373,8 @@ class DefaultDaemonEnvProvider(
             env.remove(key)
         }
 
+        env["PYTHONUTF8"] = "1"
+
         return env
     }
 }
