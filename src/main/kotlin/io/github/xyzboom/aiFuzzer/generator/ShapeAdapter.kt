@@ -106,6 +106,12 @@ object ShapeAdapter {
             return adaptNdimConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, minNdim = 2)
         }
         
+        // 特殊处理：需要精确 4D 的算子（conv2d, pool2d）
+        // 这些算子必须 4D (NCHW)，多于4D需要squeeze，少于4D需要expand
+        if (op in setOf(UirOpKind.CONV2D, UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D)) {
+            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
+        }
+        
         // 特殊处理：GATHER
         if (op == UirOpKind.GATHER) {
             return adaptGatherInputs(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
@@ -1044,4 +1050,68 @@ object ShapeAdapter {
             val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
             return (1..8).map { chars.random() }.joinToString("")
         }
+    
+    /**
+     * 适配 NCHW 格式的 4D 约束（conv2d, pool2d）。
+     *
+     * 这些算子需要精确的 4D 输入 [N, C, H, W]。
+     * - <4D: 在前面插入 size=1 的维度（expand）
+     * - >4D: 将多余的维度 squeeze 掉（通过 reshape 将前 extra 维合并到 batch dim）
+     */
+    private fun adaptNchwConstraint(
+        inputValueRefs: List<UirValueRef>,
+        inputShapes: List<UirShape>,
+        valueShapes: MutableMap<String, UirShape>,
+        valueCounter: Int,
+        nodeCounter: Int
+    ): AdaptResult {
+        val wrapperNodes = mutableListOf<UirNode>()
+        val adaptedRefs = mutableListOf<UirValueRef>()
+        val adaptedShapes = mutableListOf<UirShape>()
+
+        var localValueCounter = valueCounter
+        var localNodeCounter = nodeCounter
+
+        for ((ref, shape) in inputValueRefs.zip(inputShapes)) {
+            val ndim = shape.dims.size
+            val adapted: Pair<UirValueRef, List<UirNode>> = when {
+                ndim < 4 -> {
+                    // <4D: 在前面插入 size=1 的维度
+                    val target = expandToMinNdim(shape, 4)
+                    generateWrapperSequence(ref, shape, target, valueShapes, localValueCounter, localNodeCounter)
+                }
+                ndim > 4 -> {
+                    // >4D: 将前 (ndim-4) 个维度 squeeze 到 batch 维度
+                    // 策略：将前 (ndim-3) 个维度合并到 N 维，保留 C,H,W
+                    val extra = ndim - 4
+                    val mergedBatch = shape.dims.take(extra + 1)
+                        .mapNotNull { it.valueOrNull() }
+                        .filter { it > 0 }
+                        .fold(1L) { acc, v -> acc * v }
+                        .toInt()
+                    
+                    val targetShape = buildShape {
+                        dims.add(buildDim {
+                            dimKind = UirDimKind.CONSTANT
+                            value = mergedBatch.coerceAtLeast(1)
+                        })
+                        for (i in (extra + 1) until ndim) {
+                            dims.add(shape.dims[i])
+                        }
+                    }
+                    generateWrapperSequence(ref, shape, targetShape, valueShapes, localValueCounter, localNodeCounter)
+                }
+                else -> Pair(ref, emptyList())
+            }
+            
+            wrapperNodes.addAll(adapted.second)
+            adaptedRefs.add(adapted.first)
+            adaptedShapes.add(valueShapes[adapted.first.valueId]!!)
+            
+            localValueCounter += adapted.second.size
+            localNodeCounter += adapted.second.size
+        }
+
+        return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
+    }
 }

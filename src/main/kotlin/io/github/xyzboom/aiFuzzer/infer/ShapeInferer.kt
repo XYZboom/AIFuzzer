@@ -584,8 +584,23 @@ object ShapeInferer {
             return unknownDim()
         }
 
+        // 确保输出至少为 1。如果输入空间维太小导致输出为 0 或负，
+        // 将输出设为 1（PyTorch 不接受 0 维输出）
         val outVal = (inVal + 2 * padding - kernelSize) / stride + 1
         return constantDim(outVal.coerceAtLeast(1))
+    }
+    
+    /**
+     * 获取调整后的 pool kernel_size，确保在给定输入维度下输出至少为 1。
+     */
+    private fun adjustPoolKernelSize(inputDimVal: Int, kernelSize: Int, stride: Int, padding: Int): Int {
+        var ks = kernelSize
+        while (ks > 1) {
+            val out = (inputDimVal + 2 * padding - ks) / stride + 1
+            if (out >= 1) return ks
+            ks--
+        }
+        return 1
     }
 
     /**

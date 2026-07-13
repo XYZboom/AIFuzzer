@@ -321,7 +321,7 @@ class PytorchTranslator(
             UirOpKind.LAYER_NORM -> {
                 val inputShape = node.inputs[0].type.shape
                 val lastDim = inputShape.dims.last().value ?: 64
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, $lastDim)"
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ($lastDim,))"
             }
             UirOpKind.BATCH_NORM -> {
                 // BatchNorm 需要 running_mean, running_var, weight, bias

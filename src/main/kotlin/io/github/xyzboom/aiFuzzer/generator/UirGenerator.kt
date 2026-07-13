@@ -382,7 +382,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 
                 // P0: 随机添加显式 dtype 参数（10% 概率）
                 if (rand.nextDouble() < 0.1) {
-                    attrs["dtype"] = buildStringAttr { value = randomDtype() }
+                    attrs["dtype"] = buildStringAttr { value = randomReduceDtype(op) }
                 }
             }
             // P0: cumsum/cumprod 支持 dtype（Issue #189518）
@@ -413,8 +413,10 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 attrs["groups"] = buildIntAttr { value = 1 }
             }
             UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
-                attrs["kernel_size"] = buildIntAttr { value = 2 }
-                attrs["stride"] = buildIntAttr { value = 2 }
+                // 随机 kernel_size 和 stride，范围 1-3，避免输入空间维太小导致输出为 0
+                attrs["kernel_size"] = buildIntAttr { value = rand.nextInt(1, 4) }
+                val ks = (attrs["kernel_size"] as UirIntAttr).value
+                attrs["stride"] = buildIntAttr { value = rand.nextInt(1, ks + 1) }
                 attrs["padding"] = buildIntAttr { value = 0 }
             }
             UirOpKind.LAYER_NORM -> {
@@ -556,6 +558,18 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             "int64",      // 大整数
             "bool",       // 布尔 -> 浮点转换
         )
+        return dtypes.random(rand)
+    }
+    
+    /**
+     * 随机选择 reduce 算子的 dtype（排除 bool，因为 mean 不支持 bool dtype）。
+     */
+    private fun randomReduceDtype(op: UirOpKind): String {
+        val dtypes = mutableListOf("float32", "float16", "bfloat16", "int32", "int64")
+        // mean 要求浮点 dtype
+        if (op == UirOpKind.REDUCE_MEAN) {
+            dtypes.removeAll { it.startsWith("int") }
+        }
         return dtypes.random(rand)
     }
     
