@@ -38,6 +38,8 @@ data class FuzzerGenConfig(
     var mutation: MutationConfig = MutationConfig(),
     var dtype: String = "float32",
     var dtypeBits: Int = 32,
+    /** 形状档位名称，控制形状大小以避免 OOM */
+    var shapeTier: String = "tiny",
 ) {
     /** 转换为 backend 使用的 GeneratorConfig */
     fun toGeneratorConfig(seed: Long): GeneratorConfig {
@@ -54,6 +56,7 @@ data class FuzzerGenConfig(
             maxNdim = maxInputNdim,
             dtype = dtype,
             dtypeBits = dtypeBits,
+            shapeTier = shapeTier,
         )
     }
 

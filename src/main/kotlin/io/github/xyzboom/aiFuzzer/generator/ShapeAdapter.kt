@@ -443,7 +443,7 @@ object ShapeAdapter {
         valueIdCounter: Int,
         nodeIdCounter: Int
     ): Pair<UirValueRef, UirNode> {
-        val outputValueId = "v_${valueIdCounter}_const"
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
         valueShapes[outputValueId] = targetShape
         
         val outputRef = buildValueRef {
@@ -459,7 +459,7 @@ object ShapeAdapter {
         }
         
         val node = buildNode {
-            name = "zeros_${nodeIdCounter}_const"
+            name = "zeros_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.ZEROS
             inputs.clear()  // ZEROS 无输入
             outputs.add(outputRef)
@@ -816,7 +816,7 @@ object ShapeAdapter {
             }
         }
         
-        val outputValueId = "v_${valueIdCounter}_wrapper"
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
         valueShapes[outputValueId] = outputShape
         
         val outputRef = buildValueRef {
@@ -829,7 +829,7 @@ object ShapeAdapter {
         }
         
         val node = buildNode {
-            name = "expand_dims_${nodeIdCounter}_wrapper"
+            name = "expand_dims_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.EXPAND_DIMS
             inputs.add(inputRef)
             outputs.add(outputRef)
@@ -867,7 +867,7 @@ object ShapeAdapter {
             inputShape.dims.forEach { dims.add(it) }
         }
         
-        val outputValueId = "v_${valueIdCounter}_wrapper"
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
         valueShapes[outputValueId] = outputShape
         
         val outputRef = buildValueRef {
@@ -882,7 +882,7 @@ object ShapeAdapter {
         // 重要：虽然一次插入 numDims 个维度，但只创建一个节点
         // axis=0 表示在最前面插入维度
         val node = buildNode {
-            name = "expand_dims_${nodeIdCounter}_wrapper"
+            name = "expand_dims_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.EXPAND_DIMS
             inputs.add(inputRef)
             outputs.add(outputRef)
@@ -934,7 +934,7 @@ object ShapeAdapter {
         
         val outputShape = buildShape { outputDims.forEach { dims.add(it) } }
         
-        val outputValueId = "v_${valueIdCounter}_wrapper"
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
         valueShapes[outputValueId] = outputShape
         
         val outputRef = buildValueRef {
@@ -947,7 +947,7 @@ object ShapeAdapter {
         }
         
         val node = buildNode {
-            name = "reshape_${nodeIdCounter}_wrapper"
+            name = "reshape_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.RESHAPE
             inputs.add(inputRef)
             outputs.add(outputRef)
@@ -967,7 +967,7 @@ object ShapeAdapter {
         valueIdCounter: Int,
         nodeIdCounter: Int
     ): Pair<UirValueRef, UirNode> {
-        val outputValueId = "v_${valueIdCounter}_wrapper"
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
         valueShapes[outputValueId] = targetShape
         
         val outputRef = buildValueRef {
@@ -980,7 +980,7 @@ object ShapeAdapter {
         }
         
         val node = buildNode {
-            name = "reshape_${nodeIdCounter}_wrapper"
+            name = "reshape_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.RESHAPE
             inputs.add(inputRef)
             outputs.add(outputRef)
@@ -1002,7 +1002,7 @@ object ShapeAdapter {
         valueIdCounter: Int,
         nodeIdCounter: Int
     ): Pair<UirValueRef, UirNode> {
-        val outputValueId = "v_${valueIdCounter}_wrapper"
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
         valueShapes[outputValueId] = targetShape
         
         val outputRef = buildValueRef {
@@ -1015,7 +1015,7 @@ object ShapeAdapter {
         }
         
         val node = buildNode {
-            name = "broadcast_to_${nodeIdCounter}_wrapper"
+            name = "broadcast_to_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.BROADCAST_TO
             inputs.add(inputRef)
             outputs.add(outputRef)
@@ -1041,7 +1041,7 @@ object ShapeAdapter {
      * 生成随机 ID 后缀（用于节点命名）。
      */
     private fun randomIdSuffix(): String {
-        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-        return (1..4).map { chars.random() }.joinToString("")
-    }
+            val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+            return (1..8).map { chars.random() }.joinToString("")
+        }
 }

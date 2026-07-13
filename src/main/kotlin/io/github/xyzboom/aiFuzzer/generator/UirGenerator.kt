@@ -14,6 +14,38 @@ private val log = KotlinLogging.logger {}
 val DefaultOps: List<UirOpKind> = UirOpKind.entries.filter { it !in UirOpKind.adapterOps }
 
 /**
+ * 形状档位配置：控制形状大小范围，确保可执行性。
+ *
+ * @param minDim 每个维度的最小值
+ * @param maxDim 每个维度的最大值（关键参数——设小可避免 OOM）
+ * @param minNdim 最小维度数
+ * @param maxNdim 最大维度数
+ * @param maxTotalElements 单个图所有张量的总元素上限
+ * @param label 人类可读标签
+ */
+data class ShapeTier(
+    val minDim: Int = 1,
+    val maxDim: Int = 6,
+    val minNdim: Int = 1,
+    val maxNdim: Int = 3,
+    val maxTotalElements: Long = 8_000,
+    val label: String = "tiny",
+)
+
+/** 预定义形状档位注册表 */
+object ShapeTiers {
+    val TIERS: Map<String, ShapeTier> = mapOf(
+        "tiny" to ShapeTier(1, 6, 1, 3, 8_000, "tiny"),
+        "small" to ShapeTier(1, 16, 1, 4, 64_000, "small"),
+        "medium" to ShapeTier(1, 32, 1, 4, 256_000, "medium"),
+        "conv" to ShapeTier(2, 8, 4, 4, 16_384, "conv"),
+        "extreme" to ShapeTier(0, 1, 0, 5, 1_000, "extreme"),
+    )
+
+    fun resolve(name: String): ShapeTier = TIERS[name] ?: TIERS["tiny"]!!
+}
+
+/**
  * UIR 程序生成器配置。
  */
 data class GeneratorConfig(
@@ -29,12 +61,15 @@ data class GeneratorConfig(
     val maxNdim: Int = 4,
     val dtype: String = "float32",
     val dtypeBits: Int = 32,
+    /** 形状档位名称，控制形状大小以避免 OOM */
+    val shapeTier: String = "tiny",
 )
 
 /**
  * UIR 程序生成器。
  *
  * 生成形状兼容的 DAG 图，直接输出可执行的 UIR 程序。
+ * 形状大小自动受 [shapeTier] 预算控制，不超限，不重试。
  */
 class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
@@ -48,6 +83,12 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
     
     // 形状管理：valueId -> shape
     private val valueShapes = mutableMapOf<String, UirShape>()
+
+    /** 本次生成已使用的元素总数，生成时动态压缩形状不超 [shapeTier] 预算 */
+    private var usedElements = 0L
+
+    /** 缓存的形状档位 */
+    private val shapeTier: ShapeTier = ShapeTiers.resolve(config.shapeTier)
 
     /** 生成随机 ID 后缀（用于追踪） */
     private fun randomIdSuffix(): String {
@@ -63,18 +104,20 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     /**
      * 生成完整的 UIR 程序。
+     * 形状大小由 [generateRandomShape] 动态控制，保证不超出预算。
      */
     fun generate(): UirProgram {
+        usedElements = 0
         val program = buildProgram {
             for (i in 0 until config.graphCount) {
                 log.debug { "生成图 $i/${config.graphCount}" }
                 graphs.add(generateGraph("graph_$i"))
             }
         }
-        
+        log.debug { "程序生成完成，共使用 ${usedElements}/${shapeTier.maxTotalElements} 元素 (tier=${shapeTier.label})" }
         return program
     }
-    
+
     private fun generateGraph(name: String): UirGraph {
         log.debug { "生成图: $name" }
         valueCounter = 0
@@ -181,7 +224,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         }
         log.trace { "节点 $nodeIndex: 选择算子 $op (可用值=${availableValues.size})" }
         
-        // 2. 孜定输入数量
+        // 2. 确定输入数量
         val numInputs = when (op) {
             in UirOpKind.constantOps -> 0
             in UirOpKind.singleInputOps -> 1
@@ -406,32 +449,69 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
     
     /**
      * 生成随机形状。
+     * 根据当前 [usedElements] 剩余预算动态缩减每维上限，从源头保证不超 [shapeTier]。
+     * 当剩余预算紧张时，优先缩小维度值而非缩减维度数，保持图结构多样性。
      */
     private fun generateRandomShape(minNdim: Int, maxNdim: Int): UirShape {
         // 至少 2D，避免很多算子不支持 1D
         val ndim = rand.nextInt(maxOf(2, minNdim), maxOf(2, maxNdim) + 1)
+        // 根据剩余预算计算此张量每维上限
+        val safeMax = budgetAwareMaxDim(ndim)
         return buildShape {
             repeat(ndim) {
                 this.dims.add(buildDim {
                     this.dimKind = UirDimKind.CONSTANT
-                    this.value = rand.nextInt(1, 129)
+                    this.value = rand.nextInt(shapeTier.minDim, safeMax + 1)
                 })
             }
+        }.also { shape ->
+            val n = shape.dims.fold(1L) { acc, dim -> acc * (dim.value?.toLong() ?: 1L) }
+            usedElements += n
+            log.trace { "形状 ${shapeDims(shape)} 元素=$n 累计=${usedElements}/${shapeTier.maxTotalElements}" }
         }
+    }
+
+    /**
+     * 计算 [ndim] 维下不超过剩余预算的最大维度值。
+     * 从 [shapeTier.maxDim] 向下试探确定可行的最大维值。
+     */
+    private fun budgetAwareMaxDim(ndim: Int): Int {
+        val remaining = shapeTier.maxTotalElements - usedElements
+        if (remaining <= 0) return shapeTier.minDim
+        var d = shapeTier.maxDim
+        while (d > shapeTier.minDim) {
+            var p = 1L
+            repeat(ndim) {
+                p = if (p > remaining / d) remaining + 1 else p * d
+            }
+            if (p <= remaining) break
+            d--
+        }
+        return maxOf(shapeTier.minDim, d)
     }
     
     /**
      * 生成可广播到 target 的形状。
+     * 受预算控制，若预算不足则生成 1-D 小形状。
      */
     private fun generateBroadcastableShape(target: UirShape): UirShape {
-        return buildShape {
-            target.dims.forEach { dim ->
-                val targetValue = dim.valueOrNull() ?: rand.nextInt(1, 129)
-                val value = if (rand.nextDouble() < 0.7) targetValue else 1
-                
+        val remaining = shapeTier.maxTotalElements - usedElements
+        if (remaining <= shapeTier.minDim.toLong() * target.dims.size) {
+            // 预算不足时退化为 1-D 小形状
+            return buildShape {
                 this.dims.add(buildDim {
                     this.dimKind = UirDimKind.CONSTANT
-                    this.value = value
+                    this.value = shapeTier.minDim
+                })
+            }
+        }
+        return buildShape {
+            target.dims.forEach { dim ->
+                val targetValue = dim.valueOrNull() ?: rand.nextInt(shapeTier.minDim, shapeTier.maxDim + 1)
+                val value = if (rand.nextDouble() < 0.7) minOf(targetValue.toLong(), remaining).toInt() else shapeTier.minDim
+                this.dims.add(buildDim {
+                    this.dimKind = UirDimKind.CONSTANT
+                    this.value = maxOf(shapeTier.minDim, minOf(shapeTier.maxDim, value))
                 })
             }
         }

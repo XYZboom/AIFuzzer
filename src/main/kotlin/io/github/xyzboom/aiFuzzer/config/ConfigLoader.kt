@@ -80,6 +80,7 @@ object ConfigLoader {
             config.generator.maxInputNdim = genMap["max_input_ndim"] as? Int ?: config.generator.maxInputNdim
             config.generator.graphCount = genMap["graph_count"] as? Int ?: config.generator.graphCount
             config.generator.strategy = genMap["strategy"] as? String ?: config.generator.strategy
+            config.generator.shapeTier = genMap["shape_tier"] as? String ?: config.generator.shapeTier
 
             // 解析 ops 子部分
             (genMap["ops"] as? Map<String, Any>)?.let { opsMap ->
