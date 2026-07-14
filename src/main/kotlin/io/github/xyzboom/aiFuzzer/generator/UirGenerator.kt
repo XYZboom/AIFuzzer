@@ -376,6 +376,33 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             UirOpKind.SOFTMAX -> {
                 attrs["axis"] = buildIntAttr { value = -1 }
             }
+            UirOpKind.LOG_SOFTMAX -> {
+                attrs["axis"] = buildIntAttr { value = -1 }
+            }
+            UirOpKind.LEAKY_RELU -> {
+                // negative_slope: random small value 0.01-0.3
+                val negativeSlope = String.format("%.2f", rand.nextDouble() * 0.3 + 0.01)
+                attrs["negative_slope"] = buildStringAttr { value = negativeSlope }
+            }
+            UirOpKind.ELU -> {
+                // alpha: random value 0.5-2.0
+                val alpha = String.format("%.2f", rand.nextDouble() * 1.5 + 0.5)
+                attrs["alpha"] = buildStringAttr { value = alpha }
+            }
+            UirOpKind.HARDTANH -> {
+                // HardTanh: min_val and max_val (default -1.0 to 1.0)
+                val minVal = String.format("%.2f", rand.nextDouble() * -2.0 - 0.5)  // -2.5 to -0.5
+                val maxVal = String.format("%.2f", rand.nextDouble() * 2.0 + 0.5)   // 0.5 to 2.5
+                attrs["min_val"] = buildStringAttr { value = minVal }
+                attrs["max_val"] = buildStringAttr { value = maxVal }
+            }
+            UirOpKind.CLAMP -> {
+                // Random min/max for torch.clamp — stored as string attrs
+                val minVal = rand.nextDouble() * -2.0  // -2.0 to 0.0
+                val maxVal = rand.nextDouble() * 2.0 + 0.5  // 0.5 to 2.5
+                attrs["min"] = buildStringAttr { value = String.format("%.2f", minVal) }
+                attrs["max"] = buildStringAttr { value = String.format("%.2f", maxVal) }
+            }
             UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
                 attrs["axis"] = buildIntAttr { value = -1 }
                 attrs["keepdims"] = buildIntAttr { value = 0 }

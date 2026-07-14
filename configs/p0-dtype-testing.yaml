@@ -1,0 +1,57 @@
+# aiFuzzer P0 配置 - Dtype 与布局测试
+# 用于发现 PyTorch/TVM 的 dtype promotion 和内存布局 bug
+
+run:
+  description: "P0 testing - dtype and layout"
+  seed: null
+  output_dir: "./reports/p0"
+  log_level: "debug"
+
+generator:
+  min_nodes_per_graph: 5
+  max_nodes_per_graph: 15
+  min_inputs: 2
+  max_inputs: 6
+  graph_count: 1
+  
+  # 重点测试归约算子（dtype bug 高发区）
+  ops:
+    include_all: false
+    include:
+      # 归约 + dtype
+      - CUMSUM
+      - CUMPROD
+      - REDUCE_SUM
+      - REDUCE_MEAN
+      - REDUCE_MAX
+      - REDUCE_MIN
+      
+      # 形状变换（布局 bug）
+      - TRANSPOSE
+      - RESHAPE
+      - BROADCAST_TO
+      - TILE
+      
+      # 基础运算
+      - ADD
+      - MULTIPLY
+      - MATMUL
+
+backends:
+  enabled: ["pytorch"]
+  
+  pytorch:
+    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
+    timeout_seconds: 120
+    device: "cpu"
+    compile_mode: "default"
+
+pipeline:
+  workers: 16
+  batch_size: 1000
+  run_timeout_seconds: 60
+
+bug_collector:
+  enabled: true
+  ignore_patterns: []
+  output_dir: "./reports/p0"

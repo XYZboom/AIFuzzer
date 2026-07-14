@@ -73,18 +73,30 @@ object ShapeInferer {
         return when (op) {
             // ===== 分类 A：形状不变（逐元素/激活） =====
             UirOpKind.RELU,
+            UirOpKind.LEAKY_RELU,
+            UirOpKind.ELU,
+            UirOpKind.SELU,
+            UirOpKind.MISH,
+            UirOpKind.HARDTANH,
             UirOpKind.SIGMOID,
             UirOpKind.TANH,
             UirOpKind.GELU,
             UirOpKind.SILU,
             UirOpKind.NEG,
             UirOpKind.ABS,
+            UirOpKind.SIGN,
             UirOpKind.EXP,
             UirOpKind.LOG,
+            UirOpKind.LOG2,
             UirOpKind.SQRT,
+            UirOpKind.RSQRT,
+            UirOpKind.RECIPROCAL,
             UirOpKind.CEIL,
             UirOpKind.FLOOR,
+            UirOpKind.ROUND,
+            UirOpKind.CLAMP,
             UirOpKind.SOFTMAX,
+            UirOpKind.LOG_SOFTMAX,
             UirOpKind.CAST -> {
                 requireSingleInput(op, inputShapes)
                 listOf(inputShapes.first())

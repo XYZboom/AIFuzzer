@@ -73,12 +73,12 @@ class FuzzerFrameworkTest {
 
     @Test
     fun `pipeline should run with multiple backends`() {
-        val generator = UirGenerator(GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 4))
+        val generatorConfig = GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 4)
         val backends = listOf(
             TvmBackend(File(System.getProperty("java.io.tmpdir"), "test_fuzzer_multi"))
         )
         val pipeline = FuzzingPipeline(
-            generatorConfig = GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 3),
+            generatorConfig = generatorConfig,
             backends = backends,
             config = FuzzingPipeline.FuzzingConfig(keepArtifacts = false)
         )
@@ -90,12 +90,12 @@ class FuzzerFrameworkTest {
 
     @Test
     fun `batch run should collect statistics`() {
-        val generator = UirGenerator(GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 3))
+        val generatorConfig = GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 3)
         val backends = listOf(
             TvmBackend(File(System.getProperty("java.io.tmpdir"), "test_fuzzer_batch"))
         )
         val pipeline = FuzzingPipeline(
-            generatorConfig = GeneratorConfig(seed = 1, minNodesPerGraph = 2, maxNodesPerGraph = 3),
+            generatorConfig = generatorConfig,
             backends = backends,
             config = FuzzingPipeline.FuzzingConfig(
                 keepArtifacts = false,

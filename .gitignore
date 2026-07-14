@@ -45,3 +45,4 @@ bin/
 **/.idea/*
 # Fuzzer bug reports
 reports/
+logs/

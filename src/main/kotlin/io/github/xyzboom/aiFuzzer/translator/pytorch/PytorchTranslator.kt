@@ -56,6 +56,11 @@ class PytorchTranslator(
 
             // 一元激活
             UirOpKind.RELU to "F.relu",
+            UirOpKind.LEAKY_RELU to "F.leaky_relu",
+            UirOpKind.ELU to "F.elu",
+            UirOpKind.SELU to "F.selu",
+            UirOpKind.MISH to "F.mish",
+            UirOpKind.HARDTANH to "F.hardtanh",
             UirOpKind.SIGMOID to "torch.sigmoid",
             UirOpKind.TANH to "torch.tanh",
             UirOpKind.GELU to "F.gelu",
@@ -64,14 +69,21 @@ class PytorchTranslator(
             // 一元数学
             UirOpKind.NEG to "torch.neg",
             UirOpKind.ABS to "torch.abs",
+            UirOpKind.SIGN to "torch.sign",
             UirOpKind.EXP to "torch.exp",
             UirOpKind.LOG to "torch.log",
+            UirOpKind.LOG2 to "torch.log2",
             UirOpKind.SQRT to "torch.sqrt",
+            UirOpKind.RSQRT to "torch.rsqrt",
+            UirOpKind.RECIPROCAL to "torch.reciprocal",
             UirOpKind.CEIL to "torch.ceil",
             UirOpKind.FLOOR to "torch.floor",
+            UirOpKind.ROUND to "torch.round",
+            UirOpKind.CLAMP to "torch.clamp",
 
             // SOFTMAX
             UirOpKind.SOFTMAX to "F.softmax",
+            UirOpKind.LOG_SOFTMAX to "F.log_softmax",
 
             // 归约
             UirOpKind.REDUCE_SUM to "torch.sum",
@@ -265,6 +277,21 @@ class PytorchTranslator(
         val call = when (op) {
             // ===== 一元激活 =====
             UirOpKind.RELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.LEAKY_RELU -> {
+                val negativeSlope = (node.attributes["negative_slope"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.01
+                "F.leaky_relu(${valueMap[node.inputs[0].valueId]}, negative_slope=$negativeSlope)"
+            }
+            UirOpKind.ELU -> {
+                val alpha = (node.attributes["alpha"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
+                "F.elu(${valueMap[node.inputs[0].valueId]}, alpha=$alpha)"
+            }
+            UirOpKind.SELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.MISH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.HARDTANH -> {
+                val minVal = (node.attributes["min_val"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: -1.0
+                val maxVal = (node.attributes["max_val"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
+                "F.hardtanh(${valueMap[node.inputs[0].valueId]}, min_val=$minVal, max_val=$maxVal)"
+            }
             UirOpKind.SIGMOID -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.TANH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.GELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
@@ -273,11 +300,23 @@ class PytorchTranslator(
             // ===== 一元数学 =====
             UirOpKind.NEG -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.ABS -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.SIGN -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.EXP -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.LOG -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.LOG2 -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.SQRT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.RSQRT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.RECIPROCAL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.CEIL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.FLOOR -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.ROUND -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.CLAMP -> {
+                // torch.clamp(input, min=0.0, max=1.0) — min/max from attributes (stored as string)
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                val minVal = (node.attributes["min"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.0
+                val maxVal = (node.attributes["max"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
+                "torch.clamp($inputVar, min=$minVal, max=$maxVal)"
+            }
 
             // ===== 二元运算（单输入模式保护） =====
             UirOpKind.ADD -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
@@ -332,6 +371,10 @@ class PytorchTranslator(
 
             // ===== SOFTMAX =====
             UirOpKind.SOFTMAX -> {
+                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis)"
+            }
+            UirOpKind.LOG_SOFTMAX -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
                 "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis)"
             }
@@ -447,9 +490,9 @@ class PytorchTranslator(
                 "torch.gather($inputVar, $axis, torch.zeros(($indicesShape), dtype=torch.int64, device=$inputVar.device))"
             }
             UirOpKind.STRIDED_SLICE -> {
-                // 简化实现：取前半部分
+                // 简化实现：取前半部分，至少保留1个元素
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                "$inputVar[:${inputVar}.shape[0]//2]"
+                "$inputVar[:max(1, ${inputVar}.shape[0]//2)]"
             }
 
             // ===== 广播/填充 =====
