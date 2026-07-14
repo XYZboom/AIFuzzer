@@ -141,6 +141,11 @@ object ConfigLoader {
             config.pipeline.batchSize = plMap["batch_size"] as? Int ?: config.pipeline.batchSize
             config.pipeline.reportInterval = plMap["report_interval"] as? Int ?: config.pipeline.reportInterval
             config.pipeline.runTimeoutSeconds = plMap["run_timeout_seconds"] as? Int ?: config.pipeline.runTimeoutSeconds
+            config.pipeline.failFast = plMap["fail_fast"] as? Boolean ?: config.pipeline.failFast
+            // 解析缩减配置
+            (plMap["reducer"] as? Map<String, Any>)?.let { reduceMap ->
+                config.pipeline.reducer.enabled = reduceMap["enabled"] as? Boolean ?: config.pipeline.reducer.enabled
+            }
         }
 
         return config

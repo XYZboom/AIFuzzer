@@ -4,6 +4,13 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
+import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
+import io.github.xyzboom.aiFuzzer.reducer.AutoReducer
+import io.github.xyzboom.aiFuzzer.reducer.PropertyChecker
+import io.github.xyzboom.aiFuzzer.translator.UirTranslator
+import io.github.xyzboom.aiFuzzer.translator.pytorch.PytorchTranslator
+import io.github.xyzboom.aiFuzzer.translator.tvm.TvmRelaxTranslator
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -13,17 +20,9 @@ private val log = KotlinLogging.logger {}
 /**
  * 可配置的 Fuzzing 流水线。
  *
- * 生成 → 执行 → 收集 → 分析
+ * 生成 → 执行 → 收集 → 缩减（可选）→ 分析
  *
- * 并行模式使用 Java ThreadPool + Future 确保可中断超时。
- * 串行模式直接在主线程执行。
- *
- * 注意：[generatorConfig] 用于每次生成时创建新的 [UirGenerator] 实例，
- * 避免16线程并发共享可变状态的问题。
- *
- * 并行模式下，backend 列表会根据 workers 数量扩展：
- * - 如果只有一个 backend 且 workers > 1，会创建 workers 个 backend 副本
- * - 每个 worker 线程使用独立的 backend 实例（避免 daemon 竞争）
+ * 注意：缩减仅影响 bug 目录中的额外产物，不影响原始程序、结果和统计。
  */
 class FuzzingPipeline(
     private val generatorConfig: GeneratorConfig = GeneratorConfig(),
@@ -31,14 +30,12 @@ class FuzzingPipeline(
     private val config: FuzzingConfig = FuzzingConfig(),
 ) {
     data class FuzzingConfig(
-        /** 每个测试的超时时间（秒），0 表示不限时 */
         val runTimeoutSeconds: Int = 60,
-        /** 并行 worker 数（≤1 时串行） */
         val workers: Int = 1,
-        /** 是否保留临时产物 */
         val keepArtifacts: Boolean = false,
-        /** 遇到失败是否立即终止 */
         val failFast: Boolean = false,
+        /** 缩减配置，null 表示不启用缩减 */
+        val reducerConfig: AutoReducer.ReducerConfig? = null,
     )
 
     /**
@@ -293,7 +290,24 @@ class FuzzingPipeline(
         val result = backend.execute(program)
         val elapsed = System.currentTimeMillis() - startTime
 
-        // 如果后端返回的是 TvmResult 等具体类型，提取错误信息
+        // 获取源码内容
+        val sourceCode = getSourceCode(result)
+
+        // 收集 bug（保存原始程序）
+        val bugDir = BugCollector.collect(
+            result = result,
+            seed = seed,
+            backendName = backend.name,
+            program = program,
+            sourceCode = sourceCode,
+        )
+
+        // 如果启用了缩减，对 bug 程序执行缩减并保存缩减产物
+        if (bugDir.exists() && config.reducerConfig != null && config.reducerConfig.enabled) {
+            reduceAndSave(bugDir, program, backend, result, getSourceCode(result), seed)
+        }
+
+        // 错误分类（与原有逻辑一致）
         val errorCategory = when (result) {
             is TvmBackend.TvmResult -> result.errorCategory
             is PytorchDaemonBackend.PytorchResult -> result.errorCategory
@@ -305,28 +319,6 @@ class FuzzingPipeline(
             else -> result.stderr.take(200)
         }
 
-        // 获取源码内容（用于 bug 报告）
-        val sourceCode = when (result) {
-            is TvmBackend.TvmResult -> {
-                // 从 TvmResult.sourceFile 读回源码
-                try {
-                    java.io.File(result.sourceFile).readText()
-                } catch (_: Exception) {
-                    null
-                }
-            }
-            else -> null
-        }
-
-        // 自动收集疑似 bug（传入 UirProgram 和源码，生成文件夹报告）
-        BugCollector.collect(
-            result = result,
-            seed = seed,
-            backendName = backend.name,
-            program = program,
-            sourceCode = sourceCode,
-        )
-
         return FuzzingResult(
             seed = seed,
             backendName = backend.name,
@@ -334,5 +326,170 @@ class FuzzingPipeline(
             errorCategory = errorCategory,
             errorSummary = errorSummary,
         )
+    }
+
+    /**
+     * 对 bug 程序执行缩减并保存缩减产物。
+     * 缩减失败不影响原始程序和数据。
+     *
+     * 缩减过程中的属性检查通过 daemon 实际执行翻译后的 Python 代码完成，
+     * 确认 bug 仍然触发。如果缩减后属性丢失，则不保存缩减产物。
+     */
+    private fun reduceAndSave(
+        bugDir: File,
+        program: UirProgram,
+        backend: Backend<*>,
+        result: BackendResult,
+        sourceCode: String?,
+        seed: Long,
+    ) {
+        try {
+            // 深拷贝：序列化→反序列化
+            val jsonl = UirSerializer.toJsonl(program)
+            val programCopy = UirSerializer.fromJsonl(jsonl)
+
+            // 获取 backend 的 translator 和 daemon
+            val (translator, daemon) = backendToTranslatorAndDaemon(backend)
+                ?: run {
+                    log.warn { "seed=$seed 不支持的 backend 类型，跳过缩减" }
+                    return
+                }
+
+            // 构建属性检查器：通过 daemon 执行翻译后的代码，匹配错误特征
+            val expectedError = result.stderr
+            val propertyChecker = object : PropertyChecker {
+                override fun check(program: UirProgram): Boolean {
+                    val totalNodes = program.graphs.sumOf { it.nodes.size }
+                    return try {
+                        val source = translator.translate(program)
+                        val daemonResult = daemon.sendAndWait(source)
+                        val matched = !daemonResult.success && matchesBug(daemonResult.stderr, expectedError)
+                        log.debug { "缩减 check: nodes=$totalNodes, matched=$matched" }
+                        matched
+                    } catch (e: Exception) {
+                        log.debug { "缩减 check: nodes=$totalNodes, exception=${e.message}" }
+                        false
+                    }
+                }
+
+                override fun bugSignature(): String = expectedError.take(200)
+            }
+
+            // 执行缩减
+            val reducer = AutoReducer(config.reducerConfig!!)
+            val reductionResult = reducer.reduce(programCopy, propertyChecker)
+
+            if (reductionResult.propertyPreserved && reductionResult.minifiedProgram != null) {
+                // 重新翻译缩减后的程序并通过 daemon 执行，获取执行结果
+                val reducedSource = translator.translate(programCopy)
+                val finalResult = try {
+                    daemon.sendAndWait(reducedSource)
+                } catch (e: Exception) {
+                    DaemonResult(false, -1, "", "缩减后 daemon 执行异常: ${e.message}", 0)
+                }
+
+                // 保存缩减产物（含 stderr）
+                BugCollector.saveReductionArtifacts(
+                    bugDir = bugDir,
+                    reducedProgram = programCopy,
+                    reducedSource = reducedSource,
+                    reducedStderr = finalResult.stderr,
+                    reducedStdout = finalResult.stdout,
+                )
+                log.info { "seed=$seed 缩减完成: ${"%.1f".format(reductionResult.reductionRatio * 100)}% 缩减率" }
+            } else {
+                log.warn { "seed=$seed 缩减后属性未保持，保留原始程序" }
+            }
+        } catch (e: Exception) {
+            log.warn(e) { "seed=$seed 缩减异常，保留原始程序" }
+        }
+    }
+
+    /**
+     * 从 backend 中提取 translator 和 daemon 客户端。
+     * 返回 null 表示不支持的 backend 类型。
+     */
+    private fun backendToTranslatorAndDaemon(backend: Backend<*>): Pair<UirTranslator<UirProgram, String>, DaemonClient>? {
+        return when (backend) {
+            is PytorchDaemonBackend -> {
+                @Suppress("UNCHECKED_CAST")
+                val t = backend.translator as UirTranslator<UirProgram, String>
+                Pair(t, backend.daemon)
+            }
+            is TvmDaemonBackend -> {
+                @Suppress("UNCHECKED_CAST")
+                val t = backend.translator as UirTranslator<UirProgram, String>
+                Pair(t, backend.daemon)
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * 判断 daemon 的 stderr 输出是否匹配原始 bug 的错误特征。
+     *
+     * 匹配策略：只比较 Python 异常报错行（RuntimeError / NameError 等行）。
+     * - VERIFY: FAIL → 精确匹配
+     * - 其他 RuntimeError → 去除数字后匹配（忽略 shape 值、大小等动态内容）
+     * - 其他错误类型 → 同上去除数字后匹配
+     *
+     * 排除 traceback 行、路径、文件信息等无关内容。
+     */
+    private fun matchesBug(currentStderr: String, originalStderr: String): Boolean {
+        if (currentStderr.isBlank()) return false
+
+        // 提取原始和当前 stderr 中第一个异常报错行
+        val originalErrorLine = extractErrorLine(originalStderr)
+        val currentErrorLine = extractErrorLine(currentStderr)
+
+        if (originalErrorLine == null || currentErrorLine == null) return false
+
+        // 策略 1: VERIFY: FAIL 精确匹配（差分测试失败）
+        if (originalErrorLine.contains("VERIFY: FAIL") && currentErrorLine.contains("VERIFY: FAIL")) {
+            return true
+        }
+
+        // 策略 2: 去除数字后比较（忽略 shape 值、大小等动态内容）
+        val originalCleaned = originalErrorLine.replace(Regex("\\d+"), "N")
+        val currentCleaned = currentErrorLine.replace(Regex("\\d+"), "N")
+        return originalCleaned == currentCleaned
+    }
+
+    /**
+     * 从 stderr 中提取第一个异常报错行（如 RuntimeError: ...、NameError: ... 等）。
+     * 排除所有的 traceback 行、路径、文件信息。
+     */
+    private fun extractErrorLine(stderr: String): String? {
+        val errorPrefixes = listOf(
+            "RuntimeError:", "TypeError:", "NameError:", "IndexError:", "ValueError:",
+            "KeyError:", "AttributeError:", "ModuleNotFoundError:", "ImportError:",
+            "SyntaxError:", "IndentationError:", "ZeroDivisionError:",
+            "AssertionError:", "NotImplementedError:", "StopIteration:",
+        )
+        return stderr.lines()
+            .map { it.trim() }
+            .firstOrNull { line ->
+                errorPrefixes.any { line.startsWith(it) }
+            }
+    }
+
+    private fun getSourceCode(result: BackendResult): String? {
+        return when (result) {
+            is TvmBackend.TvmResult -> {
+                try { File(result.sourceFile).readText() } catch (_: Exception) { null }
+            }
+            is PytorchDaemonBackend.PytorchResult -> {
+                try { File(result.sourceFile).readText() } catch (_: Exception) { null }
+            }
+            else -> null
+        }
+    }
+
+    private fun translateProgram(program: UirProgram, backend: Backend<*>): String {
+        return when (backend) {
+            is PytorchDaemonBackend -> PytorchTranslator().translate(program)
+            is TvmDaemonBackend -> TvmRelaxTranslator().translate(program)
+            else -> "// re-translation not supported for ${backend.name}"
+        }
     }
 }

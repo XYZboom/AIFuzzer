@@ -14,11 +14,15 @@ private val log = KotlinLogging.logger {}
  * Bug 收集器：自动将疑似 bug 的测试程序存为文件夹形式的报告。
  *
  * 每个 bug 在 reportsDir 下创建一个文件夹，包含：
- *   - source.py       ：生成的 Python 源文件（AI 编译器的输入）
- *   - stderr.log      ：错误堆栈的完整信息
- *   - ir.jsonl        ：IR 序列化文件（JSON Lines 格式）
+ *   - source.py          ：生成的 Python 源文件
+ *   - stderr.log         ：错误堆栈的完整信息
+ *   - ir.jsonl           ：原始 IR 序列化文件
+ *   - minimal_source.py  ：缩减后的源码（如果启用缩减）
+ *   - minimal_ir.jsonl   ：缩减后的 IR（如果启用缩减）
+ *   - reduction_summary.txt：缩减摘要（如果启用缩减）
  *
- * 线程安全：使用 AtomicInteger 确保 bugCounter 在多线程环境下正确递增。
+ * 缩减产物由 [saveReductionArtifacts] 单独写入，
+ * 缩减失败不影响原始数据的保存。
  */
 object BugCollector {
 
@@ -29,25 +33,15 @@ object BugCollector {
         dir
     }
 
-    // 使用 AtomicInteger 确保线程安全
     private val bugCounter = AtomicInteger(0)
 
-    /**
-     * 所有非成功的执行结果都视为 bug。
-     * 不管错误来自翻译器/生成器还是被测程序，都应当被记录。
-     */
     fun isWorthyBug(result: BackendResult): Boolean {
         return !result.success
     }
 
     /**
      * 将疑似 bug 保存为文件夹报告。
-     *
-     * @param result 后端执行结果
-     * @param seed 随机种子
-     * @param backendName 后端名称
-     * @param program 对应的 UIR 程序（用于序列化 IR）
-     * @param sourceCode 生成的 Python 源码内容（AI 编译器的输入）
+     * @return 创建的 bug 目录，可用于后续写入缩减产物
      */
     fun collect(
         result: BackendResult,
@@ -55,14 +49,12 @@ object BugCollector {
         backendName: String,
         program: UirProgram? = null,
         sourceCode: String? = null,
-    ) {
-        if (!isWorthyBug(result)) return
+    ): File {
+        if (!isWorthyBug(result)) return File("")
 
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-        // 使用 getAndIncrement 确保 bugId 是唯一的
         val bugId = bugCounter.getAndIncrement() + 1
 
-        // 创建 bug 文件夹
         val bugDirName = "bug_%03d_%s_seed%s_%s_%s".format(
             bugId,
             backendName.replace(" ", "_"),
@@ -73,12 +65,10 @@ object BugCollector {
         val bugDir = File(reportsDir, bugDirName)
         bugDir.mkdirs()
 
-        // 1. 写入源码文件（AI 编译器的输入）
+        // 1. 写入源码文件
         if (sourceCode != null) {
-            val sourceFile = File(bugDir, "source.py")
-            sourceFile.writeText(sourceCode)
+            File(bugDir, "source.py").writeText(sourceCode)
         } else {
-            // 从 BackendResult 中取出 sourceFile 路径
             val srcPath = when (result) {
                 is TvmBackend.TvmResult -> result.sourceFile
                 is PytorchDaemonBackend.PytorchResult -> result.sourceFile
@@ -92,8 +82,7 @@ object BugCollector {
             }
         }
 
-        // 2. 写入错误堆栈完整信息
-        val errorFile = File(bugDir, "stderr.log")
+        // 2. 写入错误堆栈
         val stderrContent = """
 # ============================================================
 # Bug Report - Auto Collected by aiFuzzer
@@ -110,13 +99,12 @@ ${result.stdout.trimEnd()}
 --- STDERR ---
 ${result.stderr.trimEnd()}
 """.trimStart()
-        errorFile.writeText(stderrContent)
+        File(bugDir, "stderr.log").writeText(stderrContent)
 
         // 3. 写入 IR 序列化文件
         if (program != null) {
             val irFile = File(bugDir, "ir.jsonl")
-            val irContent = UirSerializer.toJsonl(program)
-            irFile.writeText(irContent)
+            irFile.writeText(UirSerializer.toJsonl(program))
         }
 
         // 4. 复制日志文件
@@ -124,19 +112,82 @@ ${result.stderr.trimEnd()}
         if (logFile.exists()) {
             logFile.copyTo(File(bugDir, "aifuzzer.log"), overwrite = true)
         }
-        
         val traceLogFile = File("logs/aifuzzer-trace.log")
         if (traceLogFile.exists()) {
             traceLogFile.copyTo(File(bugDir, "aifuzzer-trace.log"), overwrite = true)
         }
 
         log.info { "Bug 已保存: ${bugDir.name} (seed=$seed, backend=$backendName)" }
-        log.info { "  路径: ${bugDir.relativeTo(File(".").absoluteFile)}" }
-        log.debug { "  文件: source.py, stderr.log${if (program != null) ", ir.jsonl" else ""}${if (logFile.exists()) ", aifuzzer.log" else ""}${if (traceLogFile.exists()) ", aifuzzer-trace.log" else ""}" }
+        return bugDir
     }
 
-    /** 重置计数器（新的一轮 fuzzing 时调用） */
-    fun reset() {
-        bugCounter.set(0)
+    /**
+     * 将缩减产物保存到已有的 bug 目录中。
+     * 缩减失败（或未启用缩减）时无需调用此方法。
+     *
+     * @param bugDir [collect] 返回的 bug 目录
+     * @param reducedProgram 缩减后的 UIR 程序
+     * @param reducedSource 缩减后重新翻译的源码（可选）
+     * @param reducedStderr 缩减后 daemon 执行的 stderr 输出（可选）
+     * @param reducedStdout 缩减后 daemon 执行的 stdout 输出（可选）
+     */
+    fun saveReductionArtifacts(
+        bugDir: File,
+        reducedProgram: UirProgram,
+        reducedSource: String? = null,
+        reducedStderr: String? = null,
+        reducedStdout: String? = null,
+    ) {
+        if (!bugDir.exists()) bugDir.mkdirs()
+
+        // 写入缩减后的 IR
+        File(bugDir, "minimal_ir.jsonl").writeText(UirSerializer.toJsonl(reducedProgram))
+
+        // 写入缩减后重新翻译的源码
+        if (reducedSource != null) {
+            File(bugDir, "minimal_source.py").writeText(reducedSource)
+        }
+
+        // 写入缩减后的 stderr
+        if (reducedStderr != null) {
+            val content = buildString {
+                appendLine("# ============================================================")
+                appendLine("# Reduced Program - stderr")
+                appendLine("# ============================================================")
+                appendLine()
+                if (reducedStdout != null) {
+                    appendLine("--- STDOUT ---")
+                    appendLine(reducedStdout.trimEnd())
+                    appendLine()
+                }
+                appendLine("--- STDERR ---")
+                appendLine(reducedStderr.trimEnd())
+            }
+            File(bugDir, "minimal_stderr.log").writeText(content)
+        }
+
+        // 写入缩减摘要
+        val originalNodeCount = try {
+            File(bugDir, "ir.jsonl").readLines().count { it.contains("\"visitNode\"") }
+        } catch (_: Exception) { 0 }
+        val reducedNodeCount = try {
+            File(bugDir, "minimal_ir.jsonl").readLines().count { it.contains("\"visitNode\"") }
+        } catch (_: Exception) { 0 }
+
+        val summary = """
+# Reduction Summary
+# Original nodes: $originalNodeCount
+# Reduced nodes: $reducedNodeCount
+# Reduction ratio: ${
+            if (originalNodeCount > 0) String.format("%.1f%%",
+                (1 - reducedNodeCount.toDouble() / originalNodeCount) * 100) else "N/A"
+        }
+# Timestamp: ${LocalDateTime.now()}
+""".trimStart()
+        File(bugDir, "reduction_summary.txt").writeText(summary)
+
+        log.info { "缩减产物已保存: ${bugDir.name} (${originalNodeCount}→${reducedNodeCount} nodes)" }
     }
+
+    fun reset() { bugCounter.set(0) }
 }

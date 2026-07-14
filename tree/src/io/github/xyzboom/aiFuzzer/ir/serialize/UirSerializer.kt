@@ -62,6 +62,20 @@ object UirSerializer {
                     put("kind", "visitValue")
                     put("id", vr.valueId)
                     put("ndim", vr.type.shape.dims.size)
+                    // 保存具体 shape 信息
+                    put("shape", buildJsonArray {
+                        vr.type.shape.dims.forEach { dim ->
+                            add(buildJsonObject {
+                                put("kind", dim.dimKind.name)
+                                dim.value?.let { put("value", it) }
+                            })
+                        }
+                    })
+                    // 保存 dtype 信息
+                    put("dtype", buildJsonObject {
+                        put("name", vr.type.dtype.name)
+                        put("bits", vr.type.dtype.bits)
+                    })
                 }))
             }
         }
@@ -139,6 +153,8 @@ object UirSerializer {
 
         // 第一遍扫描：提取所有 visitValue 和 metadata
         val valueMap = mutableMapOf<String, Int>() // id → ndim
+        val valueShapeMap = mutableMapOf<String, List<Pair<UirDimKind, Int?>>?>() // id → shape dims
+        val valueDtypeMap = mutableMapOf<String, Pair<String, Int>?>() // id → dtype (name, bits)
         val restoredMetadata = mutableMapOf<String, String>()
         // 按 graph 分组的 node 和 graph 元数据
         val graphEntries = mutableListOf<GraphEntry>()
@@ -153,7 +169,18 @@ object UirSerializer {
                 "visitValue" -> {
                     val id = obj["id"]?.jsonPrimitive?.content ?: error("Missing 'id' in visitValue: $line")
                     val ndim = obj["ndim"]?.jsonPrimitive?.int ?: 1
+                    // 解析 shape（如果存在）
+                    val shapeDims = obj["shape"]?.jsonArray?.map { dimObj ->
+                        val dimKind = dimObj.jsonObject["kind"]?.jsonPrimitive?.content ?: "UNKNOWN"
+                        val dimValue = dimObj.jsonObject["value"]?.jsonPrimitive?.intOrNull
+                        Pair(UirDimKind.valueOf(dimKind), dimValue)
+                    }
+                    // 解析 dtype（如果存在）
+                    val dtypeName = obj["dtype"]?.jsonObject?.get("name")?.jsonPrimitive?.content
+                    val dtypeBits = obj["dtype"]?.jsonObject?.get("bits")?.jsonPrimitive?.intOrNull
                     valueMap[id] = ndim
+                    valueShapeMap[id] = shapeDims
+                    valueDtypeMap[id] = if (dtypeName != null && dtypeBits != null) Pair(dtypeName, dtypeBits) else null
                 }
                 "visitGraph" -> {
                     val ge = GraphEntry(
@@ -195,27 +222,13 @@ object UirSerializer {
                 val graphInputs = ge.inputIds.map { id ->
                     buildValueRef {
                         valueId = id
-                        type = buildTensorType {
-                            typeKind = UirTypeKind.TENSOR
-                            shape = buildShape {
-                                val ndim = valueMap[id] ?: 1
-                                repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
-                            }
-                            dtype = buildDataType { name = "float32"; bits = 32 }
-                        }
+                        type = buildTensorTypeFromMaps(id, valueMap, valueShapeMap, valueDtypeMap)
                     }
                 }
                 val graphOutputs = ge.outputIds.map { id ->
                     buildValueRef {
                         valueId = id
-                        type = buildTensorType {
-                            typeKind = UirTypeKind.TENSOR
-                            shape = buildShape {
-                                val ndim = valueMap[id] ?: 1
-                                repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
-                            }
-                            dtype = buildDataType { name = "float32"; bits = 32 }
-                        }
+                        type = buildTensorTypeFromMaps(id, valueMap, valueShapeMap, valueDtypeMap)
                     }
                 }
 
@@ -224,27 +237,13 @@ object UirSerializer {
                     val nodeInputs = ne.inputIds.map { id ->
                         buildValueRef {
                             valueId = id
-                            type = buildTensorType {
-                                typeKind = UirTypeKind.TENSOR
-                                shape = buildShape {
-                                    val ndim = valueMap[id] ?: error("Unknown valueRef '$id' referenced by node '${ne.name}'")
-                                    repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
-                                }
-                                dtype = buildDataType { name = "float32"; bits = 32 }
-                            }
+                            type = buildTensorTypeFromMaps(id, valueMap, valueShapeMap, valueDtypeMap)
                         }
                     }
                     val nodeOutputs = ne.outputIds.map { id ->
                         buildValueRef {
                             valueId = id
-                            type = buildTensorType {
-                                typeKind = UirTypeKind.TENSOR
-                                shape = buildShape {
-                                    val ndim = valueMap[id] ?: error("Unknown valueRef '$id' referenced by node '${ne.name}'")
-                                    repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
-                                }
-                                dtype = buildDataType { name = "float32"; bits = 32 }
-                            }
+                            type = buildTensorTypeFromMaps(id, valueMap, valueShapeMap, valueDtypeMap)
                         }
                     }
                     val attrs = mutableMapOf<String, Attribute>()
@@ -276,6 +275,48 @@ object UirSerializer {
                     graphOutputs.forEach { outputs.add(it) }
                     uirNodes.forEach { nodes.add(it) }
                 })
+            }
+        }
+    }
+
+    /**
+     * 从反序列化的 map 中重建 UirTensorType。
+     * 优先使用 shape/dtype 信息，回退到 ndim-only 模式（兼容旧格式）。
+     */
+    private fun buildTensorTypeFromMaps(
+        id: String,
+        valueMap: Map<String, Int>,
+        valueShapeMap: Map<String, List<Pair<UirDimKind, Int?>>?>,
+        valueDtypeMap: Map<String, Pair<String, Int>?>,
+    ): UirTensorType {
+        val shapeDims = valueShapeMap[id]
+        val dtypeInfo = valueDtypeMap[id]
+
+        return buildTensorType {
+            typeKind = UirTypeKind.TENSOR
+            shape = buildShape {
+                if (shapeDims != null) {
+                    // 新格式：有具体 shape 信息
+                    for ((kind, value) in shapeDims) {
+                        dims.add(buildDim {
+                            dimKind = kind
+                            this.value = value
+                        })
+                    }
+                } else {
+                    // 旧格式：只有 ndim
+                    val ndim = valueMap[id] ?: 1
+                    repeat(ndim) { dims.add(buildDim { dimKind = UirDimKind.UNKNOWN }) }
+                }
+            }
+            dtype = buildDataType {
+                if (dtypeInfo != null) {
+                    name = dtypeInfo.first
+                    bits = dtypeInfo.second
+                } else {
+                    name = "float32"
+                    bits = 32
+                }
             }
         }
     }

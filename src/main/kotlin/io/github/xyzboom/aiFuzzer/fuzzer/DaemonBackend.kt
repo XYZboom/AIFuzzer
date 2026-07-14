@@ -27,10 +27,10 @@ abstract class DaemonBackend<T : BackendResult>(
     private val envProvider: DaemonEnvProvider = DefaultDaemonEnvProvider(pythonPath),
 ) : Backend<T> {
 
-    protected abstract val translator: UirTranslator<UirProgram, String>
+    abstract val translator: UirTranslator<UirProgram, String>
 
     /** daemon 客户端 */
-    protected val daemon: DaemonClient = DaemonClient(
+    val daemon: DaemonClient = DaemonClient(
         pythonPath = pythonPath,
         daemonScriptPath = daemonScriptPath,
         maxRetries = 3,

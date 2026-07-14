@@ -145,18 +145,24 @@ data class PipelineConfig(
     var batchSize: Int = 100,
     var reportInterval: Int = 10,
     var runTimeoutSeconds: Int = 60,
-    /**
-     * 遇到测试失败时是否立即终止程序。
-     * 默认 false（继续执行，收集所有失败）。
-     */
     var failFast: Boolean = false,
+    /** 缩减配置，不设置或 enabled=false 时禁用缩减 */
+    var reducer: ReducerConfig = ReducerConfig(),
 ) {
+    data class ReducerConfig(
+        var enabled: Boolean = true,
+    )
+
     fun toFuzzingConfig(): FuzzingPipeline.FuzzingConfig {
+        val rc = if (reducer.enabled) {
+            io.github.xyzboom.aiFuzzer.reducer.AutoReducer.ReducerConfig(enabled = true)
+        } else null
         return FuzzingPipeline.FuzzingConfig(
             runTimeoutSeconds = runTimeoutSeconds,
             workers = workers,
             keepArtifacts = false,
             failFast = failFast,
+            reducerConfig = rc,
         )
     }
 }
