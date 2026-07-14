@@ -46,3 +46,12 @@ bin/
 # Fuzzer bug reports
 reports/
 logs/
+# Python cache
+__pycache__/
+*.pyc
+# Local data / reduction outputs
+reduction_data/
+# Backup files
+*.bak
+# Local temp configs
+configs/default-pytorch-tmp.yaml
