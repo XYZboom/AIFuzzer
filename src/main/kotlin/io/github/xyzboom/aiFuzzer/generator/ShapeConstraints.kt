@@ -227,9 +227,13 @@ object ShapeConstraints {
             description = "层归一化，输出形状不变"
         ),
         UirOpKind.BATCH_NORM to OpShapeConstraint(
-            minNdim = 2,  // 至少 [N, C] 或 [N, C, H, W]
+            minNdim = 3,  // F.batch_norm 需要 3D 或 4D 输入 [N, C, ...]
+            maxNdim = 4,
             numInputs = 1..1,
-            description = "批归一化，输出形状不变"
+            isApplicable = { shapes ->
+                shapes.size == 1 && shapes[0].dims.size in 3..4
+            },
+            description = "批归一化，需要 3D 或 4D 输入（N,C 或 N,C,H,W）"
         ),
         // 单输入，无维度要求
         UirOpKind.REDUCE_SUM to OpShapeConstraint(
@@ -360,6 +364,26 @@ object ShapeConstraints {
         UirOpKind.EXPAND_DIMS to OpShapeConstraint(
             numInputs = 1..1,
             description = "插入维度（适配算子）"
+        ),
+
+        // ===== 分类 L：插值/Resize =====
+        UirOpKind.INTERPOLATE to OpShapeConstraint(
+            minNdim = 3,  // F.interpolate 需要 3D-5D 输入
+            maxNdim = 5,
+            numInputs = 1..1,
+            isApplicable = { shapes ->
+                shapes.size == 1 && shapes[0].dims.size in 3..5
+            },
+            description = "插值运算，需要 3D-5D 输入（PyTorch F.interpolate 限制）"
+        ),
+        UirOpKind.RESIZE2D to OpShapeConstraint(
+            minNdim = 4,  // image.resize2d 需要 4D 输入 (NCHW)
+            maxNdim = 4,
+            numInputs = 1..1,
+            isApplicable = { shapes ->
+                shapes.size == 1 && shapes[0].dims.size == 4
+            },
+            description = "2D Resize，需要 4D 输入（NCHW）"
         ),
     )
     

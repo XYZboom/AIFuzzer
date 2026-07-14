@@ -323,6 +323,70 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 availableValues.random(rand)
             }
             
+            // 特殊处理：CONV2D 需要生成匹配的权重常量
+            if (op == UirOpKind.CONV2D) {
+                val inputShape = valueShapes[input1ValueId]!!
+                // 确保输入是 4D (NCHW)
+                if (inputShape.dims.size == 4) {
+                    val cIn = inputShape.dims[1].valueOrNull() ?: 1
+                    val h = inputShape.dims[2].valueOrNull() ?: 1
+                    val w = inputShape.dims[3].valueOrNull() ?: 1
+                    val cOut = rand.nextInt(1, minOf(cIn + 1, 5))
+                    val kH = minOf(rand.nextInt(1, 4), h)
+                    val kW = minOf(rand.nextInt(1, 4), w)
+                    
+                    // 生成权重常量节点
+                    val weightValueId = newValueId()
+                    val weightShape = buildShape {
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = cOut })
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = cIn })
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = kH })
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = kW })
+                    }
+                    valueShapes[weightValueId] = weightShape
+                    
+                    val weightNode = buildNode {
+                        name = "conv2d_weight_${randomIdSuffix()}"
+                        this.op = UirOpKind.FULL
+                        attributes["fill_value"] = buildStringAttr { value = "0.1" }
+                        attributes["shape"] = buildStringAttr { value = "($cOut, $cIn, $kH, $kW)" }
+                        attributes["dtype"] = buildStringAttr { value = "float32" }
+                        val outputRef = buildValueRef {
+                            this.valueId = weightValueId
+                            this.type = buildTensorType {
+                                typeKind = UirTypeKind.TENSOR
+                                shape = weightShape
+                                dtype = mkDataType()
+                            }
+                        }
+                        this.outputs.add(outputRef)
+                    }
+                    nodeList.add(weightNode)
+                    availableValues.add(weightValueId)
+                    
+                    val input1Ref = buildValueRef {
+                        this.valueId = input1ValueId
+                        this.type = buildTensorType {
+                            this.typeKind = UirTypeKind.TENSOR
+                            this.shape = valueShapes[input1ValueId]!!
+                            this.dtype = mkDataType()
+                        }
+                    }
+                    
+                    val input2Ref = buildValueRef {
+                        this.valueId = weightValueId
+                        this.type = buildTensorType {
+                            this.typeKind = UirTypeKind.TENSOR
+                            this.shape = weightShape
+                            this.dtype = mkDataType()
+                        }
+                    }
+                    
+                    return listOf(input1Ref, input2Ref)
+                }
+                // 如果输入不是 4D，回退到随机选择（ShapeAdapter 会处理）
+            }
+            
             // 选择第二个输入（随机，不检查形状兼容性，由 ShapeAdapter 处理）
             val input2ValueId = availableValues.filter { it != input1ValueId }.random(rand)
             
@@ -418,7 +482,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 
                 // 30% 概率添加显式 dtype
                 if (rand.nextDouble() < 0.3) {
-                    attrs["dtype"] = buildStringAttr { value = randomDtype() }
+                    attrs["dtype"] = buildStringAttr { value = randomCumulativeDtype(op) }
                 }
             }
             UirOpKind.ARGMAX, UirOpKind.ARGMIN -> {
@@ -596,6 +660,19 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         // mean 要求浮点 dtype
         if (op == UirOpKind.REDUCE_MEAN) {
             dtypes.removeAll { it.startsWith("int") }
+        }
+        return dtypes.random(rand)
+    }
+    
+    /**
+     * 随机选择累积算子的 dtype（排除 bool，因为 cumprod 不支持 bool）。
+     * cumprod 也不支持整数类型（容易溢出），所以只返回浮点类型。
+     */
+    private fun randomCumulativeDtype(op: UirOpKind): String {
+        val dtypes = mutableListOf("float32", "float16", "bfloat16")
+        // cumsum 支持整数，但 cumprod 不支持
+        if (op == UirOpKind.CUMSUM) {
+            dtypes.addAll(listOf("int32", "int64"))
         }
         return dtypes.random(rand)
     }

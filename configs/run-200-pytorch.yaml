@@ -1,8 +1,6 @@
-# 临时运行配置 — 20 轮 PyTorch fuzzing 验证
-# 用法: ./gradlew run --args="-c configs/run-20-pytorch.yaml"
-
+# 临时运行配置 — 200 轮 PyTorch fuzzing 验证
 run:
-  description: "Merge verification: 20 rounds PyTorch"
+  description: "Verification: 200 rounds PyTorch with all fixes"
   seed: null
   output_dir: "./reports"
   log_level: "info"
@@ -30,14 +28,6 @@ generator:
 backends:
   enabled: ["pytorch"]
 
-  tvm:
-    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
-    timeout_seconds: 60
-    keep_artifacts: false
-    work_dir: "%TEMP%/aiFuzzer_tvm"
-    dtype: "float32"
-    shape_rank: 3
-
   pytorch:
     python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
     timeout_seconds: 120
@@ -47,18 +37,6 @@ backends:
     device: "cpu"
     compile_mode: "default"
 
-  onnx:
-    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
-    timeout_seconds: 60
-    opset_version: 21
-    ir_version: 8
-
-  iree:
-    timeout_seconds: 120
-    target: "llvm-cpu"
-    driver: "local-sync"
-    mlir_flags: []
-
 bug_collector:
   enabled: true
   ignore_patterns: []
@@ -66,5 +44,5 @@ bug_collector:
 
 pipeline:
   workers: 1
-  batch_size: 20
+  batch_size: 200
   run_timeout_seconds: 120

@@ -99,6 +99,10 @@ object ErrorAnalyzer {
                 val msg = extractLine(stderr, "ValueError")
                 ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
             }
+            stderr.contains("NotImplementedError") -> {
+                val msg = extractLine(stderr, "NotImplementedError")
+                ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
+            }
             stderr.contains("OpNotImplemented") -> {
                 val msg = extractLine(stderr, "OpNotImplemented")
                 ErrorInfo(ErrorCategory.OP_NOT_IMPLEMENTED, msg)

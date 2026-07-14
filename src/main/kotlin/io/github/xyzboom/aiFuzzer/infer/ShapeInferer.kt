@@ -206,8 +206,21 @@ object ShapeInferer {
             // ===== 分类 G3：插值/Resize（P2 新增） =====
             UirOpKind.INTERPOLATE,
             UirOpKind.RESIZE2D -> {
-                // Resize 保持输入形状（实际 shape 由 scale 决定）
-                inputShapes
+                // F.interpolate with scale_factor=2.0 doubles spatial dimensions
+                // Input: [N, C, ...spatial...] -> Output: [N, C, ...spatial*2...]
+                val inputShape = inputShapes[0]
+                val ndim = inputShape.dims.size
+                listOf(buildShape {
+                    for (i in 0 until ndim) {
+                        val dimValue = inputShape.dims[i].value ?: 1
+                        // First 2 dims (N, C) stay the same, spatial dims are doubled
+                        val outValue = if (i < 2) dimValue else dimValue * 2
+                        dims.add(buildDim {
+                            dimKind = UirDimKind.CONSTANT
+                            value = outValue
+                        })
+                    }
+                })
             }
             
             // ===== 分类 H：常数生成 =====

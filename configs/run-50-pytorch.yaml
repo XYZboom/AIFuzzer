@@ -1,8 +1,8 @@
-# 临时运行配置 — 20 轮 PyTorch fuzzing 验证
-# 用法: ./gradlew run --args="-c configs/run-20-pytorch.yaml"
+# 临时运行配置 — 50 轮 PyTorch fuzzing 验证
+# 用法: ./gradlew run --args="-c configs/run-50-pytorch.yaml"
 
 run:
-  description: "Merge verification: 20 rounds PyTorch"
+  description: "Verification: 50 rounds PyTorch with INTERPOLATE/CUMPROD fixes"
   seed: null
   output_dir: "./reports"
   log_level: "info"
@@ -66,5 +66,5 @@ bug_collector:
 
 pipeline:
   workers: 1
-  batch_size: 20
+  batch_size: 50
   run_timeout_seconds: 120

@@ -80,7 +80,22 @@ object ShapeAdapter {
         // 特殊处理：需要精确 4D 的算子（conv2d, pool2d）必须优先于 binaryInputOps
         // 这些算子必须 4D (NCHW)，多于4D需要squeeze，少于4D需要expand
         if (op in setOf(UirOpKind.CONV2D, UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D)) {
-            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
+            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
+        }
+        
+        // 特殊处理：INTERPOLATE 需要 3D-5D 输入
+        if (op == UirOpKind.INTERPOLATE) {
+            return adaptInterpolateConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
+        }
+        
+        // 特殊处理：RESIZE2D 需要 4D 输入 (NCHW)
+        if (op == UirOpKind.RESIZE2D) {
+            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
+        }
+        
+        // 特殊处理：BATCH_NORM 需要 3D-4D 输入
+        if (op == UirOpKind.BATCH_NORM) {
+            return adaptBatchNormConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
         }
         
         // 特殊处理：二元运算需要推导公共目标形状
@@ -1063,7 +1078,8 @@ object ShapeAdapter {
         inputShapes: List<UirShape>,
         valueShapes: MutableMap<String, UirShape>,
         valueCounter: Int,
-        nodeCounter: Int
+        nodeCounter: Int,
+        op: UirOpKind? = null
     ): AdaptResult {
         val wrapperNodes = mutableListOf<UirNode>()
         val adaptedRefs = mutableListOf<UirValueRef>()
@@ -1083,6 +1099,184 @@ object ShapeAdapter {
                 ndim > 4 -> {
                     // >4D: 将前 (ndim-4) 个维度 squeeze 到 batch 维度
                     // 策略：将前 (ndim-3) 个维度合并到 N 维，保留 C,H,W
+                    val extra = ndim - 4
+                    val mergedBatch = shape.dims.take(extra + 1)
+                        .mapNotNull { it.valueOrNull() }
+                        .filter { it > 0 }
+                        .fold(1L) { acc, v -> acc * v }
+                        .toInt()
+                    
+                    val targetShape = buildShape {
+                        dims.add(buildDim {
+                            dimKind = UirDimKind.CONSTANT
+                            value = mergedBatch.coerceAtLeast(1)
+                        })
+                        for (i in (extra + 1) until ndim) {
+                            dims.add(shape.dims[i])
+                        }
+                    }
+                    generateWrapperSequence(ref, shape, targetShape, valueShapes, localValueCounter, localNodeCounter)
+                }
+                else -> Pair(ref, emptyList())
+            }
+            
+            wrapperNodes.addAll(adapted.second)
+            adaptedRefs.add(adapted.first)
+            adaptedShapes.add(valueShapes[adapted.first.valueId]!!)
+            
+            localValueCounter += adapted.second.size
+            localNodeCounter += adapted.second.size
+        }
+
+        // CONV2D 特殊处理：确保权重的 C_in (dim[1]) 与输入的 C (dim[1]) 匹配
+        // 同时确保 kH, kW 不超过输入的空间维度
+        if (op == UirOpKind.CONV2D && adaptedShapes.size == 2) {
+            val inputC = adaptedShapes[0].dims.getOrNull(1)?.valueOrNull()
+            val weightCIn = adaptedShapes[1].dims.getOrNull(1)?.valueOrNull()
+            val inputH = adaptedShapes[0].dims.getOrNull(2)?.valueOrNull() ?: 1
+            val inputW = adaptedShapes[0].dims.getOrNull(3)?.valueOrNull() ?: 1
+            
+            val cInMismatch = inputC != null && weightCIn != null && inputC != weightCIn
+            val origKH = adaptedShapes[1].dims.getOrNull(2)?.valueOrNull() ?: 3
+            val origKW = adaptedShapes[1].dims.getOrNull(3)?.valueOrNull() ?: 3
+            val kHTooBig = origKH > inputH
+            val kWTooBig = origKW > inputW
+            
+            if (cInMismatch || kHTooBig || kWTooBig) {
+                // 生成常量权重张量替换第二个输入
+                // 权重形状: [C_out, C_in, kH, kW]
+                val cOut = weightCIn ?: inputC ?: 1
+                val cIn = inputC ?: weightCIn ?: 1
+                val kH = minOf(origKH, inputH).coerceAtLeast(1)
+                val kW = minOf(origKW, inputW).coerceAtLeast(1)
+                
+                val weightShape = buildShape {
+                    dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = cOut })
+                    dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = cIn })
+                    dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = kH })
+                    dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = kW })
+                }
+                
+                val (constRef, constNode) = generateConstantTensor(
+                    weightShape, valueShapes, localValueCounter, localNodeCounter
+                )
+                wrapperNodes.add(constNode)
+                adaptedRefs[1] = constRef
+                adaptedShapes[1] = valueShapes[constRef.valueId]!!
+            }
+        }
+
+        return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
+    }
+
+    /**
+     * 适配 INTERPOLATE 的 3D-5D 约束。
+     *
+     * F.interpolate 只接受 3D、4D 或 5D 输入。
+     * - <3D: 在前面插入 size=1 的维度（expand 到 3D）
+     * - 3D-5D: 直接使用
+     * - >5D: 将多余的维度 squeeze 掉（通过 reshape 将前 extra 维合并到 batch dim，降到 5D）
+     */
+    private fun adaptInterpolateConstraint(
+        inputValueRefs: List<UirValueRef>,
+        inputShapes: List<UirShape>,
+        valueShapes: MutableMap<String, UirShape>,
+        valueCounter: Int,
+        nodeCounter: Int
+    ): AdaptResult {
+        val wrapperNodes = mutableListOf<UirNode>()
+        val adaptedRefs = mutableListOf<UirValueRef>()
+        val adaptedShapes = mutableListOf<UirShape>()
+
+        var localValueCounter = valueCounter
+        var localNodeCounter = nodeCounter
+
+        for ((ref, shape) in inputValueRefs.zip(inputShapes)) {
+            val ndim = shape.dims.size
+            val adapted: Pair<UirValueRef, List<UirNode>> = when {
+                ndim < 3 -> {
+                    // <3D: 在前面插入 size=1 的维度到 3D
+                    val target = expandToMinNdim(shape, 3)
+                    generateWrapperSequence(ref, shape, target, valueShapes, localValueCounter, localNodeCounter)
+                }
+                ndim > 5 -> {
+                    // >5D: 将前 (ndim-4) 个维度合并到 batch 维度，保留后 4 维
+                    val extra = ndim - 5
+                    val mergedBatch = shape.dims.take(extra + 1)
+                        .mapNotNull { it.valueOrNull() }
+                        .filter { it > 0 }
+                        .fold(1L) { acc, v -> acc * v }
+                        .toInt()
+                    
+                    val targetShape = buildShape {
+                        dims.add(buildDim {
+                            dimKind = UirDimKind.CONSTANT
+                            value = mergedBatch.coerceAtLeast(1)
+                        })
+                        for (i in (extra + 1) until ndim) {
+                            dims.add(shape.dims[i])
+                        }
+                    }
+                    generateWrapperSequence(ref, shape, targetShape, valueShapes, localValueCounter, localNodeCounter)
+                }
+                else -> Pair(ref, emptyList())
+            }
+            
+            wrapperNodes.addAll(adapted.second)
+            adaptedRefs.add(adapted.first)
+            adaptedShapes.add(valueShapes[adapted.first.valueId]!!)
+            
+            localValueCounter += adapted.second.size
+            localNodeCounter += adapted.second.size
+        }
+
+        return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
+    }
+
+    /**
+     * 适配 BATCH_NORM 的 3D-4D 约束。
+     *
+     * F.batch_norm 只接受 3D 或 4D 输入，通道维度是 dims[1]。
+     * - <3D: 在末尾插入 size=1 的维度（保持 dims[1] 作为通道维度）
+     * - 3D-4D: 直接使用
+     * - >4D: 将多余的维度 squeeze 掉（通过 reshape 将前 extra 维合并到 batch dim，降到 4D）
+     */
+    private fun adaptBatchNormConstraint(
+        inputValueRefs: List<UirValueRef>,
+        inputShapes: List<UirShape>,
+        valueShapes: MutableMap<String, UirShape>,
+        valueCounter: Int,
+        nodeCounter: Int
+    ): AdaptResult {
+        val wrapperNodes = mutableListOf<UirNode>()
+        val adaptedRefs = mutableListOf<UirValueRef>()
+        val adaptedShapes = mutableListOf<UirShape>()
+
+        var localValueCounter = valueCounter
+        var localNodeCounter = nodeCounter
+
+        for ((ref, shape) in inputValueRefs.zip(inputShapes)) {
+            val ndim = shape.dims.size
+            val adapted: Pair<UirValueRef, List<UirNode>> = when {
+                ndim < 3 -> {
+                    // <3D: 在末尾插入 size=1 的维度到 3D
+                    // 这样 dims[1] 仍然是通道维度（C）
+                    val target = buildShape {
+                        for (dim in shape.dims) {
+                            dims.add(dim)
+                        }
+                        // 补充到 3D
+                        repeat(3 - ndim) {
+                            dims.add(buildDim {
+                                dimKind = UirDimKind.CONSTANT
+                                value = 1
+                            })
+                        }
+                    }
+                    generateWrapperSequence(ref, shape, target, valueShapes, localValueCounter, localNodeCounter)
+                }
+                ndim > 4 -> {
+                    // >4D: 将前 (ndim-3) 个维度合并到 batch 维度，保留后 3 维
                     val extra = ndim - 4
                     val mergedBatch = shape.dims.take(extra + 1)
                         .mapNotNull { it.valueOrNull() }

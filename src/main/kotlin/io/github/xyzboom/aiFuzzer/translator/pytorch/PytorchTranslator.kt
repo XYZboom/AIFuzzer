@@ -279,34 +279,34 @@ class PytorchTranslator(
             UirOpKind.RELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.LEAKY_RELU -> {
                 val negativeSlope = (node.attributes["negative_slope"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.01
-                "F.leaky_relu(${valueMap[node.inputs[0].valueId]}, negative_slope=$negativeSlope)"
+                "F.leaky_relu(${valueMap[node.inputs[0].valueId]}.float(), negative_slope=$negativeSlope)"
             }
             UirOpKind.ELU -> {
                 val alpha = (node.attributes["alpha"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
-                "F.elu(${valueMap[node.inputs[0].valueId]}, alpha=$alpha)"
+                "F.elu(${valueMap[node.inputs[0].valueId]}.float(), alpha=$alpha)"
             }
-            UirOpKind.SELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.MISH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.SELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.MISH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
             UirOpKind.HARDTANH -> {
                 val minVal = (node.attributes["min_val"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: -1.0
                 val maxVal = (node.attributes["max_val"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
-                "F.hardtanh(${valueMap[node.inputs[0].valueId]}, min_val=$minVal, max_val=$maxVal)"
+                "F.hardtanh(${valueMap[node.inputs[0].valueId]}.float(), min_val=$minVal, max_val=$maxVal)"
             }
-            UirOpKind.SIGMOID -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.TANH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.GELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.SILU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.SIGMOID -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.TANH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.GELU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.SILU -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
 
             // ===== 一元数学 =====
             UirOpKind.NEG -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.ABS -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.SIGN -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.EXP -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.LOG -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.LOG2 -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.SQRT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.RSQRT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
-            UirOpKind.RECIPROCAL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
+            UirOpKind.EXP -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.LOG -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.LOG2 -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.SQRT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.RSQRT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.RECIPROCAL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
             UirOpKind.CEIL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.FLOOR -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             UirOpKind.ROUND -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
@@ -342,41 +342,66 @@ class PytorchTranslator(
 
             // ===== 池化 =====
             UirOpKind.MAX_POOL2D -> {
-                val kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
-                val stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                var kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                var stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
                 val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                // 确保 kernel_size 不超过输入的空间维度
+                val inputShape = node.inputs[0].type.shape
+                if (inputShape.dims.size >= 4) {
+                    val h = inputShape.dims[2].value ?: kernelSize
+                    val w = inputShape.dims[3].value ?: kernelSize
+                    val minSpatial = minOf(h, w)
+                    if (kernelSize > minSpatial) {
+                        kernelSize = maxOf(1, minSpatial)
+                        stride = minOf(stride, kernelSize)
+                    }
+                }
                 "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, " +
                     "kernel_size=$kernelSize, stride=$stride, padding=$padding)"
             }
             UirOpKind.AVG_POOL2D -> {
-                val kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
-                val stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                var kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                var stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
                 val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                // 确保 kernel_size 不超过输入的空间维度
+                val inputShape = node.inputs[0].type.shape
+                if (inputShape.dims.size >= 4) {
+                    val h = inputShape.dims[2].value ?: kernelSize
+                    val w = inputShape.dims[3].value ?: kernelSize
+                    val minSpatial = minOf(h, w)
+                    if (kernelSize > minSpatial) {
+                        kernelSize = maxOf(1, minSpatial)
+                        stride = minOf(stride, kernelSize)
+                    }
+                }
                 "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, " +
                     "kernel_size=$kernelSize, stride=$stride, padding=$padding)"
             }
 
             // ===== 归一化 =====
             UirOpKind.LAYER_NORM -> {
-                val inputShape = node.inputs[0].type.shape
-                val lastDim = inputShape.dims.last().value ?: 64
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ($lastDim,))"
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                // Use runtime shape to get last dim, avoiding ShapeInferer/Translator mismatch
+                // Also ensure float input (layer_norm not implemented for Int)
+                "$pytorchFunc(${inputVar}.float(), (${inputVar}.shape[-1],))"
             }
             UirOpKind.BATCH_NORM -> {
                 // BatchNorm 需要 running_mean, running_var, weight, bias
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // 简化：使用默认参数
-                "F.batch_norm($inputVar, running_mean=None, running_var=None, training=True)"
+                val inputShape = node.inputs[0].type.shape
+                val numChannels = inputShape.dims.getOrNull(1)?.value ?: 1
+                // 使用 training=False + 提供的 running stats，避免训练模式要求每个 channel > 1 个值
+                "F.batch_norm($inputVar, running_mean=torch.zeros($numChannels), running_var=torch.ones($numChannels), training=False)"
             }
 
             // ===== SOFTMAX =====
             UirOpKind.SOFTMAX -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis)"
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), dim=$axis)"
             }
             UirOpKind.LOG_SOFTMAX -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis)"
+                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), dim=$axis)"
             }
 
             // ===== 归约 =====
@@ -482,11 +507,10 @@ class PytorchTranslator(
             UirOpKind.GATHER -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // 生成一个简单的 indices tensor
+                // Generate indices tensor with same ndim as input, all dims=1
                 val inputShape = node.inputs[0].type.shape
-                val indicesShape = inputShape.dims.map { dim ->
-                    if (dim.dimKind == UirDimKind.CONSTANT && dim.value != null) "min(${dim.value}, 1)" else "1"
-                }.joinToString(", ")
+                val ndim = inputShape.dims.size
+                val indicesShape = (0 until ndim).map { "1" }.joinToString(", ")
                 "torch.gather($inputVar, $axis, torch.zeros(($indicesShape), dtype=torch.int64, device=$inputVar.device))"
             }
             UirOpKind.STRIDED_SLICE -> {
