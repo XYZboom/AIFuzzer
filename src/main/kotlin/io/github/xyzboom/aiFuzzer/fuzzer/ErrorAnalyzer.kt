@@ -30,8 +30,6 @@ enum class ErrorCategory {
     DYNAMO_ERROR,
     // Inductor 编译错误（PyTorch）
     INDUCTOR_ERROR,
-    // PyTorch 运行时错误
-    PYTORCH_RUNTIME_ERROR,
     // 超时
     TIMEOUT,
     // 内存不足

@@ -881,11 +881,10 @@ object ShapeInferer {
         val inputShape = inputShapes[0]
         val ndim = inputShape.dims.size
         
-        // 默认切片参数：axes=[0], begin=[0], end=[-1]
-        // 即：在第一个维度去掉最后一个元素
+        // 默认切片参数：axes=[0], begin=[0]
+        // 取前半部分：[:shape[0]//2]，与 PyTorch 翻译器对齐
         val axes = listOf(0)  // 默认 axis=0
         val begins = listOf(0)  // 默认 begin=0
-        val ends = listOf(-1)  // 默认 end=-1
         
         // 计算输出形状
         val outputDims = inputShape.dims.toMutableList()
@@ -896,23 +895,17 @@ object ShapeInferer {
             if (normalizedAxis < 0 || normalizedAxis >= ndim) continue
             
             val begin = begins.getOrElse(axisIdx) { 0 }
-            val end = ends.getOrElse(axisIdx) { -1 }
             
             val inputDim = inputShape.dims[normalizedAxis]
             val inputDimValue: Int? = inputDim.value
             
             // 计算切片后的维度值
             if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT) {
-                // 规范化 begin/end
-                val normalizedBegin = if (begin < 0) begin + inputDimValue else begin
-                val normalizedEnd = if (end < 0) end + inputDimValue else end
-                
-                // 计算切片后的维度值
-                // 特殊处理：如果输入维度为 0，切片后也为 0（空张量保持为空）
+                // 取前半部分：max(1, inputDimValue // 2)
                 val sliceLength = if (inputDimValue == 0) {
                     0  // 空张量切片后仍为空张量
                 } else {
-                    normalizedEnd - normalizedBegin
+                    maxOf(1, inputDimValue / 2)
                 }
                 outputDims[normalizedAxis] = constantDim(sliceLength)
             } else {
