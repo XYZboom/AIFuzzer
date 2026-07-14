@@ -368,13 +368,13 @@ object ShapeConstraints {
 
         // ===== 分类 L：插值/Resize =====
         UirOpKind.INTERPOLATE to OpShapeConstraint(
-            minNdim = 3,  // F.interpolate 需要 3D-5D 输入
-            maxNdim = 5,
+            minNdim = 4,  // Must be 4D to be compatible with both PyTorch and TVM (resize2d requires NCHW)
+            maxNdim = 4,
             numInputs = 1..1,
             isApplicable = { shapes ->
-                shapes.size == 1 && shapes[0].dims.size in 3..5
+                shapes.size == 1 && shapes[0].dims.size == 4
             },
-            description = "插值运算，需要 3D-5D 输入（PyTorch F.interpolate 限制）"
+            description = "插值运算，需要 4D 输入（NCHW，兼容 PyTorch F.interpolate 和 TVM resize2d）"
         ),
         UirOpKind.RESIZE2D to OpShapeConstraint(
             minNdim = 4,  // image.resize2d 需要 4D 输入 (NCHW)

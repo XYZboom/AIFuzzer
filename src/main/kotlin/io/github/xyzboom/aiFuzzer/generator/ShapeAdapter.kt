@@ -83,9 +83,10 @@ object ShapeAdapter {
             return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
         }
         
-        // 特殊处理：INTERPOLATE 需要 3D-5D 输入
+        // 特殊处理：INTERPOLATE 需要 3D-5D 输入 (PyTorch) 或 4D 输入 (TVM resize2d)
+        // 为同时兼容两个后端，强制 4D 输入
         if (op == UirOpKind.INTERPOLATE) {
-            return adaptInterpolateConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
+            return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
         }
         
         // 特殊处理：RESIZE2D 需要 4D 输入 (NCHW)
@@ -1126,6 +1127,32 @@ object ShapeAdapter {
             
             localValueCounter += adapted.second.size
             localNodeCounter += adapted.second.size
+        }
+
+        // POOL2D: 确保空间维度 (H, W) 至少为 2，以避免 kernel_size=2 时输出为 0
+        if ((op == UirOpKind.MAX_POOL2D || op == UirOpKind.AVG_POOL2D) && adaptedShapes.isNotEmpty()) {
+            val shape = adaptedShapes[0]
+            if (shape.dims.size == 4) {
+                val h = shape.dims[2].valueOrNull() ?: 1
+                val w = shape.dims[3].valueOrNull() ?: 1
+                if (h < 2 || w < 2) {
+                    // Reshape the input to have spatial dims at least 2
+                    val targetShape = buildShape {
+                        dims.add(shape.dims[0])
+                        dims.add(shape.dims[1])
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = maxOf(h, 2) })
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = maxOf(w, 2) })
+                    }
+                    val (newRef, newNodes) = generateWrapperSequence(
+                        adaptedRefs[0], shape, targetShape, valueShapes, localValueCounter, localNodeCounter
+                    )
+                    wrapperNodes.addAll(newNodes)
+                    adaptedRefs[0] = newRef
+                    adaptedShapes[0] = valueShapes[newRef.valueId]!!
+                    localValueCounter += newNodes.size
+                    localNodeCounter += newNodes.size
+                }
+            }
         }
 
         // CONV2D 特殊处理：确保权重的 C_in (dim[1]) 与输入的 C (dim[1]) 匹配
