@@ -99,15 +99,7 @@ object ShapeAdapter {
             return adaptBatchNormConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
         }
         
-        // 特殊处理：二元运算需要推导公共目标形状
-        if (op in UirOpKind.binaryInputOps && inputShapes.size == 2) {
-            return adaptBinaryInputs(
-                op, inputValueRefs, inputShapes, valueShapes, 
-                valueCounter, nodeCounter, constraint
-            )
-        }
-        
-        // 特殊处理：MATMUL
+        // 特殊处理：MATMUL (must be before binaryInputOps check since MATMUL ∈ binaryInputOps)
         if (op == UirOpKind.MATMUL && inputShapes.size == 2) {
             return adaptMatmulInputs(
                 inputValueRefs, inputShapes, valueShapes,
@@ -115,11 +107,22 @@ object ShapeAdapter {
             )
         }
         
-        // 特殊处理：CONCAT
+        // 特殊处理：CONCAT (must be before binaryInputOps check since CONCAT ∈ binaryInputOps)
         if (op == UirOpKind.CONCAT && inputShapes.size >= 2) {
             return adaptConcatInputs(
                 inputValueRefs, inputShapes, valueShapes,
                 valueCounter, nodeCounter
+            )
+        }
+        
+        // 特殊处理：CONV2D (must be before binaryInputOps check since CONV2D ∈ binaryInputOps)
+        // Already handled above by NCHW constraint check
+        
+        // 特殊处理：二元运算需要推导公共目标形状
+        if (op in UirOpKind.binaryInputOps && inputShapes.size == 2) {
+            return adaptBinaryInputs(
+                op, inputValueRefs, inputShapes, valueShapes, 
+                valueCounter, nodeCounter, constraint
             )
         }
         

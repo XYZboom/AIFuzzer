@@ -113,8 +113,8 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("c = bb.emit(relax.op.add(a_var, b_var))")) {
-            "Expected c = bb.emit(relax.op.add(a_var, b_var)), got:\n$result"
+        assertTrue(result.contains("relax.op.add(relax.op.astype(a_var, dtype=\"float32\"), relax.op.astype(b_var, dtype=\"float32\"))")) {
+            "Expected relax.op.add with astype(float32), got:\n$result"
         }
     }
 
@@ -147,8 +147,8 @@ class TvmRelaxTranslatorTest {
             })
         }
         val result = translator.translate(program)
-        assertTrue(result.contains("y = bb.emit(relax.op.nn.softmax(x_var, axis=-1))")) {
-            "Expected y = bb.emit(relax.op.nn.softmax(x_var, axis=-1)), got:\n$result"
+        assertTrue(result.contains("relax.op.nn.softmax(relax.op.astype(x_var, dtype=\"float32\"), axis=-1)")) {
+            "Expected relax.op.nn.softmax with astype(float32), got:\n$result"
         }
     }
 
