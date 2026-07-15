@@ -276,7 +276,12 @@ object ShapeConstraints {
         ),
         UirOpKind.UNSQUEEZE to OpShapeConstraint(
             numInputs = 1..1,
-            description = "插入 size=1 的维度"
+            maxNdim = 4,  // Don't unsqueeze beyond 4D — downstream ops (conv2d, batch_norm, interpolate) require ≤4D
+            isApplicable = { shapes ->
+                // Only allow unsqueeze if result would be ≤4D
+                shapes.size == 1 && shapes[0].dims.size < 4
+            },
+            description = "插入 size=1 的维度，输入必须 <4D（输出 ≤4D）"
         ),
         
         // ===== 分类 F：拼接/分割 =====
@@ -363,7 +368,12 @@ object ShapeConstraints {
         // ===== 分类 K：适配算子 =====
         UirOpKind.EXPAND_DIMS to OpShapeConstraint(
             numInputs = 1..1,
-            description = "插入维度（适配算子）"
+            maxNdim = 4,  // Don't expand beyond 4D — downstream ops (conv2d, batch_norm, interpolate) require ≤4D
+            isApplicable = { shapes ->
+                // Only allow expand_dims if result would be ≤4D
+                shapes.size == 1 && shapes[0].dims.size < 4
+            },
+            description = "插入维度（适配算子），输入必须 <4D（输出 ≤4D）"
         ),
 
         // ===== 分类 L：插值/Resize =====

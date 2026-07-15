@@ -210,18 +210,76 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         }
     }
     
+    /**
+     * 选择算子，带约束检查。
+     * 如果选中的算子不满足当前可用值的约束（如 UNSQUEEZE 在 4D 输入上），
+     * 则重试选择其他算子，最多重试 10 次。
+     * 
+     * 对于单输入算子，检查是否有至少一个可用值满足约束；
+     * 对于双输入算子，检查是否有至少一对可用值满足约束。
+     */
+    private fun selectOpWithConstraints(availableValues: MutableList<String>): UirOpKind {
+        val maxRetries = 10
+        for (retry in 0 until maxRetries) {
+            val candidate = when {
+                availableValues.isEmpty() -> opsEnum.filter { it in UirOpKind.constantOps }.random(rand)
+                availableValues.size == 1 -> opsEnum.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.random(rand)
+                else -> opsEnum.random(rand)
+            }
+            
+            // Check constraint: get the input shape(s) this op would receive
+            val numInputs = when (candidate) {
+                in UirOpKind.constantOps -> 0
+                in UirOpKind.singleInputOps -> 1
+                in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)
+                else -> 1
+            }
+            
+            if (numInputs == 0) return candidate  // Constant ops have no constraints
+            
+            // For single-input ops: check if ANY available value satisfies the constraint
+            if (numInputs == 1) {
+                val hasValidInput = availableValues.any { vid ->
+                    val shape = valueShapes[vid]
+                    shape != null && ShapeConstraints.isApplicable(candidate, listOf(shape))
+                }
+                if (hasValidInput) return candidate
+                continue  // No valid input for this op, retry
+            }
+            
+            // For binary-input ops: check if ANY pair of available values satisfies the constraint
+            if (numInputs == 2 && availableValues.size >= 2) {
+                val hasValidPair = availableValues.any { vid1 ->
+                    val shape1 = valueShapes[vid1]
+                    shape1 != null && availableValues.any { vid2 ->
+                        vid2 != vid1 && valueShapes[vid2]?.let { shape2 ->
+                            ShapeConstraints.isApplicable(candidate, listOf(shape1, shape2))
+                        } ?: false
+                    }
+                }
+                if (hasValidPair) return candidate
+                continue
+            }
+            
+            // Fallback: sample first N values
+            val sampleShapes = availableValues.take(numInputs).mapNotNull { valueShapes[it] }
+            if (sampleShapes.size >= numInputs && ShapeConstraints.isApplicable(candidate, sampleShapes)) {
+                return candidate
+            }
+        }
+        
+        // Fallback: pick a safe op (RELU works on any shape)
+        return UirOpKind.RELU
+    }
+    
     private fun generateNode(
         nodeIndex: Int,
         availableValues: MutableList<String>,
         liveTips: Map<Int, String>,
         currentBranch: Int
     ): List<UirNode> {
-        // 1. 选择算子（随机）
-        val op = when {
-            availableValues.isEmpty() -> opsEnum.filter { it in UirOpKind.constantOps }.random(rand)
-            availableValues.size == 1 -> opsEnum.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.random(rand)
-            else -> opsEnum.random(rand)
-        }
+        // 1. 选择算子（随机），带约束检查重试
+        val op = selectOpWithConstraints(availableValues)
         log.trace { "节点 $nodeIndex: 选择算子 $op (可用值=${availableValues.size})" }
         
         // 2. 确定输入数量
@@ -387,8 +445,39 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 // 如果输入不是 4D，回退到随机选择（ShapeAdapter 会处理）
             }
             
-            // 选择第二个输入（随机，不检查形状兼容性，由 ShapeAdapter 处理）
-            val input2ValueId = availableValues.filter { it != input1ValueId }.random(rand)
+            // 选择第二个输入 — prefer broadcast-compatible shapes, fall back to random
+            val broadcastCompatibleValues = availableValues.filter { vid ->
+                vid != input1ValueId && valueShapes[vid]?.let { shape2 ->
+                    ShapeConstraints.areBroadcastable(valueShapes[input1ValueId]!!, shape2)
+                } ?: false
+            }
+            val input2ValueId = if (broadcastCompatibleValues.isNotEmpty()) {
+                broadcastCompatibleValues.random(rand)
+            } else {
+                // No broadcast-compatible value found — generate a ZEROS constant
+                // with a shape that IS compatible with input1
+                val input1Shape = valueShapes[input1ValueId]!!
+                val compatibleShape = generateBroadcastCompatibleShape(input1Shape)
+                val zerosValueId = newValueId()
+                valueShapes[zerosValueId] = compatibleShape
+                
+                val zerosNode = buildNode {
+                    name = "broadcast_compat_zeros_${randomIdSuffix()}"
+                    this.op = UirOpKind.ZEROS
+                    val outputRef = buildValueRef {
+                        this.valueId = zerosValueId
+                        this.type = buildTensorType {
+                            typeKind = UirTypeKind.TENSOR
+                            shape = compatibleShape
+                            dtype = mkDataType()
+                        }
+                    }
+                    this.outputs.add(outputRef)
+                }
+                nodeList.add(zerosNode)
+                availableValues.add(zerosValueId)
+                zerosValueId
+            }
             
             val input1Ref = buildValueRef {
                 this.valueId = input1ValueId
@@ -411,10 +500,23 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             return listOf(input1Ref, input2Ref)
         }
         
-        // 其他情况：随机选择
-        val selectedIds = when {
+        // 其他情况：随机选择，但优先选择满足约束的值
+        val selectedIds: List<String> = when {
             availableValues.isEmpty() -> emptyList()
-            numInputs == 1 && tipValue != null && tipValue in availableValues -> listOf(tipValue)
+            numInputs == 1 -> {
+                // For single-input ops: prefer values that satisfy the op's constraints
+                val validValues = availableValues.filter { vid ->
+                    val shape = valueShapes[vid]
+                    shape != null && ShapeConstraints.isApplicable(op, listOf(shape))
+                }
+                when {
+                    validValues.isNotEmpty() && tipValue != null && tipValue in validValues -> listOf(tipValue)
+                    validValues.isNotEmpty() -> listOf(validValues.random(rand))
+                    // No valid values satisfy constraint — fall back to any value (ShapeAdapter will try to fix)
+                    tipValue != null && tipValue in availableValues -> listOf(tipValue)
+                    else -> availableValues.shuffled(rand).take(1)
+                }
+            }
             else -> availableValues.shuffled(rand).take(numInputs)
         }
         
@@ -656,8 +758,10 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * 随机选择 reduce 算子的 dtype（排除 bool，因为 mean 不支持 bool dtype）。
      */
     private fun randomReduceDtype(op: UirOpKind): String {
-        val dtypes = mutableListOf("float32", "float16", "bfloat16", "int32", "int64")
-        // mean 要求浮点 dtype
+        // Only use float32 for reduce ops — float16/bfloat16 cause downstream dtype mismatches
+        // (e.g., sum(dtype=float16) → conv2d gets float16 input but float32 weight → Half vs Float error)
+        val dtypes = mutableListOf("float32", "int32", "int64")
+        // mean requires floating-point dtype
         if (op == UirOpKind.REDUCE_MEAN) {
             dtypes.removeAll { it.startsWith("int") }
         }
@@ -669,8 +773,9 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * cumprod 也不支持整数类型（容易溢出），所以只返回浮点类型。
      */
     private fun randomCumulativeDtype(op: UirOpKind): String {
-        val dtypes = mutableListOf("float32", "float16", "bfloat16")
-        // cumsum 支持整数，但 cumprod 不支持
+        // Only use float32 — float16/bfloat16 cause downstream dtype mismatches
+        val dtypes = mutableListOf("float32")
+        // cumsum supports integer, cumprod does not
         if (op == UirOpKind.CUMSUM) {
             dtypes.addAll(listOf("int32", "int64"))
         }
@@ -691,5 +796,51 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      */
     private fun shapeDims(shape: UirShape): String {
         return shape.dims.map { it.valueOrNull() ?: "?" }.joinToString(", ", "[", "]")
+    }
+    
+    /**
+     * Generate a shape that is broadcast-compatible with the given input shape.
+     * Strategy: create a shape that is either:
+     *   1. A scalar-compatible shape (all 1s) — always broadcastable
+     *   2. A shape with same ndim where each dim is either same as input or 1
+     *   3. A lower-ndim shape where trailing dims match or are 1
+     */
+    private fun generateBroadcastCompatibleShape(inputShape: UirShape): UirShape {
+        val ndim = inputShape.dims.size
+        if (ndim == 0) return buildShape { }  // scalar
+        
+        val strategy = rand.nextInt(3)
+        return when (strategy) {
+            0 -> {
+                // Strategy 1: all-1s shape (always broadcastable)
+                buildShape {
+                    for (i in 0 until ndim) {
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = 1 })
+                    }
+                }
+            }
+            1 -> {
+                // Strategy 2: same ndim, each dim either same or 1
+                buildShape {
+                    for (i in 0 until ndim) {
+                        val inputDim = inputShape.dims[i].valueOrNull() ?: 1
+                        val dim = if (rand.nextBoolean()) inputDim else 1
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = dim })
+                    }
+                }
+            }
+            else -> {
+                // Strategy 3: fewer dims (1 to ndim-1), trailing dims match or are 1
+                val outNdim = rand.nextInt(1, ndim + 1)
+                buildShape {
+                    val offset = ndim - outNdim
+                    for (i in 0 until outNdim) {
+                        val inputDim = inputShape.dims[offset + i].valueOrNull() ?: 1
+                        val dim = if (rand.nextBoolean()) inputDim else 1
+                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = dim })
+                    }
+                }
+            }
+        }
     }
 }

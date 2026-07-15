@@ -209,11 +209,11 @@ class PytorchTranslator(
         // === 差异测试 ===
         builder.appendLine("# Differential testing: eager vs compile")
         builder.appendLine("if isinstance(ref_output, tuple):")
-        builder.appendLine("    # Multi-output: compare element-wise")
-        builder.appendLine("    all_match = all(torch.allclose(r, c, atol=1e-3, rtol=1e-3, equal_nan=True)")
+        builder.appendLine("    # Multi-output: compare element-wise, cast to float for allclose compatibility")
+        builder.appendLine("    all_match = all(torch.allclose(r.float(), c.float(), atol=1e-3, rtol=1e-3, equal_nan=True)")
         builder.appendLine("                    for r, c in zip(ref_output, cmp_output))")
         builder.appendLine("else:")
-        builder.appendLine("    all_match = torch.allclose(ref_output, cmp_output, atol=1e-3, rtol=1e-3, equal_nan=True)")
+        builder.appendLine("    all_match = torch.allclose(ref_output.float(), cmp_output.float(), atol=1e-3, rtol=1e-3, equal_nan=True)")
         builder.appendLine()
         builder.appendLine("if all_match:")
         builder.appendLine("    print('VERIFY: PASS')")
@@ -318,14 +318,15 @@ class PytorchTranslator(
                 "torch.clamp($inputVar, min=$minVal, max=$maxVal)"
             }
 
-            // ===== 二元运算（单输入模式保护） =====
-            UirOpKind.ADD -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
-            UirOpKind.SUBTRACT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
-            UirOpKind.MULTIPLY -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
-            UirOpKind.DIVIDE -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
-            UirOpKind.MAXIMUM -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
-            UirOpKind.MINIMUM -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
-            UirOpKind.POWER -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]})"
+            // ===== 二元运算（单输入模式保护 + 广播兼容） =====
+            // Cast both inputs to float for dtype compatibility
+            UirOpKind.ADD -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.SUBTRACT -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.MULTIPLY -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.DIVIDE -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.MAXIMUM -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.MINIMUM -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.POWER -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
 
             // ===== 矩阵乘法 =====
             UirOpKind.MATMUL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs[1].valueId]})"
@@ -336,7 +337,12 @@ class PytorchTranslator(
                 val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
                 val dilation = (node.attributes["dilation"] as? UirIntAttr)?.value ?: 1
                 val groups = (node.attributes["groups"] as? UirIntAttr)?.value ?: 1
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs[1].valueId]}, " +
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                val weightVar = valueMap[node.inputs[1].valueId]!!
+                // Generate weight at runtime with C_in matching input's C channel
+                // This handles cases where ShapeInferer predicted wrong shape for intermediate ops
+                // Weight shape: [C_out, C_in, kH, kW] where C_in = input.shape[1]
+                "$pytorchFunc($inputVar, torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3])), " +
                     "stride=$stride, padding=$padding, dilation=$dilation, groups=$groups)"
             }
 
@@ -386,12 +392,11 @@ class PytorchTranslator(
                 "$pytorchFunc(${inputVar}.float(), (${inputVar}.shape[-1],))"
             }
             UirOpKind.BATCH_NORM -> {
-                // BatchNorm 需要 running_mean, running_var, weight, bias
+                // BatchNorm needs running_mean, running_var, weight, bias
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                val inputShape = node.inputs[0].type.shape
-                val numChannels = inputShape.dims.getOrNull(1)?.value ?: 1
-                // 使用 training=False + 提供的 running stats，避免训练模式要求每个 channel > 1 个值
-                "F.batch_norm($inputVar, running_mean=torch.zeros($numChannels), running_var=torch.ones($numChannels), training=False)"
+                // Use runtime shape (not IR shape) — ShapeAdapter may have changed dimensions
+                // Also ensure float input (batch_norm not implemented for Int/Long)
+                "F.batch_norm(${inputVar}.float(), running_mean=torch.zeros(${inputVar}.shape[1]), running_var=torch.ones(${inputVar}.shape[1]), training=False)"
             }
 
             // ===== SOFTMAX =====
@@ -411,7 +416,9 @@ class PytorchTranslator(
                 val keepdimsStr = if (keepdims) "True" else "False"
                 val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
                 val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                val result = "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                // Cast back to float32 if non-float32 dtype was used — prevents downstream dtype mismatch
+                if (dtypeAttr != null && dtypeAttr.value != "float32") "$result.float()" else result
             }
             UirOpKind.REDUCE_MEAN -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
@@ -420,9 +427,10 @@ class PytorchTranslator(
                 val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
                 val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // mean 要求浮点输入。如果没有显式 dtype，cast 到 float32 确保兼容
+                // mean requires float input; cast back to float32 if non-float32 dtype was used
                 if (dtypeAttr != null) {
-                    "$pytorchFunc($inputVar, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                    val result = "$pytorchFunc($inputVar, dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                    if (dtypeAttr.value != "float32") "$result.float()" else result
                 } else {
                     "$pytorchFunc($inputVar.float(), dim=$axis, keepdim=$keepdimsStr)"
                 }
@@ -454,7 +462,14 @@ class PytorchTranslator(
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
                 val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
                 val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, dim=$axis$dtypeStr)"
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                // CUMPROD requires float input (not implemented for int/Long)
+                val inputExpr = if (op == UirOpKind.CUMPROD) "$inputVar.float()" else inputVar
+                val result = "$pytorchFunc($inputExpr, dim=$axis$dtypeStr)"
+                // Always cast result to float32 — int64 output from cumsum(dtype=int64) 
+                // crashes downstream ops (conv2d, batch_norm, etc.) that require Float input.
+                // Also cast float16/bfloat16 to float32 for consistency.
+                if (dtypeAttr != null && dtypeAttr.value != "float32") "$result.float()" else result
             }
 
             UirOpKind.ARGMAX, UirOpKind.ARGMIN -> {
@@ -470,9 +485,20 @@ class PytorchTranslator(
 
             // ===== 形状变换 =====
             UirOpKind.RESHAPE -> {
+                // Use -1 for the first dim to let PyTorch infer it —
+                // IR shape may have wrong element count from ShapeAdapter's default for unknown dims
                 val outputShape = node.outputs[0].type.shape
-                val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ($shapeStr))"
+                val ndim = outputShape.dims.size
+                if (ndim <= 1) {
+                    // 1D reshape: flatten
+                    "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, (-1,))"
+                } else {
+                    // Multi-dim reshape: use -1 for first dim, explicit for rest
+                    val restDims = outputShape.dims.drop(1).map { dim ->
+                        dim.value?.toString() ?: "-1"
+                    }.joinToString(", ")
+                    "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, (-1, $restDims))"
+                }
             }
             UirOpKind.TRANSPOSE -> {
                 // 默认交换最后两个维度
@@ -488,7 +514,10 @@ class PytorchTranslator(
             }
             UirOpKind.UNSQUEEZE -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, $axis)"
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                // Runtime guard: skip unsqueeze if input is already ≥4D
+                // (downstream ops like conv2d, batch_norm, interpolate require ≤4D)
+                "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $axis))"
             }
 
             // ===== 拼接/分割 =====
@@ -507,11 +536,8 @@ class PytorchTranslator(
             UirOpKind.GATHER -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // Generate indices tensor with same ndim as input, all dims=1
-                val inputShape = node.inputs[0].type.shape
-                val ndim = inputShape.dims.size
-                val indicesShape = (0 until ndim).map { "1" }.joinToString(", ")
-                "torch.gather($inputVar, $axis, torch.zeros(($indicesShape), dtype=torch.int64, device=$inputVar.device))"
+                // Use runtime ndim (not IR shape) — intermediate unsqueeze may change actual ndim
+                "torch.gather($inputVar, $axis, torch.zeros([1]*$inputVar.ndim, dtype=torch.int64, device=$inputVar.device))"
             }
             UirOpKind.STRIDED_SLICE -> {
                 // 简化实现：取前半部分，至少保留1个元素
@@ -573,7 +599,9 @@ class PytorchTranslator(
             // ===== 适配算子 =====
             UirOpKind.EXPAND_DIMS -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
-                "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, $axis)"
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                // Runtime guard: skip expand_dims if input is already ≥4D
+                "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $axis))"
             }
 
             // ===== 默认 =====
