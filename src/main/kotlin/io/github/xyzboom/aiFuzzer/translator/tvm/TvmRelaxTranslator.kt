@@ -408,18 +408,40 @@ class TvmRelaxTranslator(
 
             // ===== 池化 =====
             UirOpKind.MAX_POOL2D -> {
-                val kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
-                val stride = (attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                var kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                var stride = (attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
                 val padding = (attributes["padding"] as? UirIntAttr)?.value ?: 0
+                // 确保 kernel_size 不超过输入的空间维度（与 PytorchTranslator 一致）
+                val poolInputShape = inputShapes[0]
+                if (poolInputShape.dims.size >= 4) {
+                    val h = poolInputShape.dims[2].value ?: kernelSize
+                    val w = poolInputShape.dims[3].value ?: kernelSize
+                    val minSpatial = minOf(h, w)
+                    if (kernelSize > minSpatial) {
+                        kernelSize = maxOf(1, minSpatial)
+                        stride = minOf(stride, kernelSize)
+                    }
+                }
                 "relax.op.nn.max_pool2d(${inputVars[0]}, " +
                     "pool_size=[$kernelSize, $kernelSize], " +
                     "strides=[$stride, $stride], " +
                     "padding=[$padding, $padding])"
             }
             UirOpKind.AVG_POOL2D -> {
-                val kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
-                val stride = (attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
+                var kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
+                var stride = (attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
                 val padding = (attributes["padding"] as? UirIntAttr)?.value ?: 0
+                // 确保 kernel_size 不超过输入的空间维度（与 PytorchTranslator 一致）
+                val poolInputShape = inputShapes[0]
+                if (poolInputShape.dims.size >= 4) {
+                    val h = poolInputShape.dims[2].value ?: kernelSize
+                    val w = poolInputShape.dims[3].value ?: kernelSize
+                    val minSpatial = minOf(h, w)
+                    if (kernelSize > minSpatial) {
+                        kernelSize = maxOf(1, minSpatial)
+                        stride = minOf(stride, kernelSize)
+                    }
+                }
                 "relax.op.nn.avg_pool2d(${inputVars[0]}, " +
                     "pool_size=[$kernelSize, $kernelSize], " +
                     "strides=[$stride, $stride], " +
@@ -646,12 +668,26 @@ class TvmRelaxTranslator(
             // ===== P0: 累积操作 =====
             UirOpKind.CUMSUM -> {
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "relax.op.cumsum(${inputVars[0]}, axis=$axis)"
+                val cumsumInput = inputVars[0]
+                val cumsumShape = inputShapes[0]
+                if (cumsumShape.dims.isEmpty()) {
+                    // 标量输入: cumsum(scalar) = scalar, TVM doesn't support cumsum on 0-D tensors
+                    "relax.op.astype($cumsumInput, dtype=\"float32\")"
+                } else {
+                    "relax.op.cumsum($cumsumInput, axis=$axis)"
+                }
             }
 
             UirOpKind.CUMPROD -> {
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "relax.op.cumprod(${inputVars[0]}, axis=$axis)"
+                val cumprodInput = inputVars[0]
+                val cumprodShape = inputShapes[0]
+                if (cumprodShape.dims.isEmpty()) {
+                    // 标量输入: cumprod(scalar) = scalar, TVM doesn't support cumprod on 0-D tensors
+                    "relax.op.astype($cumprodInput, dtype=\"float32\")"
+                } else {
+                    "relax.op.cumprod($cumprodInput, axis=$axis)"
+                }
             }
 
             UirOpKind.ARGMAX -> {
