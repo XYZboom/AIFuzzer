@@ -557,16 +557,41 @@ object ShapeInferer {
             else -> 0
         }
 
+        // 确保 kernel_size 不超过输入的空间维度（与 PytorchTranslator 一致）
+        // Translator 会裁剪 kernel_size 到 minSpatial，ShapeInferer 必须同步
+        val adjustedKernelSize: Int
+        val adjustedStride: Int
+        if (inputShape.dims.size >= 4) {
+            val h = inputShape.dims[2].value
+            val w = inputShape.dims[3].value
+            if (h != null && w != null) {
+                val minSpatial = minOf(h, w)
+                if (kernelSize > minSpatial) {
+                    adjustedKernelSize = maxOf(1, minSpatial)
+                    adjustedStride = minOf(stride, adjustedKernelSize)
+                } else {
+                    adjustedKernelSize = kernelSize
+                    adjustedStride = stride
+                }
+            } else {
+                adjustedKernelSize = kernelSize
+                adjustedStride = stride
+            }
+        } else {
+            adjustedKernelSize = kernelSize
+            adjustedStride = stride
+        }
+
         // 检查输入是否为 4D
         if (inputShape.dims.size < 4) {
             // 维度不足时，假设为 4D 并补齐
             val missing = 4 - inputShape.dims.size
             val extra = (1..missing).map { constantDim(16) }
             val paddedInput = shapeFromDims(extra + inputShape.dims)
-            return inferPool2dShapeFrom4D(paddedInput, kernelSize, stride, padding)
+            return inferPool2dShapeFrom4D(paddedInput, adjustedKernelSize, adjustedStride, padding)
         }
 
-        return inferPool2dShapeFrom4D(inputShape, kernelSize, stride, padding)
+        return inferPool2dShapeFrom4D(inputShape, adjustedKernelSize, adjustedStride, padding)
     }
 
     /**
@@ -720,10 +745,15 @@ object ShapeInferer {
         val inputShape = inputShapes[0]
         val ndim = inputShape.dims.size
         
-        // 默认反转所有维度
-        val perm = (ndim - 1 downTo 0).toList()
-        
-        val outputDims = perm.map { i -> inputShape.dims[i] }
+        // 与所有 translator 一致：交换最后两个维度
+        // PytorchTranslator: torch.transpose(x, ndim-2, ndim-1)
+        // TvmRelaxTranslator: relax.op.permute_dims(x, [ndim-2, ndim-1])
+        val outputDims = inputShape.dims.toMutableList()
+        if (ndim >= 2) {
+            val temp = outputDims[ndim - 2]
+            outputDims[ndim - 2] = outputDims[ndim - 1]
+            outputDims[ndim - 1] = temp
+        }
         
         return listOf(shapeFromDims(outputDims))
     }
