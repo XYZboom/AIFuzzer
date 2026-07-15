@@ -1,0 +1,44 @@
+# TVM 执行能力测试 — 20 轮
+run:
+  description: "TVM execution test — 20 rounds"
+  seed: null
+  output_dir: "./reports"
+  log_level: "info"
+
+generator:
+  min_nodes_per_graph: 5
+  max_nodes_per_graph: 25
+  min_inputs: 1
+  max_inputs: 5
+  min_input_ndim: 1
+  max_input_ndim: 3
+  graph_count: 1
+  strategy: "random"
+
+  ops:
+    include_all: true
+    include: []
+    exclude: []
+
+backends:
+  enabled: ["tvm"]
+
+  tvm:
+    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
+    timeout_seconds: 120
+    keep_artifacts: false
+    work_dir: "%TEMP%/aiFuzzer_tvm"
+    dtype: "float32"
+    shape_rank: 3
+
+bug_collector:
+  enabled: true
+  ignore_patterns: []
+  output_dir: "./reports"
+
+pipeline:
+  reducer:
+    enabled: false
+  workers: 1
+  batch_size: 20
+  run_timeout_seconds: 120

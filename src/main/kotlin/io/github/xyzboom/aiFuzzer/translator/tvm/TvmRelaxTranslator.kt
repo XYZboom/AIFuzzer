@@ -160,6 +160,51 @@ class TvmRelaxTranslator(
         builder.appendLine("mod = build_mod()")
         builder.appendLine("print('Module built successfully')")
         builder.appendLine("# print(mod)")
+        builder.appendLine()
+        // ===== 执行编译后的TVM模块 =====
+        builder.appendLine()
+        builder.appendLine("# === Execute compiled module ===")
+        builder.appendLine("np.random.seed(42)")
+        builder.appendLine("ex = relax.build(mod, target=\"llvm\")")
+        builder.appendLine("vm = relax.VirtualMachine(ex, tvm.cpu())")
+        
+        for ((gIdx, graph) in element.graphs.withIndex()) {
+            val funcName = graph.name.ifBlank { "func_$gIdx" }
+            val resultVar = "tvm_result_$gIdx"
+            
+            // 生成 numpy 输入
+            if (graph.inputs.isNotEmpty()) {
+                builder.appendLine()
+                builder.appendLine("# Generate inputs for ${graph.name}")
+                for (input in graph.inputs) {
+                    val shape = input.type.shape
+                    val shapeStr = shape.dims.joinToString(", ") { dim ->
+                        when (dim.dimKind) {
+                            UirDimKind.CONSTANT -> dim.value?.toString() ?: shapeRank.toString()
+                            else -> shapeRank.toString()
+                        }
+                    }
+                    builder.appendLine("np_${input.valueId} = np.random.randn($shapeStr).astype(np.float32)")
+                }
+            }
+            
+            // 执行
+            val inputArgs = graph.inputs.joinToString(", ") { "np_${it.valueId}" }
+            builder.appendLine()
+            builder.appendLine("$resultVar = vm[\"$funcName\"]($inputArgs)")
+            
+            // 打印结果
+            builder.appendLine("# Print output")
+            builder.appendLine("if hasattr($resultVar, 'numpy'):")
+            builder.appendLine("    _arr = $resultVar.numpy()")
+            builder.appendLine("    print(f\"[TVM-OUT] graph_${gIdx}: shape={list(_arr.shape)}\")")
+            builder.appendLine("else:")
+            builder.appendLine("    for _tvmi in range(len($resultVar)):")
+            builder.appendLine("        _arr = $resultVar[_tvmi].numpy()")
+            builder.appendLine("        print(f\"[TVM-OUT] graph_${gIdx}[{_tvmi}]: shape={list(_arr.shape)}\")")
+        }
+        
+        builder.appendLine("print(\"Execution: OK\")")
 
         val elapsed = System.currentTimeMillis() - startTime
         log.debug { "翻译完成，耗时 ${elapsed}ms，输出 ${builder.length} 字符" }
