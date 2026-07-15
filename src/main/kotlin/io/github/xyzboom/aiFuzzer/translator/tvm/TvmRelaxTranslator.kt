@@ -499,16 +499,19 @@ class TvmRelaxTranslator(
             }
 
             UirOpKind.TRANSPOSE -> {
-                // Use axes attribute if available, otherwise default to reversing all dims
-                val axesAttr = attributes["axes"]
-                if (axesAttr != null) {
-                    val axes = (axesAttr as? UirStringAttr)?.value ?: ""
-                    "relax.op.permute_dims(${inputVars[0]}, axes=[$axes])"
+                // 与 ShapeInferer 一致：交换最后两个维度
+                val ndim = inputShapes[0].dims.size
+                if (ndim >= 2) {
+                    val finalPerm = (0 until ndim).map { i ->
+                        when (i) {
+                            ndim - 2 -> ndim - 1
+                            ndim - 1 -> ndim - 2
+                            else -> i
+                        }
+                    }.joinToString(", ")
+                    "relax.op.permute_dims(${inputVars[0]}, axes=[$finalPerm])"
                 } else {
-                    // Default: reverse all dimensions
-                    val ndim = inputShapes[0].dims.size
-                    val perm = (ndim - 1 downTo 0).joinToString(", ")
-                    "relax.op.permute_dims(${inputVars[0]}, axes=[$perm])"
+                    "relax.op.permute_dims(${inputVars[0]})"
                 }
             }
 
@@ -544,22 +547,16 @@ class TvmRelaxTranslator(
             // ===== 索引 =====
             UirOpKind.GATHER -> {
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-                // Use relax.op.take with index 0 (valid for any shape)
+                // 使用标量索引 0，移除 axis 维度（与 ShapeInferer 对齐）
                 "relax.op.take(${inputVars[0]}, relax.const(0, dtype=\"int64\"), axis=$axis)"
             }
 
             UirOpKind.STRIDED_SLICE -> {
-                // Use actual slice parameters from attributes
+                // 与 ShapeInferer 一致：只对 axis=0 做切片，[:shape[0]//2]
                 val inputShape = inputShapes[0]
-                val ndim = inputShape.dims.size
-                // Default: take first half of each dimension
-                val axes = (0 until ndim).joinToString(", ") { "$it" }
-                val begins = (0 until ndim).joinToString(", ") { "0" }
-                val ends = inputShape.dims.map { dim ->
-                    val v = dim.value ?: 1
-                    maxOf(1, v / 2)
-                }.joinToString(", ")
-                "relax.op.strided_slice(${inputVars[0]}, axes=[$axes], begin=[$begins], end=[$ends])"
+                val dim0Val = inputShape.dims.getOrNull(0)?.value ?: 1
+                val end = maxOf(1, dim0Val / 2)
+                "relax.op.strided_slice(${inputVars[0]}, axes=[0], begin=[0], end=[$end])"
             }
 
             // ===== 三角矩阵 =====
