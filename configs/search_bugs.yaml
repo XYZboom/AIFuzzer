@@ -15,6 +15,10 @@ generator:
 backends:
   enabled: ["tvm"]
 
+  tvm:
+    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
+    mode: "process"
+
 pipeline:
   workers: 1
   batch_size: 200
