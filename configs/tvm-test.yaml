@@ -1,26 +1,24 @@
-# TVM 执行能力测试 — 50 轮
+# TVM 压测 — 200 轮
 run:
-  description: "TVM execution test — 50 rounds"
+  description: "TVM stress test — 200 rounds"
   seed: null
   output_dir: "./reports"
   log_level: "info"
 
 generator:
   min_nodes_per_graph: 5
-  max_nodes_per_graph: 30
+  max_nodes_per_graph: 40
   min_inputs: 1
-  max_inputs: 6
+  max_inputs: 8
   min_input_ndim: 1
   max_input_ndim: 3
   graph_count: 1
   strategy: "random"
-
   ops:
     include_all: true
 
 backends:
   enabled: ["tvm"]
-
   tvm:
     python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
     timeout_seconds: 120
@@ -36,5 +34,5 @@ pipeline:
   reducer:
     enabled: false
   workers: 1
-  batch_size: 50
+  batch_size: 200
   run_timeout_seconds: 120

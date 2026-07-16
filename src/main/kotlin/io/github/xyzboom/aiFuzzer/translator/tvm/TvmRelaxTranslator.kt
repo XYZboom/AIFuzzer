@@ -466,12 +466,24 @@ class TvmRelaxTranslator(
 
             // ===== SOFTMAX =====
             UirOpKind.SOFTMAX -> {
-                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "relax.op.nn.softmax(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), axis=$axis)"
+                val ndim = inputShapes[0].dims.size
+                if (ndim == 0) {
+                    // 0-D tensor: softmax(scalar)=scalar, TVM 不支持 axis=-1
+                    "relax.op.astype(${inputVars[0]}, dtype=\"float32\")"
+                } else {
+                    val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                    "relax.op.nn.softmax(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), axis=$axis)"
+                }
             }
             UirOpKind.LOG_SOFTMAX -> {
-                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
-                "relax.op.nn.log_softmax(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), axis=$axis)"
+                val ndim = inputShapes[0].dims.size
+                if (ndim == 0) {
+                    // 0-D tensor: log_softmax(scalar)=scalar, TVM 不支持 axis=-1
+                    "relax.op.astype(${inputVars[0]}, dtype=\"float32\")"
+                } else {
+                    val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                    "relax.op.nn.log_softmax(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), axis=$axis)"
+                }
             }
 
             // ===== 归约 =====
@@ -691,15 +703,27 @@ class TvmRelaxTranslator(
             }
 
             UirOpKind.ARGMAX -> {
-                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
-                // argmax returns int64; cast to float32 for compatibility with subsequent ops
-                "relax.op.astype(relax.op.argmax(${inputVars[0]}, axis=$axis), dtype=\"float32\")"
+                val ndim = inputShapes[0].dims.size
+                if (ndim == 0) {
+                    // 0-D tensor: argmax(scalar)=scalar, TVM 不支持轴参数
+                    "relax.op.astype(${inputVars[0]}, dtype=\"float32\")"
+                } else {
+                    val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                    // argmax returns int64; cast to float32 for compatibility with subsequent ops
+                    "relax.op.astype(relax.op.argmax(${inputVars[0]}, axis=$axis), dtype=\"float32\")"
+                }
             }
 
             UirOpKind.ARGMIN -> {
-                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
-                // argmin returns int64; cast to float32 for compatibility with subsequent ops
-                "relax.op.astype(relax.op.argmin(${inputVars[0]}, axis=$axis), dtype=\"float32\")"
+                val ndim = inputShapes[0].dims.size
+                if (ndim == 0) {
+                    // 0-D tensor: argmin(scalar)=scalar, TVM 不支持轴参数
+                    "relax.op.astype(${inputVars[0]}, dtype=\"float32\")"
+                } else {
+                    val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                    // argmin returns int64; cast to float32 for compatibility with subsequent ops
+                    "relax.op.astype(relax.op.argmin(${inputVars[0]}, axis=$axis), dtype=\"float32\")"
+                }
             }
 
             // ===== P2: 插值/Resize =====
