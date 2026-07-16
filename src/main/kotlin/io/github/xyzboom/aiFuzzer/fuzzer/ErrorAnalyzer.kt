@@ -139,11 +139,6 @@ object ErrorAnalyzer {
                 }
                 ErrorInfo(ErrorCategory.INDUCTOR_ERROR, msg)
             }
-            // PyTorch 运行时错误
-            stderr.contains("RuntimeError") && (stderr.contains("torch") || stderr.contains("cuda") || stderr.contains("CUDA")) -> {
-                val msg = extractLine(stderr, "RuntimeError")
-                ErrorInfo(ErrorCategory.PYTORCH_RUNTIME_ERROR, msg)
-            }
             else -> {
                 ErrorInfo(ErrorCategory.UNKNOWN, stderr.take(200))
             }

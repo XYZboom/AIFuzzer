@@ -45,9 +45,9 @@ class DaemonClient(
     @Volatile
     private var _httpClient: HttpClient? = null
 
+    @Synchronized
     private fun httpClient(): HttpClient {
-        val existing = _httpClient
-        if (existing != null) return existing
+        _httpClient?.let { return it }
         return createHttpClient()
     }
 
