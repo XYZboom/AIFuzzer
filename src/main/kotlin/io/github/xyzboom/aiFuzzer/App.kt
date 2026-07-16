@@ -92,6 +92,9 @@ class AiFuzzerCommand : CliktCommand(
         .help("Path to Python property checker script for reduction validation (default: skip check, keep all nodes)")
         .file(mustExist = true, canBeFile = true, canBeDir = false, mustBeReadable = true)
 
+    private val reduceBackend by option("--reduce-backend", "-B")
+        .help("Backend for reduction validation: 'tvm' or 'pytorch' (default: pytorch)")
+
     override fun run() {
         LogUtils.withTrace {
             runWithLog()
@@ -388,6 +391,7 @@ class AiFuzzerCommand : CliktCommand(
 
         echo("Found ${irFiles.size} IR file(s)")
         echo("Output directory: ${outputDirFile.absolutePath}")
+        echo("Backend: ${reduceBackend?.lowercase() ?: "pytorch"}")
         echo()
 
         val reducer = AutoReducer()
@@ -401,15 +405,19 @@ class AiFuzzerCommand : CliktCommand(
                 echo("  Original nodes: $originalNodeCount")
 
                 // 构建属性检查器：通过 daemon 执行翻译后的代码验证
-                val (translator, daemon) = createDaemonBackend()
-                val originalSource = translator.translate(originalProgram)
+                val backendChoice = reduceBackend?.lowercase() ?: "pytorch"
+                val (translator, daemon) = createDaemonBackend(backendChoice)
+                val originalSource = translator(originalProgram)
+                echo("  Generated source (first 500 chars):")
+                echo("  ${originalSource.take(500)}")
                 val originalResult = daemon.sendAndWait(originalSource)
                 val originalError = originalResult.stderr
+                echo("  Original error signature: ${originalError.take(200)}")
 
                 val propertyChecker = object : PropertyChecker {
                     override fun check(program: UirProgram): Boolean {
                         return try {
-                            val source = translator.translate(program)
+                            val source = translator(program)
                             val daemonResult = daemon.sendAndWait(source)
                             val matched = matchesBugSignature(daemonResult.stderr, originalError)
                             log.debug { "属性检查: success=${daemonResult.success}, matched=$matched, stderr=${daemonResult.stderr.take(100)}" }
@@ -438,13 +446,13 @@ class AiFuzzerCommand : CliktCommand(
 
                     // 翻译并保存缩减后的源码
                     try {
-                        val (translator, daemon) = createDaemonBackend()
-                        val minimalSource = translator.translate(result.minifiedProgram)
+                        val (minimalTranslator, minimalDaemon) = createDaemonBackend(backendChoice)
+                        val minimalSource = minimalTranslator(result.minifiedProgram)
                         val minimalSourceFile = File(outputDirFile, "${baseName}_minimal_source.py")
                         minimalSourceFile.writeText(minimalSource)
 
                         // 运行缩减后的程序，保存 stderr
-                        val runResult = daemon.sendAndWait(minimalSource)
+                        val runResult = minimalDaemon.sendAndWait(minimalSource)
                         val stderrFile = File(outputDirFile, "${baseName}_minimal_stderr.log")
                         stderrFile.writeText("=== STDOUT ===\n${runResult.stdout}\n=== STDERR ===\n${runResult.stderr}")
                     } catch (e: Exception) {
@@ -485,18 +493,38 @@ class AiFuzzerCommand : CliktCommand(
     }
 
     /**
-     * 为缩减模式创建 PyTorch daemon 后端。
+     * 为缩减模式创建 daemon 后端。
      */
-    private fun createDaemonBackend(): Pair<PytorchTranslator, DaemonClient> {
-        val pythonPath = try {
+    @Suppress("UNCHECKED_CAST")
+    private fun createDaemonBackend(backend: String = "pytorch"): Pair<(UirProgram) -> String, DaemonClient> {
+        val (pythonPath, workDir) = try {
             val config = if (configPath != null) ConfigLoader.load(configPath!!.absolutePath) else null
-            config?.backends?.pytorch?.python ?: "python3"
+            if (backend == "tvm") {
+                val tvmCfg = config?.backends?.tvm
+                Pair(tvmCfg?.python ?: "python3", tvmCfg?.workDir ?: "/tmp/aiFuzzer_tvm")
+            } else {
+                val ptCfg = config?.backends?.pytorch
+                Pair(ptCfg?.python ?: "python3", ptCfg?.workDir ?: "/tmp/aiFuzzer_pytorch")
+            }
         } catch (_: Exception) {
-            "python3"
+            Pair("python3", "/tmp/aiFuzzer_tvm")
         }
-        log.info { "缩减模式 daemon python: $pythonPath" }
-        val backend = PytorchDaemonBackend(pythonPath = pythonPath)
-        return Pair(backend.translator, backend.daemon)
+        log.info { "缩减模式 daemon python: $pythonPath, backend: $backend" }
+
+        if (backend == "tvm") {
+            val tvmBackend = TvmDaemonBackend(
+                pythonPath = pythonPath,
+                daemonScriptPath = "tvm_daemon.py",
+                workDir = File(workDir),
+            )
+            return Pair(tvmBackend.translator::translate, tvmBackend.daemon)
+        }
+
+        val ptBackend = PytorchDaemonBackend(
+            pythonPath = pythonPath,
+            workDir = File(workDir),
+        )
+        return Pair(ptBackend.translator::translate, ptBackend.daemon)
     }
 
     /**
@@ -510,9 +538,16 @@ class AiFuzzerCommand : CliktCommand(
             return currentStderr.contains("VERIFY: FAIL")
         }
 
+        // TVM InternalError 类型
+        if (originalStderr.contains("tvm.error.InternalError")) {
+            return currentStderr.contains("tvm.error.InternalError")
+        }
+
         // 非 VERIFY 类型：匹配 RuntimeError 行
         val originalLines = originalStderr.lines().map { it.trim() }.filter { it.isNotBlank() }
-        val originalErrorType = originalLines.lastOrNull { it.startsWith("RuntimeError:") }
+        val originalErrorType = originalLines.lastOrNull {
+            it.startsWith("RuntimeError:") || it.startsWith("tvm.error.")
+        }
         if (originalErrorType != null && currentStderr.contains(originalErrorType)) return true
 
         return false
