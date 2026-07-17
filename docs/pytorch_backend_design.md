@@ -55,7 +55,7 @@ PyTorch 2.0 引入了 `torch.compile`，基于 Dynamo（动态图捕获）和 In
                                    │
                                    ├─ PytorchTranslator ← 新增
                                    │
-                                   └─ pytorch_daemon.py ← 新增
+                                   └─ daemon/pytorch_daemon.py ← 新增
 ```
 
 ### 文件结构
@@ -78,7 +78,7 @@ src/main/kotlin/io/github/xyzboom/aiFuzzer/
 ├── config/
 │   └── FuzzerConfig.kt               # 配置类（需添加 PytorchConfig）
 │
-pytorch_daemon.py                      # 新增 daemon 脚本（根目录）
+daemon/pytorch_daemon.py                # 新增 daemon 脚本
 ```
 
 ---
@@ -419,7 +419,7 @@ if __name__ == "__main__":
 
 ### PytorchDaemonBackend
 
-**核心职责**：Kotlin 后端实现，与 pytorch_daemon.py 通信
+**核心职责**：Kotlin 后端实现，与 daemon/pytorch_daemon.py 通信
 
 ```kotlin
 package io.github.xyzboom.aiFuzzer.fuzzer
@@ -434,7 +434,7 @@ import java.io.File
  */
 class PytorchDaemonBackend(
     pythonPath: String = "python3",
-    daemonScriptPath: String = "pytorch_daemon.py",
+    daemonScriptPath: String = "daemon/pytorch_daemon.py",
     private val dtype: String = "float32",
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_pytorch_daemon"),
 ) : DaemonBackend<PytorchDaemonBackend.PytorchResult>(

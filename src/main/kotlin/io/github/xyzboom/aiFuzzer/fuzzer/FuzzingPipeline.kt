@@ -62,7 +62,7 @@ class FuzzingPipeline(
      * 注意：daemon 执行是同步阻塞调用，Kotlin 协程的 withTimeout 无法打断
      * 阻塞在 synchronized / readLine 中的线程。因此超时由两端共同保证：
      * - 客户端侧：DaemonClient 层有 requestTimeoutMs 超时，超时后杀 daemon
-     * - 服务端侧：tvm_daemon.py 有 signal.alarm 超时保护
+     * - 服务端侧：daemon/tvm_daemon.py 有 signal.alarm 超时保护
      * - 并行模式：改用 Thread + Future 确保超时可中断
      */
     fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {

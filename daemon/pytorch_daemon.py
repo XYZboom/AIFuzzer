@@ -1,18 +1,20 @@
 """
-AiFuzzer TVM Daemon — 常驻 Python HTTP 服务，通过 HTTP POST 与 JVM 通信。
+PyTorch.compile Daemon — 常驻 Python HTTP 服务
+
+通过 HTTP POST 与 JVM 通信，避免每次测试重复加载 PyTorch。
 
 API:
   POST /run    {"source": "<python code>"}
-               → {"success": true, "exit_code": 0, "stdout": "...", "stderr": "...", "elapsed_ms": 1}
+               → {"success": true, "exit_code": 0, "stdout": "...", "stderr": "...", "elapsed_ms": 100}
 
-  GET  /health → {"status": "ok", "tvm_available": true, "uptime_seconds": 123}
+  GET  /health → {"status": "ok", "torch_available": true, "cuda_available": false, "uptime_seconds": 123}
 
   POST /shutdown → 优雅关闭
 
 使用方法:
-  python3 tvm_daemon.py                  # 启动 daemon（默认端口 34789）
-  python3 tvm_daemon.py --port 8888      # 指定端口
-  python3 tvm_daemon.py --test           # 自测试模式（验证 TVM 可用）
+  python3 daemon/pytorch_daemon.py            # 启动 daemon（默认端口 34890）
+  python3 daemon/pytorch_daemon.py --port 8888      # 指定端口
+  python3 daemon/pytorch_daemon.py --test           # 自测试模式（验证 PyTorch 可用）
 """
 
 import json
@@ -24,21 +26,24 @@ import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import StringIO
 
-# 一次性导入 TVM（最耗时的部分）
-TVM_AVAILABLE = False
+# 一次性导入 PyTorch（最耗时的部分）
+TORCH_AVAILABLE = False
+CUDA_AVAILABLE = False
 _import_error = ""
-_tvm_import_detail = ""
+_torch_import_detail = ""
+
 try:
-    import tvm
-    from tvm import relax
-    import tvm.relax.op as op
-    TVM_AVAILABLE = True
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+    CUDA_AVAILABLE = torch.cuda.is_available()
 except Exception as _ie:
     _import_error = repr(_ie)
-    _tvm_import_detail = traceback.format_exc()
+    _torch_import_detail = traceback.format_exc()
 
 
-# 每次 exec 的最大超时时间（秒），避免 TVM 内部永久阻塞
+# 每次 exec 的最大超时时间（秒），避免编译永久阻塞
 EXEC_TIMEOUT_SECONDS = 120
 DAEMON_START_TIME = time.time()
 
@@ -51,26 +56,46 @@ def _timeout_handler(signum, frame):
 def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
     """执行单次测试源码，捕获 stdout/stderr。
 
-    使用 signal.alarm 进行超时保护：TVM 编译可能在某些输入下无限阻塞
-    （如 CUDA 同步、死锁等），此时 alarm 会触发 TimeoutError。
+    使用 signal.alarm 进行超时保护：PyTorch 编译可能在某些输入下无限阻塞，
+    此时 alarm 会触发 TimeoutError。
     """
-    global tvm, relax, op
+    if not TORCH_AVAILABLE:
+        return {
+            "success": False,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"PyTorch not available: {_import_error}",
+            "elapsed_ms": 0,
+        }
+
+    # 保存原始 stdout/stderr
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     old_alarm = None
+    
+    # 重定向到 StringIO
     sys.stdout = StringIO()
     sys.stderr = StringIO()
 
     start = time.time()
     exit_code = 0
+    success = True
+    
     try:
         # 设置 alarm 超时
         if hasattr(signal, "SIGALRM"):
             signal.signal(signal.SIGALRM, _timeout_handler)
             old_alarm = signal.alarm(timeout)
 
-        exec(source, {"tvm": tvm, "relax": relax, "op": op})
+        # 执行源码（提供 torch, nn, F 到命名空间）
+        exec(source, {
+            "torch": torch,
+            "nn": nn,
+            "F": F,
+            "__builtins__": __builtins__,
+        })
         success = True
+        
     except SystemExit as e:
         # Python 脚本可能调用了 sys.exit()
         success = False
@@ -92,6 +117,8 @@ def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
     elapsed = int((time.time() - start) * 1000)
     captured_stdout = sys.stdout.getvalue()
     captured_stderr = sys.stderr.getvalue()
+    
+    # 恢复原始 stdout/stderr
     sys.stdout = old_stdout
     sys.stderr = old_stderr
 
@@ -105,7 +132,7 @@ def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
 
 
 class DaemonRequestHandler(BaseHTTPRequestHandler):
-    """HTTP 请求处理器。每个请求在独立线程中处理（由 ThreadingHTTPServer 保证）。"""
+    """HTTP 请求处理器。"""
 
     def do_POST(self):
         if self.path == "/run":
@@ -122,7 +149,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": f"unknown path: {self.path}"})
 
     def _handle_run(self):
-        """处理 /run：执行 TVM Relax 代码。"""
+        """处理 /run：执行 PyTorch 代码。"""
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
@@ -151,19 +178,23 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             })
 
     def _handle_health(self):
+        """处理 /health：返回 daemon 状态。"""
         self._json_response(200, {
             "status": "ok",
-            "tvm_available": TVM_AVAILABLE,
+            "torch_available": TORCH_AVAILABLE,
+            "cuda_available": CUDA_AVAILABLE,
             "uptime_seconds": int(time.time() - DAEMON_START_TIME),
-            "import_error": _import_error if not TVM_AVAILABLE else "",
+            "import_error": _import_error if not TORCH_AVAILABLE else "",
         })
 
     def _handle_shutdown(self):
+        """处理 /shutdown：优雅关闭。"""
         self._json_response(200, {"status": "shutting_down"})
         # 在响应发送后关闭服务
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def _json_response(self, status_code: int, data: dict):
+        """发送 JSON 响应。"""
         body = json.dumps(data).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
@@ -177,76 +208,86 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
 
 
 def self_test():
-    """自测试：验证 TVM 可用并运行一个简单的 Relax 程序。"""
-    if not TVM_AVAILABLE:
-        print(f"FAIL: TVM not available: {_import_error}")
+    """自测试：验证 PyTorch 可用并运行一个简单的编译程序。"""
+    if not TORCH_AVAILABLE:
+        print(f"FAIL: PyTorch not available: {_import_error}")
+        if _torch_import_detail:
+            print(f"Detail:\n{_torch_import_detail}")
         sys.exit(1)
-    print("PASS: TVM is available")
+    print("PASS: PyTorch is available")
+    print(f"  Version: {torch.__version__}")
+    print(f"  CUDA available: {CUDA_AVAILABLE}")
 
+    # 测试 torch.compile
     source = """
-import tvm
-from tvm import relax
-import tvm.relax.op as op
+import torch
+import torch.nn as nn
 
-def build_mod():
-    bb = relax.BlockBuilder()
-    x = relax.Var("x", relax.TensorStructInfo(shape=relax.ShapeExpr([16]), dtype="float32"))
-    with bb.function("test_func", [x]):
-        y = bb.emit(relax.op.add(x, x))
-        bb.emit_func_output(y)
-    return bb.get()
+class TestModule(nn.Module):
+    def forward(self, x):
+        return torch.relu(x)
 
-mod = build_mod()
-print("Mod built successfully")
+model = TestModule()
+try:
+    compiled = torch.compile(model)
+    x = torch.randn(16, dtype=torch.float32)
+    output = compiled(x)
+    print(f"Success: output shape = {output.shape}")
+except Exception as e:
+    print(f"Compile/execution failed: {e}")
+    raise
 """
     result = run_source(source)
     if result["success"]:
-        print(f"PASS: Relax program executed successfully")
+        print("PASS: torch.compile executed successfully")
         print(f"  stdout: {result['stdout'].strip()}")
     else:
-        print(f"FAIL: Relax program failed")
+        print("FAIL: torch.compile failed")
         print(f"  stderr: {result['stderr'].strip()}")
         sys.exit(1)
 
 
 def main():
-    import threading  # 用于 /shutdown
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="PyTorch.compile Daemon")
+    parser.add_argument("--port", type=int, default=34890, help="HTTP server port (default: 34890)")
+    parser.add_argument("--test", action="store_true", help="Run self-test and exit")
+    args = parser.parse_args()
 
-    port = 34789  # 默认端口
-    if "--port" in sys.argv:
-        idx = sys.argv.index("--port")
-        if idx + 1 < len(sys.argv):
-            port = int(sys.argv[idx + 1])
-
-    if "--test" in sys.argv:
+    if args.test:
         self_test()
         return
 
+    # 启动 HTTP server
+    port = args.port
     server = HTTPServer(("127.0.0.1", port), DaemonRequestHandler)
-    # 使用多线程处理请求
     server.socket.settimeout(1.0)  # 1 秒超时，让 serve_forever 能响应信号
 
-    # 打印配置信息（JVM 将读取此信息获取端口等）
+    # 打印 ready 信息（JVM 将读取此行获取端口）
     import os
     server_info = {
         "type": "ready",
-        "tvm_available": TVM_AVAILABLE,
+        "torch_available": TORCH_AVAILABLE,
+        "cuda_available": CUDA_AVAILABLE,
+        "tvm_available": TORCH_AVAILABLE,  # 兼容 DaemonClient.ReadyMessage
         "port": port,
         "pid": os.getpid(),
     }
-    if not TVM_AVAILABLE:
+    if not TORCH_AVAILABLE:
         server_info["import_error"] = _import_error
-        server_info["import_detail"] = _tvm_import_detail
+        server_info["import_detail"] = _torch_import_detail
 
     print(json.dumps(server_info), flush=True)
 
-    # 注册信号处理优雅退出
+    # 注册信号处理：优雅退出
     def sig_handler(signum, frame):
         server.shutdown()
 
     signal.signal(signal.SIGTERM, sig_handler)
     signal.signal(signal.SIGINT, sig_handler)
 
+    # 主循环
     try:
         while True:
             try:

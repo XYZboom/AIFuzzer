@@ -10,9 +10,9 @@ API:
   POST /shutdown → 优雅关闭
 
 使用方法:
-  python3 onnx_daemon.py                  # 启动 daemon（默认端口 34790）
-  python3 onnx_daemon.py --port 8888      # 指定端口
-  python3 onnx_daemon.py --test           # 自测试模式
+  python3 daemon/onnx_daemon.py                  # 启动 daemon（默认端口 34790）
+  python3 daemon/onnx_daemon.py --port 8888      # 指定端口
+  python3 daemon/onnx_daemon.py --test           # 自测试模式
 """
 
 import json

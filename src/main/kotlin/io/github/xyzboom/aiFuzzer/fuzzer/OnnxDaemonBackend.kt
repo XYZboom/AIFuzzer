@@ -10,7 +10,7 @@ private val log = KotlinLogging.logger {}
 
 class OnnxDaemonBackend(
     pythonPath: String = "python3",
-    daemonScriptPath: String = "onnx_daemon.py",
+    daemonScriptPath: String = "daemon/onnx_daemon.py",
     private val opsetVersion: Int = 21,
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
 ) : DaemonBackend<OnnxBackend.OnnxResult>(

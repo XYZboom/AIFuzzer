@@ -22,7 +22,7 @@ private val log = KotlinLogging.logger {}
  */
 class TvmDaemonBackend(
     pythonPath: String = "python3",
-    daemonScriptPath: String = "tvm_daemon.py",
+    daemonScriptPath: String = "daemon/tvm_daemon.py",
     private val daemonCount: Int = 1,
     private val shapeRank: Int = 3,
     private val dtype: String = "float32",
@@ -35,7 +35,7 @@ class TvmDaemonBackend(
 
     constructor(config: TvmConfig) : this(
         pythonPath = config.python,
-        daemonScriptPath = "tvm_daemon.py",
+        daemonScriptPath = "daemon/tvm_daemon.py",
         daemonCount = config.daemonCount,
         shapeRank = config.shapeRank,
         dtype = config.dtype,

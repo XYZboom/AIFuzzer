@@ -415,10 +415,20 @@ class OnnxTranslator(
                 val rawId = "t${outputId}_raw"
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
                 val onnxName = if (node.op == UirOpKind.ARGMAX) "ArgMax" else "ArgMin"
-                val nvRaw = nextNodeVar()
-                nodeLines.add(NodeLine(nvRaw, "    $nvRaw = helper.make_node('$onnxName', inputs=['$inputId'], outputs=['$rawId'], axis=$axis, keepdims=0)"))
-                val nvCast = nextNodeVar()
-                nodeLines.add(NodeLine(nvCast, "    $nvCast = helper.make_node('Cast', inputs=['$rawId'], outputs=['$outputId'], to=$FLOAT)"))
+                // 标量输入时 ONNX Runtime 不允许任何 axis（因为 rank=0 时合法区间为空）
+                // → 直接输出常数 0.0（单元素的 argmin/argmax 的结果就是 0）
+                val inputShape = node.inputs.firstOrNull()?.type?.shape
+                val isScalar = inputShape != null && inputShape.dims.size == 0
+                if (isScalar) {
+                    tensorInitLines.add("""${outputId}_t = helper.make_tensor("${outputId}_v", $FLOAT, [], [0.0])""")
+                    val nvConst = nextNodeVar()
+                    nodeLines.add(NodeLine(nvConst, "    $nvConst = helper.make_node('Constant', inputs=[], outputs=['$outputId'], value=${outputId}_t)"))
+                } else {
+                    val nvRaw = nextNodeVar()
+                    nodeLines.add(NodeLine(nvRaw, "    $nvRaw = helper.make_node('$onnxName', inputs=['$inputId'], outputs=['$rawId'], axis=$axis, keepdims=0)"))
+                    val nvCast = nextNodeVar()
+                    nodeLines.add(NodeLine(nvCast, "    $nvCast = helper.make_node('Cast', inputs=['$rawId'], outputs=['$outputId'], to=$FLOAT)"))
+                }
             }
             else -> {
                 // Unreachable

@@ -520,7 +520,7 @@ class AiFuzzerCommand : CliktCommand(
         if (backend == "tvm") {
             val tvmBackend = TvmDaemonBackend(
                 pythonPath = pythonPath,
-                daemonScriptPath = "tvm_daemon.py",
+                daemonScriptPath = "daemon/tvm_daemon.py",
                 workDir = File(workDir),
             )
             return Pair(tvmBackend.translator::translate, tvmBackend.daemon)

@@ -23,7 +23,7 @@ private val log = KotlinLogging.logger {}
  */
 class PytorchDaemonBackend(
     pythonPath: String = "python3",
-    daemonScriptPath: String = "pytorch_daemon.py",
+    daemonScriptPath: String = "daemon/pytorch_daemon.py",
     private val dtype: String = "float32",
     private val device: String = "cpu",
     private val compileMode: String = "default",
@@ -39,7 +39,7 @@ class PytorchDaemonBackend(
 
     constructor(config: PytorchConfig) : this(
         pythonPath = config.python,
-        daemonScriptPath = "pytorch_daemon.py",
+        daemonScriptPath = "daemon/pytorch_daemon.py",
         dtype = config.dtype,
         device = config.device,
         compileMode = config.compileMode,
