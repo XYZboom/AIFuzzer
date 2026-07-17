@@ -75,7 +75,7 @@ class TvmDaemonBackend(
             log.error { "Daemon 脚本不存在: ${scriptFile.absolutePath}" }
             return false
         }
-        return super.checkEnvironment() && daemon.tvmAvailable
+        return super.checkEnvironment() && daemon.backendAvailable
     }
 
     override fun execute(program: UirProgram): TvmBackend.TvmResult {

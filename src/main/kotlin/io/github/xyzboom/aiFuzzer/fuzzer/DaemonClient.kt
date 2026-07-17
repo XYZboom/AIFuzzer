@@ -84,9 +84,9 @@ class DaemonClient(
     var ready: Boolean = false
         private set
 
-    /** TVM 是否可用（daemon 启动时报告） */
+    /** 后端是否可用（daemon 启动时由 ready 消息报告） */
     @Volatile
-    var tvmAvailable: Boolean = false
+    var backendAvailable: Boolean = false
         private set
 
     private val baseUrl: String
@@ -135,11 +135,11 @@ class DaemonClient(
                         val msg = json.decodeFromString<ReadyMessage>(readyLine)
                         port = msg.port
                         ready = true
-                        tvmAvailable = msg.tvmAvailable
-                        if (!tvmAvailable) {
+                        backendAvailable = msg.backendAvailable
+                        if (!backendAvailable) {
                             log.error { "TVM import failed: ${msg.importError}" }
                         } else {
-                            log.info { "daemon 就绪: port=$port, tvmAvailable=$tvmAvailable" }
+                            log.info { "daemon 就绪: port=$port, backendAvailable=$backendAvailable" }
                         }
                     } catch (e: Exception) {
                         log.error(e) { "解析就绪消息失败: '$readyLine'" }
@@ -275,7 +275,7 @@ class DaemonClient(
         val oldPort = port
         process = null
         ready = false
-        tvmAvailable = false
+        backendAvailable = false
         port = 0
 
         // 发送 HTTP shutdown（优雅关闭）
@@ -304,8 +304,8 @@ class DaemonClient(
     @Serializable
     data class ReadyMessage(
         val type: String = "ready",
-        @kotlinx.serialization.SerialName("tvm_available")
-        val tvmAvailable: Boolean = false,
+        @kotlinx.serialization.SerialName("backend_available")
+        val backendAvailable: Boolean = false,
         val port: Int = 0,
         @kotlinx.serialization.SerialName("import_error")
         val importError: String = "",

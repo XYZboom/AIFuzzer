@@ -5,7 +5,7 @@ API:
   POST /run    {"source": "<python code>"}
                → {"success": true, "exit_code": 0, "stdout": "...", "stderr": "...", "elapsed_ms": 1}
 
-  GET  /health → {"status": "ok", "tvm_available": true, "uptime_seconds": 123}
+  GET  /health → {"status": "ok", "backend_available": true, "uptime_seconds": 123}
 
   POST /shutdown → 优雅关闭
 
@@ -153,7 +153,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     def _handle_health(self):
         self._json_response(200, {
             "status": "ok",
-            "tvm_available": TVM_AVAILABLE,
+            "backend_available": TVM_AVAILABLE,
             "uptime_seconds": int(time.time() - DAEMON_START_TIME),
             "import_error": _import_error if not TVM_AVAILABLE else "",
         })
@@ -230,7 +230,7 @@ def main():
     import os
     server_info = {
         "type": "ready",
-        "tvm_available": TVM_AVAILABLE,
+        "backend_available": TVM_AVAILABLE,
         "port": port,
         "pid": os.getpid(),
     }

@@ -13,7 +13,7 @@ class OnnxDaemonBackend(
     daemonScriptPath: String = "daemon/onnx_daemon.py",
     private val opsetVersion: Int = 21,
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
-) : DaemonBackend<OnnxBackend.OnnxResult>(
+) : DaemonBackend<OnnxDaemonBackend.OnnxResult>(
     pythonPath = pythonPath,
     daemonScriptPath = daemonScriptPath,
     workDir = workDir,
@@ -27,7 +27,7 @@ class OnnxDaemonBackend(
     override val name = "ONNX Runtime (daemon)"
     override val translator: OnnxTranslator = OnnxTranslator(opsetVersion = opsetVersion)
 
-    override fun createCopy(): Backend<OnnxBackend.OnnxResult> {
+    override fun createCopy(): Backend<OnnxResult> {
         return OnnxDaemonBackend(pythonPath, daemonScriptPath, opsetVersion,
             File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"))
     }
@@ -38,17 +38,28 @@ class OnnxDaemonBackend(
         return super.checkEnvironment() && daemon.ready
     }
 
-    override fun execute(program: UirProgram): OnnxBackend.OnnxResult {
+    override fun execute(program: UirProgram): OnnxResult {
         val source = translator.translate(program)
         val dr = daemon.sendAndWait(source)
         val sf = File(workDir, "program.py"); sf.parentFile.mkdirs(); sf.writeText(source)
         val ei = ErrorAnalyzer.analyze(dr.stderr, dr.exitCode)
-        return OnnxBackend.OnnxResult(dr.success, dr.exitCode, dr.stdout, dr.stderr, dr.elapsedMs, ei.category, ei.summary, sf.absolutePath)
+        return OnnxResult(dr.success, dr.exitCode, dr.stdout, dr.stderr, dr.elapsedMs, ei.category, ei.summary, sf.absolutePath)
     }
 
-    override fun toResult(program: UirProgram, dr: DaemonResult): OnnxBackend.OnnxResult {
+    override fun toResult(program: UirProgram, dr: DaemonResult): OnnxResult {
         val ei = ErrorAnalyzer.analyze(dr.stderr, dr.exitCode)
         val sf = File(workDir, "program.py"); sf.parentFile.mkdirs(); sf.writeText(translator.translate(program))
-        return OnnxBackend.OnnxResult(dr.success, dr.exitCode, dr.stdout, dr.stderr, dr.elapsedMs, ei.category, ei.summary, sf.absolutePath)
+        return OnnxResult(dr.success, dr.exitCode, dr.stdout, dr.stderr, dr.elapsedMs, ei.category, ei.summary, sf.absolutePath)
     }
+
+    data class OnnxResult(
+        override val success: Boolean,
+        override val exitCode: Int,
+        override val stdout: String,
+        override val stderr: String,
+        override val elapsedMs: Long,
+        val errorCategory: ErrorCategory,
+        val errorSummary: String,
+        val sourceFile: String,
+    ) : BackendResult(success, exitCode, stdout, stderr, elapsedMs)
 }

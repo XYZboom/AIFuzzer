@@ -270,7 +270,7 @@ def main():
         "type": "ready",
         "torch_available": TORCH_AVAILABLE,
         "cuda_available": CUDA_AVAILABLE,
-        "tvm_available": TORCH_AVAILABLE,  # 兼容 DaemonClient.ReadyMessage
+        "backend_available": TORCH_AVAILABLE,  # 兼容 DaemonClient.ReadyMessage
         "port": port,
         "pid": os.getpid(),
     }

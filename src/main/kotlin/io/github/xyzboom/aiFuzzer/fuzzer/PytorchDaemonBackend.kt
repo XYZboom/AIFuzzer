@@ -84,9 +84,9 @@ class PytorchDaemonBackend(
             log.error { "Daemon 脚本不存在: ${scriptFile.absolutePath}" }
             return false
         }
-        // DaemonClient.tvmAvailable 会被 PyTorch daemon 的 torch_available 字段填充
+        // DaemonClient.backendAvailable 会被 PyTorch daemon 的 torch_available 字段填充
         // 因为 ready 消息的 JSON 字段名相同
-        return super.checkEnvironment() && daemon.tvmAvailable
+        return super.checkEnvironment() && daemon.backendAvailable
     }
 
     override fun execute(program: UirProgram): PytorchResult {

@@ -83,7 +83,7 @@ class OnnxTranslator(
         val outputTensors = mutableListOf<String>()
 
         for (input in graph.inputs) {
-            valueDtypeMap[input.valueId] = toOnnxDtype(input.type.dtype?.name ?: "float32")
+            valueDtypeMap[input.valueId] = toOnnxDtype(input.type.dtype.name)
         }
 
         for (node in allNodes) {
@@ -116,7 +116,7 @@ class OnnxTranslator(
             // ─── 3. Constant ops (FULL, ZEROS, ONES, ARANGE) ──────
             if (node.op in setOf(UirOpKind.FULL, UirOpKind.ZEROS, UirOpKind.ONES, UirOpKind.ARANGE)) {
                 val shape = node.outputs[0].type.shape
-                val dtype = node.outputs[0].type.dtype?.name ?: "float32"
+                val dtype = node.outputs[0].type.dtype.name
                 val onnxDtype = toOnnxDtype(dtype)
                 valueDtypeMap[outputId] = onnxDtype
                 val shapeStr = shapeToPythonList(shape)
@@ -161,7 +161,7 @@ class OnnxTranslator(
                 nodeLines.add(NodeLine(nvMax, "    $nvMax = helper.make_node('Constant', inputs=[], outputs=['$maxId'], value=${maxId}_t)"))
                 val nvClip = nextNodeVar()
                 nodeLines.add(NodeLine(nvClip, "    $nvClip = helper.make_node('Clip', inputs=['$inputId', '$minId', '$maxId'], outputs=['$outputId'])"))
-                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype?.name ?: "float32")
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
                 continue
             }
 
@@ -192,7 +192,7 @@ class OnnxTranslator(
                 }
                 val nvOp = nextNodeVar()
                 nodeLines.add(NodeLine(nvOp, "    $nvOp = helper.make_node('Slice', inputs=['$inputId', '$sId', '$eId', '$aId', '$stId'], outputs=['$outputId'])"))
-                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype?.name ?: "float32")
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
                 continue
             }
 
@@ -205,7 +205,7 @@ class OnnxTranslator(
                 nodeLines.add(NodeLine(nvIx, "    $nvIx = helper.make_node('Constant', inputs=[], outputs=['$iId'], value=${iId}_t)"))
                 val nvGather = nextNodeVar()
                 nodeLines.add(NodeLine(nvGather, "    $nvGather = helper.make_node('Gather', inputs=['$inputId', '$iId'], outputs=['$outputId'], axis=$axis)"))
-                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype?.name ?: "float32")
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
                 continue
             }
 
@@ -225,7 +225,7 @@ class OnnxTranslator(
                 nodeLines.add(NodeLine(nvRep, "    $nvRep = helper.make_node('Constant', inputs=[], outputs=['$rId'], value=${rId}_t)"))
                 val nvTile = nextNodeVar()
                 nodeLines.add(NodeLine(nvTile, "    $nvTile = helper.make_node('Tile', inputs=['$inputId', '$rId'], outputs=['$outputId'])"))
-                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype?.name ?: "float32")
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
                 continue
             }
 
@@ -286,7 +286,7 @@ class OnnxTranslator(
         for (input in graph.inputs) {
             val shape = input.type.shape
             val shapeStr = shapeToPythonList(shape)
-            val dtype = input.type.dtype?.name ?: "float32"
+            val dtype = input.type.dtype.name
             val onnxDtype = toOnnxDtype(dtype)
             builder.appendLine("    np_${input.valueId} = np.random.randn(*$shapeStr).astype(np.float32)")
             builder.appendLine("    ${input.valueId}_vi = helper.make_tensor_value_info('${input.valueId}', $onnxDtype, $shapeStr)")
@@ -296,7 +296,7 @@ class OnnxTranslator(
         for (output in graph.outputs) {
             val shape = output.type.shape
             val shapeStr = shapeToPythonList(shape)
-            val dtype = output.type.dtype?.name ?: "float32"
+            val dtype = output.type.dtype.name
             val onnxDtype = toOnnxDtype(dtype)
             builder.appendLine("    ${output.valueId}_vi = helper.make_tensor_value_info('${output.valueId}', $onnxDtype, $shapeStr)")
             outputTensors.add("${output.valueId}_vi")
@@ -334,7 +334,7 @@ class OnnxTranslator(
         valueDtypeMap: MutableMap<String, String>,
     ) {
         val inputId = inputId ?: outputId
-        val dtype = node.outputs[0].type.dtype?.name ?: "float32"
+        val dtype = node.outputs[0].type.dtype.name
         val onnxDtype = toOnnxDtype(dtype)
         valueDtypeMap[outputId] = onnxDtype
 

@@ -176,7 +176,7 @@ def main():
     # 打印 JSON 就绪信息（JVM 将读取此信息获取端口等）
     server_info = {
         "type": "ready",
-        "tvm_available": ONNX_AVAILABLE and ORT_AVAILABLE,
+        "backend_available": ONNX_AVAILABLE and ORT_AVAILABLE,
         "port": port,
         "pid": os.getpid(),
     }

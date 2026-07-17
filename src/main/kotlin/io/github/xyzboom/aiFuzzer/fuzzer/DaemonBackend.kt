@@ -42,7 +42,7 @@ abstract class DaemonBackend<T : BackendResult>(
         if (!daemon.isAlive()) {
             return daemon.start()
         }
-        return daemon.isAlive() && daemon.tvmAvailable
+        return daemon.isAlive() && daemon.backendAvailable
     }
 
     override fun compile(program: UirProgram): CompilationArtifact {
