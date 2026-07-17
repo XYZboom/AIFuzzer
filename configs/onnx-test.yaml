@@ -1,0 +1,37 @@
+# ONNX 验证 — 50 轮
+run:
+  description: "ONNX verification — 50 rounds"
+  seed: null
+  output_dir: "./reports"
+  log_level: "info"
+
+generator:
+  min_nodes_per_graph: 5
+  max_nodes_per_graph: 25
+  min_inputs: 1
+  max_inputs: 5
+  min_input_ndim: 1
+  max_input_ndim: 3
+  graph_count: 1
+  strategy: "random"
+  ops:
+    include_all: true
+
+backends:
+  enabled: ["onnx"]
+  onnx:
+    python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
+    timeout_seconds: 60
+    opset_version: 11
+    ir_version: 8
+
+bug_collector:
+  enabled: true
+  output_dir: "./reports"
+
+pipeline:
+  reducer:
+    enabled: false
+  workers: 1
+  batch_size: 50
+  run_timeout_seconds: 60

@@ -20,6 +20,7 @@ import io.github.xyzboom.aiFuzzer.fuzzer.TvmDaemonBackend
 import io.github.xyzboom.aiFuzzer.fuzzer.DaemonClient
 import io.github.xyzboom.aiFuzzer.fuzzer.DaemonResult
 import io.github.xyzboom.aiFuzzer.fuzzer.PytorchDaemonBackend
+import io.github.xyzboom.aiFuzzer.fuzzer.OnnxDaemonBackend
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 import io.github.xyzboom.aiFuzzer.reducer.AutoReducer
@@ -155,6 +156,11 @@ class AiFuzzerCommand : CliktCommand(
             val pytorchCfg = config.backends.pytorch
             echo("  PyTorch backend: daemon mode (python=${pytorchCfg.python}, device=${pytorchCfg.device})")
             backends.add(PytorchDaemonBackend(pytorchCfg))
+        }
+        if ("onnx" in config.backends.enabled) {
+            val onnxCfg = config.backends.onnx
+            echo("  ONNX backend: daemon mode (python=${onnxCfg.python})")
+            backends.add(OnnxDaemonBackend(onnxCfg))
         }
 
         if (backends.isEmpty()) {
