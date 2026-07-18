@@ -14,6 +14,7 @@ import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 import io.github.xyzboom.aiFuzzer.reducer.AutoReducer
 import io.github.xyzboom.aiFuzzer.reducer.PropertyChecker
+import io.github.xyzboom.aiFuzzer.translator.onnx.OnnxTranslator
 import io.github.xyzboom.aiFuzzer.translator.pytorch.PytorchTranslator
 import io.github.xyzboom.aiFuzzer.translator.tvm.TvmRelaxTranslator
 import java.io.File
@@ -35,7 +36,7 @@ class ReduceCommand : CliktCommand(
         .help("Output directory (default: same as input)")
 
     private val reduceBackend by option("--backend", "-b")
-        .help("Backend for reduction validation: 'tvm' or 'pytorch' (default: pytorch)")
+        .help("Backend for reduction validation: 'tvm', 'pytorch', or 'onnx' (default: pytorch)")
 
     private val pythonPath by option("--python", "-p")
         .help("Python executable for the backend daemon (default: python3)")
@@ -148,6 +149,14 @@ class ReduceCommand : CliktCommand(
             log.info { "缩减 daemon: python=$pythonPath, backend=$backend" }
             if (backend == "tvm") {
                 val b = TvmDaemonBackend(pythonPath = pythonPath, workDir = File(workDir))
+                return Pair(b.translator::translate, b.daemon)
+            }
+            if (backend == "onnx") {
+                val b = OnnxDaemonBackend(
+                    pythonPath = pythonPath,
+                    workDir = File(workDir),
+                    opsetVersion = 11,
+                )
                 return Pair(b.translator::translate, b.daemon)
             }
             val b = PytorchDaemonBackend(pythonPath = pythonPath, workDir = File(workDir))

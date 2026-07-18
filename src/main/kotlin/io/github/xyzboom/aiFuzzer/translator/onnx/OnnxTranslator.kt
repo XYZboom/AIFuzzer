@@ -3,6 +3,7 @@ package io.github.xyzboom.aiFuzzer.translator.onnx
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.ir.*
 import io.github.xyzboom.aiFuzzer.ir.types.*
+import io.github.xyzboom.aiFuzzer.ir.types.builder.buildShape
 import io.github.xyzboom.aiFuzzer.translator.UirTranslator
 
 private val log = KotlinLogging.logger {}
@@ -350,6 +351,55 @@ class OnnxTranslator(
                 continue
             }
 
+            // CONV2D: ensure weight is 4D (ONNX Conv requires weight ndim == data ndim)
+            if (node.op == UirOpKind.CONV2D && inputIds.size >= 2) {
+                val dataId = inputIds[0]
+                val rawWeightId = inputIds[1]
+                val weightShape = node.inputs.getOrNull(1)?.type?.shape
+                val weightNdim = weightShape?.dims?.size ?: 4
+
+                // Ensure weight is 4D: squeeze extra leading dimensions / unsqueeze missing dims
+                val adjWeightId = if (weightNdim > 4) {
+                    val sqId = "c${outputId}_wsq"
+                    val axes = (0 until weightNdim - 4).joinToString(", ")
+                    val nvSq = nextNodeVar()
+                    nodeLines.add(NodeLine(nvSq, "    $nvSq = helper.make_node('Squeeze', inputs=['$rawWeightId'], outputs=['$sqId'], axes=[$axes])"))
+                    sqId
+                } else if (weightNdim < 4) {
+                    val usId = "c${outputId}_wus"
+                    val missing = 4 - weightNdim
+                    val axes = (0 until missing).joinToString(", ")
+                    val nvUs = nextNodeVar()
+                    nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$rawWeightId'], outputs=['$usId'], axes=[$axes])"))
+                    usId
+                } else {
+                    rawWeightId
+                }
+
+                // Pass the 4D weight shape to buildOnnxAttrs for kernel_shape calculation
+                val fourDWeightShape = weightShape?.let { ws ->
+                    buildShape {
+                        ws.dims.takeLast(4).forEach { dim -> dims.add(dim) }
+                    }
+                }
+                val attrs = buildOnnxAttrs(node.op, node.attributes,
+                    inputShapes = listOfNotNull(
+                        node.inputs.getOrNull(0)?.type?.shape,
+                        fourDWeightShape
+                    )
+                )
+                val onnxInputs = "'$dataId', '$adjWeightId'"
+                val nv = nextNodeVar()
+                val callLine = if (attrs.isEmpty()) {
+                    "    $nv = helper.make_node('Conv', inputs=[$onnxInputs], outputs=['$outputId'])"
+                } else {
+                    "    $nv = helper.make_node('Conv', inputs=[$onnxInputs], outputs=['$outputId'], $attrs)"
+                }
+                nodeLines.add(NodeLine(nv, callLine))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
             // ─── 5. Normal ops ────────────────────────────────────
             // For dtype-sensitive binary ops, cast both inputs to float32 first
             @Suppress("EnumValuesSoftDeprecate")
@@ -681,10 +731,15 @@ class OnnxTranslator(
                 val normId = "t${outputId}_nm"
                 val nvNorm = nextNodeVar()
                 nodeLines.add(NodeLine(nvNorm, "    $nvNorm = helper.make_node('Div', inputs=['$centId', '$stdId'], outputs=['$normId'])"))
+                // Identity node to prevent ORT from matching the LAYER_NORM fusion pattern,
+                // which can corrupt graph connectivity in models with multiple LAYER_NORM patterns.
+                val normIdId = "t${outputId}_ni"
+                val nvNormId = nextNodeVar()
+                nodeLines.add(NodeLine(nvNormId, "    $nvNormId = helper.make_node('Identity', inputs=['$normId'], outputs=['$normIdId'])"))
                 // y = Add(Mul(normalized, gamma), beta)
                 val mulId = "t${outputId}_ml"
                 val nvMul = nextNodeVar()
-                nodeLines.add(NodeLine(nvMul, "    $nvMul = helper.make_node('Mul', inputs=['$normId', '$gammaId'], outputs=['$mulId'])"))
+                nodeLines.add(NodeLine(nvMul, "    $nvMul = helper.make_node('Mul', inputs=['$normIdId', '$gammaId'], outputs=['$mulId'])"))
                 val nvOut = nextNodeVar()
                 nodeLines.add(NodeLine(nvOut, "    $nvOut = helper.make_node('Add', inputs=['$mulId', '$betaId'], outputs=['$outputId'])"))
             }

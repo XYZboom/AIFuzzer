@@ -122,6 +122,35 @@ class ShapeInfererTest {
     
     // ===== 分类 G：三角矩阵 =====
     
+    // ===== GATHER 形状推导 =====
+    
+    @Test
+    fun `GATHER single_input outputs all_one_shape`() {
+        // GATHER with single input (no explicit indices shape):
+        // PyTorch translator generates torch.gather(x, axis, zeros([1]*x.ndim))
+        // → output shape = [1]*ndim (same rank as input, all 1s)
+        val inputShape = shapeOf(3, 2)
+        val attrs = mapOf("axis" to buildIntAttr { value = 0 })
+        
+        val outputShapes = ShapeInferer.inferShape(UirOpKind.GATHER, listOf(inputShape), attrs)
+        
+        assertEquals(1, outputShapes.size)
+        // Output should be [1, 1] — same rank as input [3, 2], all ones
+        assertShapeEquals(shapeOf(1, 1), outputShapes[0])
+    }
+    
+    @Test
+    fun `GATHER single_input 3D outputs all_one_3D`() {
+        val inputShape = shapeOf(4, 5, 6)
+        val attrs = mapOf("axis" to buildIntAttr { value = 1 })
+        
+        val outputShapes = ShapeInferer.inferShape(UirOpKind.GATHER, listOf(inputShape), attrs)
+        
+        assertEquals(1, outputShapes.size)
+        // Output should be [1, 1, 1] — same rank as input, all ones
+        assertShapeEquals(shapeOf(1, 1, 1), outputShapes[0])
+    }
+
     @Test
     fun `TRIL preserves shape`() {
         val inputShape = shapeOf(4, 5)

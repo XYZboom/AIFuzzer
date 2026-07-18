@@ -865,18 +865,12 @@ object ShapeInferer {
     ): List<UirShape> {
         if (inputShapes.size == 1) {
             val dataShape = inputShapes[0]
-            val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+            // PyTorch translator generates torch.gather(x, axis, zeros([1]*x.ndim))
+            // → output shape = index shape = [1]*ndim (same rank as input, all 1s)
+            // This is the correct semantics for the fuzzer's generated code.
             val ndim = dataShape.dims.size
-            
-            // 规范化 axis
-            val normalizedAxis = if (axis < 0) axis + ndim else axis
-            
-            if (normalizedAxis in 0 until ndim) {
-                // 移除 axis 维度，可能产生 0-D tensor（标量）
-                val outputDims = dataShape.dims.filterIndexed { i, _ -> i != normalizedAxis }
-                return listOf(shapeFromDims(outputDims))
-            }
-            return listOf(shapeFromDims(listOf(unknownDim())))
+            val outputDims = (0 until ndim).map { constantDim(1) }
+            return listOf(shapeFromDims(outputDims))
         }
         
         requireBinaryInput(UirOpKind.GATHER, inputShapes)
