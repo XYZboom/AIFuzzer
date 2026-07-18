@@ -37,6 +37,9 @@ class ReduceCommand : CliktCommand(
     private val reduceBackend by option("--backend", "-b")
         .help("Backend for reduction validation: 'tvm' or 'pytorch' (default: pytorch)")
 
+    private val pythonPath by option("--python", "-p")
+        .help("Python executable for the backend daemon (default: python3)")
+
     override fun run() = LogUtils.withTrace {
         log.info { "缩减模式: ${inputIR.absolutePath}" }
         echo("Reduce mode: reducing IR file(s)")
@@ -60,7 +63,7 @@ class ReduceCommand : CliktCommand(
                 val originalNodeCount = originalProgram.graphs.sumOf { it.nodes.size }
                 echo("  Original nodes: $originalNodeCount")
 
-                val (translator, daemon) = createDaemonForBackend(backendChoice)
+                val (translator, daemon) = createDaemonForBackend(backendChoice, pythonPath)
                 val originalSource = translator(originalProgram)
                 val originalResult = daemon.sendAndWait(originalSource)
                 val originalError = originalResult.stderr
@@ -84,7 +87,7 @@ class ReduceCommand : CliktCommand(
                     minimalIrFile.writeText(UirSerializer.toJsonl(result.minifiedProgram))
 
                     try {
-                        val (minTranslator, minDaemon) = createDaemonForBackend(backendChoice)
+                        val (minTranslator, minDaemon) = createDaemonForBackend(backendChoice, pythonPath)
                         val minSource = minTranslator(result.minifiedProgram)
                         File(outDir, "${baseName}_minimal_source.py").writeText(minSource)
                         val runResult = minDaemon.sendAndWait(minSource)
@@ -125,17 +128,22 @@ class ReduceCommand : CliktCommand(
     companion object {
         fun matchesBugSignature(currentStderr: String, originalStderr: String): Boolean {
             if (currentStderr.isBlank()) return false
+            // fast-path: exact type signatures
             if (originalStderr.contains("VERIFY: FAIL")) return currentStderr.contains("VERIFY: FAIL")
             if (originalStderr.contains("tvm.error.InternalError")) return currentStderr.contains("tvm.error.InternalError")
+            // 匹配实际抛出错误类型（原始错误链的末行）
             val originalErrorType = originalStderr.lines().map { it.trim() }.filter { it.isNotBlank() }.lastOrNull {
                 it.startsWith("RuntimeError:") || it.startsWith("tvm.error.")
+                    || it.startsWith("torch._inductor.exc.InductorError:")
+                    || it.startsWith("AssertionError:")
             }
             if (originalErrorType != null && currentStderr.contains(originalErrorType)) return true
             return false
         }
 
-        fun createDaemonForBackend(backend: String): Pair<(UirProgram) -> String, DaemonClient> {
-            val (pythonPath, workDir) = Pair("python3", "/tmp/aiFuzzer_$backend")
+        fun createDaemonForBackend(backend: String, pythonOverride: String? = null): Pair<(UirProgram) -> String, DaemonClient> {
+            val pythonPath = pythonOverride ?: "python3"
+            val workDir = "/tmp/aiFuzzer_$backend"
             log.info { "缩减 daemon: python=$pythonPath, backend=$backend" }
             if (backend == "tvm") {
                 val b = TvmDaemonBackend(pythonPath = pythonPath, workDir = File(workDir))

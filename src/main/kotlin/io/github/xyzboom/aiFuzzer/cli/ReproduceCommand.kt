@@ -2,6 +2,7 @@ package io.github.xyzboom.aiFuzzer.cli
 
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.context
+import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.required
 import com.github.ajalt.clikt.parameters.options.help
@@ -16,7 +17,7 @@ private val log = KotlinLogging.logger {}
 
 class ReproduceCommand : CliktCommand(
     name = "reproduce",
-    help = "Re-run IR file(s) on backends",
+    help = "Re-run IR file(s) on specified backends",
 ) {
     init { context { helpFormatter = CliUtils.helpFormatter() } }
 
@@ -24,6 +25,14 @@ class ReproduceCommand : CliktCommand(
         .file(mustExist = true, canBeFile = true, canBeDir = true, mustBeReadable = true)
         .required()
         .help("IR file or directory containing *.jsonl files")
+
+    private val configPath by option("--config", "-c")
+        .file(mustExist = true, canBeFile = true, canBeDir = false, mustBeReadable = true)
+        .help("Config file for backend settings (default: built-in defaults)")
+
+    private val backendFilter by option("--backend", "-b")
+        .default("")
+        .help("Backend to use: tvm, pytorch, onnx (comma-separated; default: all)")
 
     override fun run() = LogUtils.withTrace {
         log.info { "复现模式: ${inputIR.absolutePath}" }
@@ -38,7 +47,24 @@ class ReproduceCommand : CliktCommand(
 
         echo("Found ${irFiles.size} IR file(s)\n")
 
-        val backends = initBackends(ConfigLoader.default())
+        val config = if (configPath != null) {
+            echo("Loading config from: ${configPath!!.absolutePath}")
+            ConfigLoader.load(configPath!!.absolutePath)
+        } else {
+            ConfigLoader.default()
+        }
+
+        // Apply backend filter
+        val filterList = backendFilter
+            .takeIf { it.isNotBlank() }
+            ?.split(",")
+            ?.map { it.trim().lowercase() }
+        if (filterList != null) {
+            config.backends.enabled = config.backends.enabled.filter { it.lowercase() in filterList }
+            echo("Filtered backends: ${config.backends.enabled}")
+        }
+
+        val backends = initBackends(config)
         echo("Initializing backends...")
         val ready = backends.filter { b ->
             echo("  ${b.name}: ")
