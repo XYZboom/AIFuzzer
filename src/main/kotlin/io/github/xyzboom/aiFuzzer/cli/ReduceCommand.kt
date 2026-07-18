@@ -136,6 +136,7 @@ class ReduceCommand : CliktCommand(
                 it.startsWith("RuntimeError:") || it.startsWith("tvm.error.")
                     || it.startsWith("torch._inductor.exc.InductorError:")
                     || it.startsWith("AssertionError:")
+                    || it.startsWith("IndexError:")
             }
             if (originalErrorType != null && currentStderr.contains(originalErrorType)) return true
             return false
