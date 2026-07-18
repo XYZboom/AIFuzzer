@@ -59,12 +59,21 @@ class OnnxTranslator(
         UirOpKind.GELU, UirOpKind.SILU, UirOpKind.MISH,
         UirOpKind.RSQRT, UirOpKind.LOG2,
         UirOpKind.ARGMAX, UirOpKind.ARGMIN,
+        UirOpKind.CUMPROD,                 // Scan-based cumprod
+        UirOpKind.TRIL,                    // index+Where compound
+        UirOpKind.TRIU,                    // index+Where compound
+        UirOpKind.LAYER_NORM,              // ReduceMean→Sub→Pow→Add→Sqrt→Div→Mul
     )
 
     // Ops where opset 11+ requires parameters as constant inputs, not attributes
     @Suppress("EnumValuesSoftDeprecate")
     private val inputParamOps = setOf(
         UirOpKind.CLAMP, UirOpKind.HARDTANH,
+        UirOpKind.CUMSUM,                  // CumSum(axis=const)
+        UirOpKind.BROADCAST_TO,            // Expand(shape=const)
+        UirOpKind.BATCH_NORM,              // BatchNormalization → gamma, beta, mean, var
+        UirOpKind.INTERPOLATE,             // Resize(scales=const)
+        UirOpKind.RESIZE2D,                // Resize(scales=const)
     )
 
     /** Generate a unique node variable name */
@@ -225,6 +234,118 @@ class OnnxTranslator(
                 nodeLines.add(NodeLine(nvRep, "    $nvRep = helper.make_node('Constant', inputs=[], outputs=['$rId'], value=${rId}_t)"))
                 val nvTile = nextNodeVar()
                 nodeLines.add(NodeLine(nvTile, "    $nvTile = helper.make_node('Tile', inputs=['$inputId', '$rId'], outputs=['$outputId'])"))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
+            // CUMSUM → CumSum(data, axis_const)
+            if (node.op == UirOpKind.CUMSUM) {
+                val cumsumInputShape = node.inputs.firstOrNull()?.type?.shape
+                // Scalar guard: ONNX CumSum requires non-scalar input
+                if (cumsumInputShape != null && cumsumInputShape.dims.isEmpty()) {
+                    val nvId = nextNodeVar()
+                    nodeLines.add(NodeLine(nvId, "    $nvId = helper.make_node('Identity', inputs=['$inputId'], outputs=['$outputId'])"))
+                    valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                    continue
+                }
+                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
+                val aId = "c${outputId}_ax"
+                tensorInitLines.add("""${aId}_t = helper.make_tensor("${aId}_v", $INT64, [1], [$axis])""")
+                val nvAx = nextNodeVar()
+                nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$aId'], value=${aId}_t)"))
+                val nvCumSum = nextNodeVar()
+                nodeLines.add(NodeLine(nvCumSum, "    $nvCumSum = helper.make_node('CumSum', inputs=['$inputId', '$aId'], outputs=['$outputId'])"))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
+            // BROADCAST_TO → Expand(data, shape_const)
+            if (node.op == UirOpKind.BROADCAST_TO) {
+                val shape = node.outputs[0].type.shape
+                val ndim = shape.dims.size
+                val dimVals = shape.dims.joinToString(", ") { it.value?.toString() ?: "1" }
+                val sId = "c${outputId}_sh"
+                tensorInitLines.add("""${sId}_t = helper.make_tensor("${sId}_v", $INT64, [$ndim], [$dimVals])""")
+                val nvSh = nextNodeVar()
+                nodeLines.add(NodeLine(nvSh, "    $nvSh = helper.make_node('Constant', inputs=[], outputs=['$sId'], value=${sId}_t)"))
+                val nvExpand = nextNodeVar()
+                nodeLines.add(NodeLine(nvExpand, "    $nvExpand = helper.make_node('Expand', inputs=['$inputId', '$sId'], outputs=['$outputId'])"))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
+            // BATCH_NORM → BatchNormalization(X, gamma, beta, mean, var)
+            if (node.op == UirOpKind.BATCH_NORM) {
+                val inputShape = node.inputs.firstOrNull()?.type?.shape
+                val numChannels = inputShape?.dims?.getOrNull(1)?.value ?: 1
+                val gammaId = "c${outputId}_gm"
+                val betaId = "c${outputId}_bt"
+                val meanId = "c${outputId}_mn"
+                val varId = "c${outputId}_vr"
+                tensorInitLines.add("""${gammaId}_t = helper.make_tensor("${gammaId}_v", $FLOAT, [$numChannels], [1.0] * $numChannels)""")
+                tensorInitLines.add("""${betaId}_t = helper.make_tensor("${betaId}_v", $FLOAT, [$numChannels], [0.0] * $numChannels)""")
+                tensorInitLines.add("""${meanId}_t = helper.make_tensor("${meanId}_v", $FLOAT, [$numChannels], [0.0] * $numChannels)""")
+                tensorInitLines.add("""${varId}_t = helper.make_tensor("${varId}_v", $FLOAT, [$numChannels], [1.0] * $numChannels)""")
+                listOf(gammaId, betaId, meanId, varId).forEach { id ->
+                    val nv = nextNodeVar()
+                    nodeLines.add(NodeLine(nv, "    $nv = helper.make_node('Constant', inputs=[], outputs=['$id'], value=${id}_t)"))
+                }
+                val nvBN = nextNodeVar()
+                nodeLines.add(NodeLine(nvBN, "    $nvBN = helper.make_node('BatchNormalization', inputs=['$inputId', '$gammaId', '$betaId', '$meanId', '$varId'], outputs=['$outputId'])"))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
+            // INTERPOLATE / RESIZE2D → Resize(X, roi, scales, sizes(opset 18+))
+            // opset 11: Resize(X, roi, scales) — scales is required
+            if (node.op == UirOpKind.INTERPOLATE || node.op == UirOpKind.RESIZE2D) {
+                val inputShape = node.inputs.firstOrNull()?.type?.shape
+                val outputShape = node.outputs.firstOrNull()?.type?.shape
+                val ndim = inputShape?.dims?.size ?: 4
+                val scales = (0 until ndim).map { i ->
+                    val inDim = inputShape?.dims?.getOrNull(i)?.value ?: 1
+                    val outDim = outputShape?.dims?.getOrNull(i)?.value ?: 1
+                    if (inDim > 0) outDim.toDouble() / inDim.toDouble() else 1.0
+                }
+                val scalesId = "c${outputId}_sc"
+                tensorInitLines.add("""${scalesId}_t = helper.make_tensor("${scalesId}_v", $FLOAT, [$ndim], [${scales.joinToString(", ")}])""")
+                val nvSc = nextNodeVar()
+                nodeLines.add(NodeLine(nvSc, "    $nvSc = helper.make_node('Constant', inputs=[], outputs=['$scalesId'], value=${scalesId}_t)"))
+                val roiId = "c${outputId}_roi"
+                tensorInitLines.add("""${roiId}_t = helper.make_tensor("${roiId}_v", $FLOAT, [0], [])""")
+                val nvRoi = nextNodeVar()
+                nodeLines.add(NodeLine(nvRoi, "    $nvRoi = helper.make_node('Constant', inputs=[], outputs=['$roiId'], value=${roiId}_t)"))
+                val nvResize = nextNodeVar()
+                nodeLines.add(NodeLine(nvResize, "    $nvResize = helper.make_node('Resize', inputs=['$inputId', '$roiId', '$scalesId'], outputs=['$outputId'])"))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
+            // SOFTMAX / LOG_SOFTMAX with 0-D (scalar) input → ONNX requires rank >= 1
+            // For scalar: softmax(x)=1, log_softmax(x)=0 → emit constant
+            if ((node.op == UirOpKind.SOFTMAX || node.op == UirOpKind.LOG_SOFTMAX) &&
+                node.inputs.firstOrNull()?.type?.shape?.dims?.size == 0
+            ) {
+                val fillVal = if (node.op == UirOpKind.LOG_SOFTMAX) 0.0 else 1.0
+                tensorInitLines.add("""${outputId}_t = helper.make_tensor("${outputId}_v", $FLOAT, [], [$fillVal])""")
+                val nvConst = nextNodeVar()
+                nodeLines.add(NodeLine(nvConst, "    $nvConst = helper.make_node('Constant', inputs=[], outputs=['$outputId'], value=${outputId}_t)"))
+                valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
+                continue
+            }
+
+            // RESHAPE → Reshape(data, shape_const)
+            // ONNX opset 5+ requires shape as second input
+            if (node.op == UirOpKind.RESHAPE) {
+                val shape = node.outputs[0].type.shape
+                val ndim = shape.dims.size
+                val dimVals = shape.dims.joinToString(", ") { it.value?.toString() ?: "-1" }
+                val sId = "c${outputId}_sh"
+                tensorInitLines.add("""${sId}_t = helper.make_tensor("${sId}_v", $INT64, [$ndim], [$dimVals])""")
+                val nvSh = nextNodeVar()
+                nodeLines.add(NodeLine(nvSh, "    $nvSh = helper.make_node('Constant', inputs=[], outputs=['$sId'], value=${sId}_t)"))
+                val nvReshape = nextNodeVar()
+                nodeLines.add(NodeLine(nvReshape, "    $nvReshape = helper.make_node('Reshape', inputs=['$inputId', '$sId'], outputs=['$outputId'])"))
                 valueDtypeMap[outputId] = toOnnxDtype(node.outputs[0].type.dtype.name)
                 continue
             }
@@ -430,6 +551,143 @@ class OnnxTranslator(
                     nodeLines.add(NodeLine(nvCast, "    $nvCast = helper.make_node('Cast', inputs=['$rawId'], outputs=['$outputId'], to=$FLOAT)"))
                 }
             }
+            // ─── CUMPROD via Scan ──────────────────────────────
+            UirOpKind.CUMPROD -> {
+                val inputShape = node.inputs.firstOrNull()?.type?.shape
+                val ndim = inputShape?.dims?.size ?: 2
+                // 0-D scalar: cumprod(scalar) = scalar, Scan can't handle rank-0
+                if (ndim == 0) {
+                    val nvOut = nextNodeVar()
+                    nodeLines.add(NodeLine(nvOut, "    $nvOut = helper.make_node('Identity', inputs=['$inputId'], outputs=['$outputId'])"))
+                    return
+                }
+                val rawAxis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
+                val axis = if (rawAxis >= 0) rawAxis else (ndim + rawAxis).coerceAtLeast(0)
+                // state shape = input shape minus the scan axis
+                val stateDims = (0 until ndim).filter { it != axis }.map { i ->
+                    inputShape?.dims?.getOrNull(i)?.value ?: 1
+                }
+                val stateShapeStr = stateDims.joinToString(", ")
+                val stateNumel = stateDims.fold(1) { a, b -> a * b }
+                val initId = "c${outputId}_in"
+                tensorInitLines.add("""${initId}_t = helper.make_tensor("${initId}_v", $FLOAT, [$stateShapeStr], [1.0] * $stateNumel)""")
+                val nvInit = nextNodeVar()
+                nodeLines.add(NodeLine(nvInit, "    $nvInit = helper.make_node('Constant', inputs=[], outputs=['$initId'], value=${initId}_t)"))
+                // Body graph for Scan: Mul(acc, x_slice) → new_acc (emitted as raw Python, not in node list)
+                val bodyId = "${outputId}_bd"
+                val accId = "${outputId}_ac"
+                val sliceId = "${outputId}_sl"
+                val newAccId = "${outputId}_na"
+                val scanOutId = "${outputId}_so"
+                tensorInitLines.add("""${bodyId} = helper.make_graph(""")
+                tensorInitLines.add("""    [helper.make_node('Mul', inputs=['$accId', '$sliceId'], outputs=['$newAccId']),""")
+                tensorInitLines.add("""     helper.make_node('Identity', inputs=['$newAccId'], outputs=['$scanOutId'])],""")
+                tensorInitLines.add("""    '${outputId}_body',""")
+                tensorInitLines.add("""    [helper.make_tensor_value_info('$accId', $FLOAT, [$stateShapeStr]),""")
+                tensorInitLines.add("""     helper.make_tensor_value_info('$sliceId', $FLOAT, [$stateShapeStr])],""")
+                tensorInitLines.add("""    [helper.make_tensor_value_info('$newAccId', $FLOAT, [$stateShapeStr]),""")
+                tensorInitLines.add("""     helper.make_tensor_value_info('$scanOutId', $FLOAT, [$stateShapeStr])])""")
+                val nvScan = nextNodeVar()
+                nodeLines.add(NodeLine(nvScan, """    $nvScan = helper.make_node('Scan', inputs=['$initId', '$inputId'], outputs=['${outputId}_fn', '$outputId'], num_scan_inputs=1, scan_input_axes=[$axis], scan_output_axes=[$axis], body=$bodyId)"""))
+            }
+            // ─── TRIL / TRIU via row/col mask + Where ──────────
+            UirOpKind.TRIL, UirOpKind.TRIU -> {
+                val inputShape = node.inputs.firstOrNull()?.type?.shape
+                val outputShape = node.outputs.firstOrNull()?.type?.shape
+                val ndim = inputShape?.dims?.size ?: 2
+                val h = inputShape?.dims?.getOrNull(ndim - 2)?.value ?: 2
+                val w = inputShape?.dims?.getOrNull(ndim - 1)?.value ?: 2
+                val maskValues = (0 until h).flatMap { i ->
+                    (0 until w).map { j ->
+                        if (node.op == UirOpKind.TRIL) (if (i >= j) 1 else 0)
+                        else (if (i <= j) 1 else 0)
+                    }
+                }
+                val maskId = "c${outputId}_mk"
+                tensorInitLines.add("""${maskId}_t = helper.make_tensor("${maskId}_v", TensorProto.BOOL, [$h, $w], [${maskValues.joinToString(", ")}])""")
+                val nvMask = nextNodeVar()
+                nodeLines.add(NodeLine(nvMask, "    $nvMask = helper.make_node('Constant', inputs=[], outputs=['$maskId'], value=${maskId}_t)"))
+                // Zeros constant for masking
+                val zeroId = "c${outputId}_z"
+                tensorInitLines.add("""${zeroId}_t = helper.make_tensor("${zeroId}_v", $FLOAT, [1], [0.0])""")
+                val nvZero = nextNodeVar()
+                nodeLines.add(NodeLine(nvZero, "    $nvZero = helper.make_node('Constant', inputs=[], outputs=['$zeroId'], value=${zeroId}_t)"))
+                if (ndim > 2) {
+                    // Unsqueeze leading dims so mask broadcasts correctly
+                    val usAxes = (0 until ndim - 2).joinToString(", ")
+                    val usId = "t${outputId}_us"
+                    val nvUs = nextNodeVar()
+                    nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$maskId'], outputs=['$usId'], axes=[$usAxes])"))
+                    // Expand mask to full output shape
+                    val outDims = outputShape?.dims?.joinToString(", ") { it.value?.toString() ?: "1" } ?: "$h, $w"
+                    val shId = "c${outputId}_sh"
+                    tensorInitLines.add("""${shId}_t = helper.make_tensor("${shId}_v", $INT64, [$ndim], [$outDims])""")
+                    val nvSh = nextNodeVar()
+                    nodeLines.add(NodeLine(nvSh, "    $nvSh = helper.make_node('Constant', inputs=[], outputs=['$shId'], value=${shId}_t)"))
+                    val expId = "t${outputId}_exp"
+                    val nvExp = nextNodeVar()
+                    nodeLines.add(NodeLine(nvExp, "    $nvExp = helper.make_node('Expand', inputs=['$usId', '$shId'], outputs=['$expId'])"))
+                    // Where(mask, input, 0)
+                    val nvWhere = nextNodeVar()
+                    nodeLines.add(NodeLine(nvWhere, "    $nvWhere = helper.make_node('Where', inputs=['$expId', '$inputId', '$zeroId'], outputs=['$outputId'])"))
+                } else {
+                    val nvWhere = nextNodeVar()
+                    nodeLines.add(NodeLine(nvWhere, "    $nvWhere = helper.make_node('Where', inputs=['$maskId', '$inputId', '$zeroId'], outputs=['$outputId'])"))
+                }
+            }
+            // ─── LAYER_NORM compound ────────────────────────────
+            UirOpKind.LAYER_NORM -> {
+                // LAYER_NORM: y = gamma * (x - mean) / sqrt(var + eps) + beta
+                // where mean = ReduceMean(x, axis=-1)
+                //       var  = ReduceMean((x - mean)^2, axis=-1)
+                val eps = 1e-5
+                val gammaId = "c${outputId}_ga"
+                val betaId = "c${outputId}_be"
+                tensorInitLines.add("""${gammaId}_t = helper.make_tensor("${gammaId}_v", $FLOAT, [1], [1.0])""")
+                tensorInitLines.add("""${betaId}_t = helper.make_tensor("${betaId}_v", $FLOAT, [1], [0.0])""")
+                val nvG = nextNodeVar(); nodeLines.add(NodeLine(nvG, "    $nvG = helper.make_node('Constant', inputs=[], outputs=['$gammaId'], value=${gammaId}_t)"))
+                val nvB = nextNodeVar(); nodeLines.add(NodeLine(nvB, "    $nvB = helper.make_node('Constant', inputs=[], outputs=['$betaId'], value=${betaId}_t)"))
+                val epsId = "c${outputId}_ep"
+                tensorInitLines.add("""${epsId}_t = helper.make_tensor("${epsId}_v", $FLOAT, [1], [$eps])""")
+                val nvEps = nextNodeVar(); nodeLines.add(NodeLine(nvEps, "    $nvEps = helper.make_node('Constant', inputs=[], outputs=['$epsId'], value=${epsId}_t)"))
+                val twoId = "c${outputId}_tw"
+                tensorInitLines.add("""${twoId}_t = helper.make_tensor("${twoId}_v", $FLOAT, [1], [2.0])""")
+                val nvTwo = nextNodeVar(); nodeLines.add(NodeLine(nvTwo, "    $nvTwo = helper.make_node('Constant', inputs=[], outputs=['$twoId'], value=${twoId}_t)"))
+                // mean = ReduceMean(x, axis=-1, keepdims=1)
+                val meanId = "t${outputId}_mn"
+                val nvMean = nextNodeVar()
+                nodeLines.add(NodeLine(nvMean, "    $nvMean = helper.make_node('ReduceMean', inputs=['$inputId'], outputs=['$meanId'], axes=[-1], keepdims=1)"))
+                // centered = Sub(x, mean)
+                val centId = "t${outputId}_ct"
+                val nvCent = nextNodeVar()
+                nodeLines.add(NodeLine(nvCent, "    $nvCent = helper.make_node('Sub', inputs=['$inputId', '$meanId'], outputs=['$centId'])"))
+                // centered_sq = Pow(centered, 2)
+                val sqId = "t${outputId}_sq"
+                val nvSq = nextNodeVar()
+                nodeLines.add(NodeLine(nvSq, "    $nvSq = helper.make_node('Pow', inputs=['$centId', '$twoId'], outputs=['$sqId'])"))
+                // var = ReduceMean(centered_sq, axis=-1, keepdims=1)
+                val varId = "t${outputId}_vr"
+                val nvVar = nextNodeVar()
+                nodeLines.add(NodeLine(nvVar, "    $nvVar = helper.make_node('ReduceMean', inputs=['$sqId'], outputs=['$varId'], axes=[-1], keepdims=1)"))
+                // var_eps = Add(var, eps)
+                val varEpsId = "t${outputId}_ve"
+                val nvVarEps = nextNodeVar()
+                nodeLines.add(NodeLine(nvVarEps, "    $nvVarEps = helper.make_node('Add', inputs=['$varId', '$epsId'], outputs=['$varEpsId'])"))
+                // std = Sqrt(var_eps)
+                val stdId = "t${outputId}_sd"
+                val nvStd = nextNodeVar()
+                nodeLines.add(NodeLine(nvStd, "    $nvStd = helper.make_node('Sqrt', inputs=['$varEpsId'], outputs=['$stdId'])"))
+                // normalized = Div(centered, std)
+                val normId = "t${outputId}_nm"
+                val nvNorm = nextNodeVar()
+                nodeLines.add(NodeLine(nvNorm, "    $nvNorm = helper.make_node('Div', inputs=['$centId', '$stdId'], outputs=['$normId'])"))
+                // y = Add(Mul(normalized, gamma), beta)
+                val mulId = "t${outputId}_ml"
+                val nvMul = nextNodeVar()
+                nodeLines.add(NodeLine(nvMul, "    $nvMul = helper.make_node('Mul', inputs=['$normId', '$gammaId'], outputs=['$mulId'])"))
+                val nvOut = nextNodeVar()
+                nodeLines.add(NodeLine(nvOut, "    $nvOut = helper.make_node('Add', inputs=['$mulId', '$betaId'], outputs=['$outputId'])"))
+            }
             else -> {
                 // Unreachable
             }
@@ -477,9 +735,20 @@ class OnnxTranslator(
                 p.add("dilations=[$d, $d]"); p.add("group=$g")
             }
             UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
-                val k = (attrs["kernel_size"] as? UirIntAttr)?.value ?: 2
-                val s = (attrs["stride"] as? UirIntAttr)?.value ?: k
+                var k = (attrs["kernel_size"] as? UirIntAttr)?.value ?: 2
+                var s = (attrs["stride"] as? UirIntAttr)?.value ?: k
                 val pd = (attrs["padding"] as? UirIntAttr)?.value ?: 0
+                // Guard kernel_size against input spatial dims to prevent output size zero
+                val poolInputShape = inputShapes.firstOrNull()
+                if (poolInputShape != null && poolInputShape.dims.size >= 4) {
+                    val h = poolInputShape.dims[2].value ?: k
+                    val w = poolInputShape.dims[3].value ?: k
+                    val minSpatial = minOf(h, w)
+                    if (k > minSpatial) {
+                        k = maxOf(1, minSpatial)
+                        s = minOf(s, k)
+                    }
+                }
                 p.add("kernel_shape=[$k, $k]"); p.add("strides=[$s, $s]"); p.add("pads=[$pd, $pd, $pd, $pd]")
             }
             UirOpKind.CUMSUM -> p.add("axis=${(attrs["axis"] as? UirIntAttr)?.value ?: -1}")
