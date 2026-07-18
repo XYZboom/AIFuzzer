@@ -13,15 +13,18 @@ class OnnxDaemonBackend(
     daemonScriptPath: String = "daemon/onnx_daemon.py",
     private val opsetVersion: Int = 21,
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
+    requestTimeoutMs: Long = 120_000,
 ) : DaemonBackend<OnnxDaemonBackend.OnnxResult>(
     pythonPath = pythonPath,
     daemonScriptPath = daemonScriptPath,
     workDir = workDir,
+    requestTimeoutMs = requestTimeoutMs,
 ) {
     constructor(config: OnnxConfig) : this(
         pythonPath = config.python,
         opsetVersion = config.opsetVersion,
         workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
+        requestTimeoutMs = (config.timeoutSeconds * 1000L).coerceIn(5000, 300_000),
     )
 
     override val name = "ONNX Runtime (daemon)"
@@ -29,7 +32,8 @@ class OnnxDaemonBackend(
 
     override fun createCopy(): Backend<OnnxResult> {
         return OnnxDaemonBackend(pythonPath, daemonScriptPath, opsetVersion,
-            File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"))
+            File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"),
+            requestTimeoutMs)
     }
 
     override fun checkEnvironment(): Boolean {

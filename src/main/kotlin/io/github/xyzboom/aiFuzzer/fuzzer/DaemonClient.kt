@@ -200,8 +200,11 @@ class DaemonClient(
                     elapsedMs = msg.elapsedMs,
                 )
             } catch (e: io.ktor.client.plugins.HttpRequestTimeoutException) {
+                // 请求超时 → daemon 可能卡在 C 扩展中，立即重启
+                emergencyRestart()
                 throw DaemonException("Request timed out after ${requestTimeoutMs}ms", e)
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                emergencyRestart()
                 throw DaemonException("Request timed out after ${requestTimeoutMs}ms", e)
             } catch (e: java.net.ConnectException) {
                 synchronized(this@DaemonClient) { ready = false }
@@ -211,6 +214,30 @@ class DaemonClient(
             } catch (e: Exception) {
                 throw DaemonException("Failed to send request: ${e.message}", e)
             }
+        }
+    }
+
+    /**
+     * 紧急重启 daemon：跳过 HTTP shutdown，直接强制杀进程。
+     * 在 daemon 卡死在 C 扩展时调用（此时 HTTP 无法处理任何请求）。
+     */
+    @Synchronized
+    private fun emergencyRestart() {
+        log.warn { "daemon 请求超时，紧急重启 (port=$port)" }
+        val p = process
+        process = null
+        ready = false
+        backendAvailable = false
+        port = 0
+        p?.destroyForcibly()
+        closeHttpClient()
+        retries = 0
+        // 重新启动
+        val started = start()
+        if (!started) {
+            log.error { "紧急重启失败" }
+        } else {
+            log.info { "紧急重启成功: port=$port" }
         }
     }
 

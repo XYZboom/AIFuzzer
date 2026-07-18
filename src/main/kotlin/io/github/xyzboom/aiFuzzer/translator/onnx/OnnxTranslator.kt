@@ -465,9 +465,9 @@ class OnnxTranslator(
                 val halfId = "c${outputId}_h"
                 val oneId = "c${outputId}_o"
                 val sqrt2Id = "c${outputId}_sq2"
-                tensorInitLines.add("""${halfId}_t = helper.make_tensor("${halfId}_v", $FLOAT, [1], [0.5])""")
-                tensorInitLines.add("""${oneId}_t = helper.make_tensor("${oneId}_v", $FLOAT, [1], [1.0])""")
-                tensorInitLines.add("""${sqrt2Id}_t = helper.make_tensor("${sqrt2Id}_v", $FLOAT, [1], [1.4142135623730951])""")
+                tensorInitLines.add("""${halfId}_t = helper.make_tensor("${halfId}_v", $FLOAT, [], [0.5])""")
+                tensorInitLines.add("""${oneId}_t = helper.make_tensor("${oneId}_v", $FLOAT, [], [1.0])""")
+                tensorInitLines.add("""${sqrt2Id}_t = helper.make_tensor("${sqrt2Id}_v", $FLOAT, [], [1.4142135623730951])""")
 
                 listOf(halfId, oneId, sqrt2Id).forEach { id ->
                     val nv = nextNodeVar()
@@ -496,7 +496,7 @@ class OnnxTranslator(
             UirOpKind.MISH -> {
                 // MISH = x * tanh(log(1 + exp(x)))
                 val oneId = "c${outputId}_o"
-                tensorInitLines.add("""${oneId}_t = helper.make_tensor("${oneId}_v", $FLOAT, [1], [1.0])""")
+                tensorInitLines.add("""${oneId}_t = helper.make_tensor("${oneId}_v", $FLOAT, [], [1.0])""")
                 val nvOne = nextNodeVar()
                 nodeLines.add(NodeLine(nvOne, "    $nvOne = helper.make_node('Constant', inputs=[], outputs=['$oneId'], value=${oneId}_t)"))
 
@@ -522,7 +522,7 @@ class OnnxTranslator(
             UirOpKind.LOG2 -> {
                 // LOG2 = log(x) / log(2)
                 val log2cId = "c${outputId}_l2"
-                tensorInitLines.add("""${log2cId}_t = helper.make_tensor("${log2cId}_v", $FLOAT, [1], [0.6931471805599453])""")
+                tensorInitLines.add("""${log2cId}_t = helper.make_tensor("${log2cId}_v", $FLOAT, [], [0.6931471805599453])""")
                 val nvC = nextNodeVar()
                 nodeLines.add(NodeLine(nvC, "    $nvC = helper.make_node('Constant', inputs=[], outputs=['$log2cId'], value=${log2cId}_t)"))
                 val lId = "t${outputId}_log"
@@ -609,7 +609,7 @@ class OnnxTranslator(
                 nodeLines.add(NodeLine(nvMask, "    $nvMask = helper.make_node('Constant', inputs=[], outputs=['$maskId'], value=${maskId}_t)"))
                 // Zeros constant for masking
                 val zeroId = "c${outputId}_z"
-                tensorInitLines.add("""${zeroId}_t = helper.make_tensor("${zeroId}_v", $FLOAT, [1], [0.0])""")
+                tensorInitLines.add("""${zeroId}_t = helper.make_tensor("${zeroId}_v", $FLOAT, [], [0.0])""")
                 val nvZero = nextNodeVar()
                 nodeLines.add(NodeLine(nvZero, "    $nvZero = helper.make_node('Constant', inputs=[], outputs=['$zeroId'], value=${zeroId}_t)"))
                 if (ndim > 2) {
@@ -643,15 +643,15 @@ class OnnxTranslator(
                 val eps = 1e-5
                 val gammaId = "c${outputId}_ga"
                 val betaId = "c${outputId}_be"
-                tensorInitLines.add("""${gammaId}_t = helper.make_tensor("${gammaId}_v", $FLOAT, [1], [1.0])""")
-                tensorInitLines.add("""${betaId}_t = helper.make_tensor("${betaId}_v", $FLOAT, [1], [0.0])""")
+                tensorInitLines.add("""${gammaId}_t = helper.make_tensor("${gammaId}_v", $FLOAT, [], [1.0])""")
+                tensorInitLines.add("""${betaId}_t = helper.make_tensor("${betaId}_v", $FLOAT, [], [0.0])""")
                 val nvG = nextNodeVar(); nodeLines.add(NodeLine(nvG, "    $nvG = helper.make_node('Constant', inputs=[], outputs=['$gammaId'], value=${gammaId}_t)"))
                 val nvB = nextNodeVar(); nodeLines.add(NodeLine(nvB, "    $nvB = helper.make_node('Constant', inputs=[], outputs=['$betaId'], value=${betaId}_t)"))
                 val epsId = "c${outputId}_ep"
-                tensorInitLines.add("""${epsId}_t = helper.make_tensor("${epsId}_v", $FLOAT, [1], [$eps])""")
+                tensorInitLines.add("""${epsId}_t = helper.make_tensor("${epsId}_v", $FLOAT, [], [$eps])""")
                 val nvEps = nextNodeVar(); nodeLines.add(NodeLine(nvEps, "    $nvEps = helper.make_node('Constant', inputs=[], outputs=['$epsId'], value=${epsId}_t)"))
                 val twoId = "c${outputId}_tw"
-                tensorInitLines.add("""${twoId}_t = helper.make_tensor("${twoId}_v", $FLOAT, [1], [2.0])""")
+                tensorInitLines.add("""${twoId}_t = helper.make_tensor("${twoId}_v", $FLOAT, [], [2.0])""")
                 val nvTwo = nextNodeVar(); nodeLines.add(NodeLine(nvTwo, "    $nvTwo = helper.make_node('Constant', inputs=[], outputs=['$twoId'], value=${twoId}_t)"))
                 // mean = ReduceMean(x, axis=-1, keepdims=1)
                 val meanId = "t${outputId}_mn"
@@ -731,8 +731,12 @@ class OnnxTranslator(
                 val pd = (attrs["padding"] as? UirIntAttr)?.value ?: 0
                 val d = (attrs["dilation"] as? UirIntAttr)?.value ?: 1
                 val g = (attrs["groups"] as? UirIntAttr)?.value ?: 1
+                // kernel_shape from weight input (second input): spatial dims at indices 2,3
+                val kernelH = inputShapes.getOrNull(1)?.dims?.getOrNull(2)?.value ?: 1
+                val kernelW = inputShapes.getOrNull(1)?.dims?.getOrNull(3)?.value ?: 1
                 p.add("strides=[$s, $s]"); p.add("pads=[$pd, $pd, $pd, $pd]")
                 p.add("dilations=[$d, $d]"); p.add("group=$g")
+                p.add("kernel_shape=[$kernelH, $kernelW]")
             }
             UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
                 var k = (attrs["kernel_size"] as? UirIntAttr)?.value ?: 2

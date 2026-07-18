@@ -421,6 +421,11 @@ class FuzzingPipeline(
                 val t = backend.translator as UirTranslator<UirProgram, String>
                 Pair(t, backend.daemon)
             }
+            is OnnxDaemonBackend -> {
+                @Suppress("UNCHECKED_CAST")
+                val t = backend.translator as UirTranslator<UirProgram, String>
+                Pair(t, backend.daemon)
+            }
             else -> null
         }
     }
@@ -479,6 +484,9 @@ class FuzzingPipeline(
                 try { File(result.sourceFile).readText() } catch (_: Exception) { null }
             }
             is PytorchDaemonBackend.PytorchResult -> {
+                try { File(result.sourceFile).readText() } catch (_: Exception) { null }
+            }
+            is OnnxDaemonBackend.OnnxResult -> {
                 try { File(result.sourceFile).readText() } catch (_: Exception) { null }
             }
             else -> null

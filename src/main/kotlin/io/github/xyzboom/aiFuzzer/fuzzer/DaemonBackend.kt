@@ -25,6 +25,8 @@ abstract class DaemonBackend<T : BackendResult>(
     val daemonScriptPath: String,
     override val workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_daemon"),
     private val envProvider: DaemonEnvProvider = DefaultDaemonEnvProvider(pythonPath),
+    /** 每个 HTTP 请求的超时（毫秒），传给 DaemonClient */
+    protected val requestTimeoutMs: Long = 120_000,
 ) : Backend<T> {
 
     abstract val translator: UirTranslator<UirProgram, String>
@@ -34,7 +36,7 @@ abstract class DaemonBackend<T : BackendResult>(
         pythonPath = pythonPath,
         daemonScriptPath = daemonScriptPath,
         maxRetries = 3,
-        requestTimeoutMs = 120_000,
+        requestTimeoutMs = requestTimeoutMs,
         envProvider = envProvider,
     )
 
