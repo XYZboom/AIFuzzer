@@ -164,11 +164,6 @@ class RemoteDaemonClient(
                 val remoteWorkDir = sshConfig.workDir
                 val remoteScriptPath = "$remoteWorkDir/$remoteScriptName"
                 val remotePython = sshConfig.python.ifBlank { "python3" }
-                val remotePort = 8000 + (Math.random() * 10000).toInt()
-                val localPort = findFreePort()
-
-                log.info { "启动远程 daemon: host=${sshConfig.host}:${sshConfig.port}, " +
-                        "remotePort=$remotePort, localPort=$localPort, python=$remotePython" }
 
                 // 1. 创建远程工作目录
                 execSsh("mkdir -p $remoteWorkDir")
@@ -177,25 +172,30 @@ class RemoteDaemonClient(
                 log.info { "上传 daemon 脚本到远程: $remoteScriptPath" }
                 uploadFile(scriptLocalPath.absolutePath, remoteScriptPath)
 
-                // 3. 启动远程 daemon（后台运行）
-                val daemonCmd = "cd $remoteWorkDir && nohup $remotePython $remoteScriptPath --port $remotePort > $remoteWorkDir/daemon.log 2>&1 &"
-                log.info { "启动远程 daemon: $daemonCmd" }
+                // 3. 远程查询空闲端口
+                val remotePort = execSsh("$remotePython -c \"import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()\"").trim().toIntOrNull()
+                    ?: (10000 + (Math.random() * 50000).toInt())
+                val localPort = findFreePort()
+
+                log.info { "启动远程 daemon: host=${sshConfig.host}:${sshConfig.port}, " +
+                        "remotePort=$remotePort, localPort=$localPort, python=$remotePython" }
+
+                // 3a. 启动远程 daemon（后台运行）
+                val daemonCmd = "cd $remoteWorkDir && nohup $remotePython $remoteScriptPath --port $remotePort > $remoteWorkDir/daemon_${remotePort}.log 2>&1 &"
                 execSsh(daemonCmd)
                 log.info { "远程 daemon 已启动，等待就绪..." }
 
-                // 4. 创建 SSH 隧道（本地端口转发到远程 daemon 端口）
+                // 3b. 创建 SSH 隧道（本地端口转发到远程 daemon 端口）
                 log.info { "创建 SSH 隧道: localhost:$localPort -> ${sshConfig.host}:$remotePort" }
                 startPortForwarding(localPort, remotePort)
-                // process 设为 null，因为 SSH 隧道现在由 SSHD 库管理，不是 OS 进程
                 process = null
                 port = localPort
 
-                // 5. 等待远程 daemon 就绪（通过健康检查）
+                // 3c. 等待远程 daemon 就绪（通过健康检查）
                 log.info { "开始健康检查: http://127.0.0.1:$localPort/health" }
-                val daemonReady = waitForRemoteDaemonReady(30_000)
-                if (!daemonReady) {
+                if (!waitForRemoteDaemonReady(30_000)) {
                     log.error { "远程 daemon 启动超时（30s）" }
-                    val remoteLog = execSsh("cat $remoteWorkDir/daemon.log 2>/dev/null || echo 'no log'")
+                    val remoteLog = execSsh("cat $remoteWorkDir/daemon_${remotePort}.log 2>/dev/null || echo 'no log'")
                     log.error { "远程 daemon 日志:\n$remoteLog" }
                     destroy()
                     return false
