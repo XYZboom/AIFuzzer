@@ -42,6 +42,12 @@ data class FuzzerGenConfig(
     var shapeTier: String = "tiny",
     /** 避免生成可能导致 NaN/Inf 的算子。默认开启 */
     var avoidNaNInf: Boolean = true,
+    /**
+     * 避免生成向上/向下取整、argmin/argmax 等极端算子。
+     * 这些算子会放大极其微小的浮点精度误差（如 1.0000001 vs 0.9999999 → 取整后 1 vs 0）。
+     * 默认开启，排除 CEIL, FLOOR, ROUND, ARGMAX, ARGMIN。
+     */
+    var avoidExtremeOps: Boolean = true,
 ) {
     /** 转换为 backend 使用的 GeneratorConfig */
     fun toGeneratorConfig(seed: Long): GeneratorConfig {
@@ -60,6 +66,7 @@ data class FuzzerGenConfig(
             dtypeBits = dtypeBits,
             shapeTier = shapeTier,
             avoidNaNInf = avoidNaNInf,
+            avoidExtremeOps = avoidExtremeOps,
         )
     }
 

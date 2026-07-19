@@ -81,6 +81,8 @@ object ConfigLoader {
             config.generator.graphCount = genMap["graph_count"] as? Int ?: config.generator.graphCount
             config.generator.strategy = genMap["strategy"] as? String ?: config.generator.strategy
             config.generator.shapeTier = genMap["shape_tier"] as? String ?: config.generator.shapeTier
+            config.generator.avoidNaNInf = genMap["avoid_nan_inf"] as? Boolean ?: config.generator.avoidNaNInf
+            config.generator.avoidExtremeOps = genMap["avoid_extreme_ops"] as? Boolean ?: config.generator.avoidExtremeOps
 
             // 解析 ops 子部分
             (genMap["ops"] as? Map<String, Any>)?.let { opsMap ->

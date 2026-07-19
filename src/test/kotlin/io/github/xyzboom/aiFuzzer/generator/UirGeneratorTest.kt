@@ -97,4 +97,73 @@ class UirGeneratorTest {
             assertNotNull(program)
         }
     }
+
+    @Test
+    fun `avoidExtremeOps should filter out extreme ops`() {
+        // Run 100 seeds with avoidExtremeOps=true — should NEVER see extreme ops
+        for (seed in 0L until 100L) {
+            val gen = UirGenerator(GeneratorConfig(
+                seed = seed,
+                avoidNaNInf = false,  // isolate the extreme filter
+                avoidExtremeOps = true,
+            ))
+            val program = gen.generate()
+            for (graph in program.graphs) {
+                for (node in graph.nodes) {
+                    assertFalse(
+                        node.op in UirGenerator.extremeOps,
+                        "avoidExtremeOps=true but seed=$seed generated ${node.op}"
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `avoidExtremeOps disabled should allow extreme ops`() {
+        // With avoidExtremeOps=false, extreme ops should appear in at least 1 of 100 runs
+        var foundExtreme = false
+        for (seed in 0L until 100L) {
+            val gen = UirGenerator(GeneratorConfig(
+                seed = seed,
+                avoidNaNInf = false,
+                avoidExtremeOps = false,
+            ))
+            val program = gen.generate()
+            for (graph in program.graphs) {
+                for (node in graph.nodes) {
+                    if (node.op in UirGenerator.extremeOps) {
+                        foundExtreme = true
+                        break
+                    }
+                }
+                if (foundExtreme) break
+            }
+            if (foundExtreme) break
+        }
+        assertTrue(foundExtreme, "avoidExtremeOps=false but extreme ops never appeared in 100 seeds")
+    }
+
+    @Test
+    fun `avoidExtremeOps and avoidNaNInf should work independently`() {
+        // Both enabled: neither extreme nor NaN-inf ops should appear
+        var foundExtreme = false
+        var foundNanInf = false
+        for (seed in 0L until 50L) {
+            val gen = UirGenerator(GeneratorConfig(
+                seed = seed,
+                avoidNaNInf = true,
+                avoidExtremeOps = true,
+            ))
+            val program = gen.generate()
+            for (graph in program.graphs) {
+                for (node in graph.nodes) {
+                    if (node.op in UirGenerator.extremeOps) foundExtreme = true
+                    if (node.op in UirGenerator.nanInfProneOps) foundNanInf = true
+                }
+            }
+        }
+        assertFalse(foundExtreme, "Both filters enabled but extreme ops appeared")
+        assertFalse(foundNanInf, "Both filters enabled but nan-inf ops appeared")
+    }
 }

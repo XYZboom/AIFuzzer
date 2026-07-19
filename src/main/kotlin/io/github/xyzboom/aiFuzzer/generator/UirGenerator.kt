@@ -66,6 +66,12 @@ data class GeneratorConfig(
     /** 避免生成可能导致 NaN/Inf 的算子。默认开启。
      * 开启后排除 LOG, LOG2, SQRT, RSQRT, RECIPROCAL, DIVIDE, POWER, EXP, CUMPROD */
     val avoidNaNInf: Boolean = true,
+    /**
+     * 避免生成向上/向下取整、argmin/argmax 等极端算子。
+     * 这些算子会放大极其微小的浮点精度误差（如 1.0000001 vs 0.9999999 → 取整后 1 vs 0）。
+     * 默认开启，排除 CEIL, FLOOR, ROUND, ARGMAX, ARGMIN。
+     */
+    val avoidExtremeOps: Boolean = true,
 )
 
 /**
@@ -78,14 +84,16 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     private val rand = Random(config.seed)
     private val opsEnum: List<UirOpKind> = run {
-        val baseOps = config.ops.mapNotNull {
+        var baseOps = config.ops.mapNotNull {
             try { UirOpKind.valueOf(it) } catch (_: IllegalArgumentException) { null }
-        }.ifEmpty { DefaultOps }
+        }.ifEmpty { DefaultOps }.toMutableList()
         if (config.avoidNaNInf) {
-            baseOps.filter { it !in nanInfProneOps }
-        } else {
-            baseOps
+            baseOps.removeAll(nanInfProneOps)
         }
+        if (config.avoidExtremeOps) {
+            baseOps.removeAll(extremeOps)
+        }
+        baseOps
     }
 
     private var valueCounter = 0
@@ -110,6 +118,17 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
             UirOpKind.POWER,
             UirOpKind.EXP,
             UirOpKind.CUMPROD,
+        )
+
+        /**
+         * 已知会放大浮点精度误差的极端算子。
+         * 当 avoidExtremeOps=true 时排除。
+         * - CEIL / FLOOR / ROUND: 微小浮点误差（1.0000001 vs 0.9999999）→ 离散输出跳动（1 vs 0）
+         * - ARGMAX / ARGMIN: 微小浮点误差 → 选出完全不同的索引
+         */
+        val extremeOps = setOf(
+            UirOpKind.CEIL, UirOpKind.FLOOR, UirOpKind.ROUND,
+            UirOpKind.ARGMAX, UirOpKind.ARGMIN,
         )
     }
 

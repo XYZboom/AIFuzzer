@@ -31,6 +31,12 @@ generator:
     enabled: false
     rate: 0.1
 
+  # 避免生成高风险算子
+  # 浮点精度类 — 避免 NaN/Inf 算子（默认开启，排除 LOG, SQRT, DIVIDE, POWER, EXP, CUMPROD 等）
+  avoid_nan_inf: true
+  # 极端算子取整/索引类 — 微小浮点误差被放大（默认开启，排除 CEIL, FLOOR, ROUND, ARGMAX, ARGMIN）
+  avoid_extreme_ops: true
+
 # 后端设置
 backends:
   enabled: ["tvm"]                    # 启用的后端: tvm, onnx, iree
