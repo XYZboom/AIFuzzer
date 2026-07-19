@@ -132,12 +132,30 @@ class ReduceCommand : CliktCommand(
             // fast-path: exact type signatures
             if (originalStderr.contains("VERIFY: FAIL")) return currentStderr.contains("VERIFY: FAIL")
             if (originalStderr.contains("tvm.error.InternalError")) return currentStderr.contains("tvm.error.InternalError")
+            if (originalStderr.contains("[ONNXRuntimeError]")) {
+                // Match by error code + distinctive message content to avoid false positives
+                // when different errors share the same code (e.g., code 2 = INVALID_ARGUMENT)
+                val codePat = Regex("""\[ONNXRuntimeError]\s*:\s*(\d+)\s*:""")
+                val origCode = codePat.find(originalStderr)?.groupValues?.getOrNull(1)
+                val currCode = codePat.find(currentStderr)?.groupValues?.getOrNull(1)
+                if (origCode == null || currCode == null || origCode != currCode) return false
+                if (!currentStderr.contains("[ONNXRuntimeError]")) return false
+                // Extract distinctive message, normalizing tensor/value names
+                // (names in single quotes can change after reduction)
+                val msgPat = Regex("""\[ONNXRuntimeError]\s*:\s*\d+\s*:\s*\w+\s*:\s*(.+)""")
+                val origMsg = msgPat.find(originalStderr)?.groupValues?.getOrNull(1) ?: return true
+                val curMsg = msgPat.find(currentStderr)?.groupValues?.getOrNull(1) ?: return true
+                val normalizeName = { s: String -> s.replace(Regex("""'[^']*'"""), "'X'") }
+                val phrase = normalizeName(origMsg).take(80)
+                return normalizeName(curMsg).contains(phrase)
+            }
             // 匹配实际抛出错误类型（原始错误链的末行）
             val originalErrorType = originalStderr.lines().map { it.trim() }.filter { it.isNotBlank() }.lastOrNull {
                 it.startsWith("RuntimeError:") || it.startsWith("tvm.error.")
                     || it.startsWith("torch._inductor.exc.InductorError:")
                     || it.startsWith("AssertionError:")
                     || it.startsWith("IndexError:")
+                    || it.startsWith("onnxruntime.capi.onnxruntime_pybind11_state.")
             }
             if (originalErrorType != null && currentStderr.contains(originalErrorType)) return true
             return false
