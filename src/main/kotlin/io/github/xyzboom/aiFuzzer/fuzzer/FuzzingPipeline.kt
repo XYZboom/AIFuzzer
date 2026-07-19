@@ -35,7 +35,7 @@ class FuzzingPipeline(
         val keepArtifacts: Boolean = false,
         val failFast: Boolean = false,
         /** 缩减配置，null 表示不启用缩减 */
-        val reducerConfig: AutoReducer.ReducerConfig? = null,
+        val reducerConfig: AutoReducer.ReducerConfig? = AutoReducer.ReducerConfig(enabled = true),
     )
 
     /**

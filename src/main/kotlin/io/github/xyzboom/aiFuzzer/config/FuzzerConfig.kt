@@ -153,7 +153,7 @@ data class PipelineConfig(
     var reducer: ReducerConfig = ReducerConfig(),
 ) {
     data class ReducerConfig(
-        var enabled: Boolean = true,
+        var enabled: Boolean = true,   // 默认开启自动缩减
     )
 
     fun toFuzzingConfig(): FuzzingPipeline.FuzzingConfig {
