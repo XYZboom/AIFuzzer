@@ -12,7 +12,6 @@ generator:
   max_nodes_per_graph: 15
   min_inputs: 2
   max_inputs: 6
-  graph_count: 1
   
   # 重点测试归约算子（dtype bug 高发区）
   ops:

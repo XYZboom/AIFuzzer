@@ -14,7 +14,7 @@ class DebugGeneratorTest {
             seed = 10002,
             minNodesPerGraph = 3,
             maxNodesPerGraph = 5,
-            graphCount = 1,
+            graphCount = 1..1,
             minInputs = 1,
             maxInputs = 2,
         )

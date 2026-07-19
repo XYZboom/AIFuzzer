@@ -32,7 +32,7 @@ data class FuzzerGenConfig(
     var maxInputs: Int = 3,
     var minInputNdim: Int = 2,  // 至少 2D
     var maxInputNdim: Int = 4,
-    var graphCount: Int = 1,
+    var graphCount: IntRange = 3..5,
     var ops: OpsConfig = OpsConfig(),
     var strategy: String = "random",
     var mutation: MutationConfig = MutationConfig(),

@@ -56,7 +56,7 @@ data class GeneratorConfig(
     val maxInputs: Int = 4,
     val branchProbability: Double = 0.3,
     val ops: List<String> = DefaultOps.map { it.name },
-    val graphCount: Int = 1,
+    val graphCount: IntRange = 3..5,
     val minNdim: Int = 2,  // 至少 2D
     val maxNdim: Int = 4,
     val dtype: String = "float32",
@@ -160,13 +160,14 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      */
     fun generate(): UirProgram {
         usedElements = 0
+        val actualCount = config.graphCount.random(rand)
         val program = buildProgram {
-            for (i in 0 until config.graphCount) {
-                log.debug { "生成图 $i/${config.graphCount}" }
+            for (i in 0 until actualCount) {
+                log.debug { "生成图 $i/$actualCount (range=${config.graphCount})" }
                 graphs.add(generateGraph("graph_$i"))
             }
         }
-        log.debug { "程序生成完成，共使用 ${usedElements}/${shapeTier.maxTotalElements} 元素 (tier=${shapeTier.label})" }
+        log.debug { "程序生成完成，共 $actualCount 个图，使用 ${usedElements}/${shapeTier.maxTotalElements} 元素 (tier=${shapeTier.label})" }
         return program
     }
 

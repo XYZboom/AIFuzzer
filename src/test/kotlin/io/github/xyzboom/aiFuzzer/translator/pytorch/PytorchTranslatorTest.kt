@@ -59,7 +59,7 @@ class PytorchTranslatorTest {
             seed = 456L,
             minNodesPerGraph = 2,
             maxNodesPerGraph = 3,
-            graphCount = 2,
+            graphCount = 2..2,
         ))
         val program = generator.generate()
         val pythonCode = translator.translate(program)

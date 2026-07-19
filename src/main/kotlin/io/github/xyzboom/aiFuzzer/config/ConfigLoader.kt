@@ -78,8 +78,18 @@ object ConfigLoader {
             config.generator.maxInputs = genMap["max_inputs"] as? Int ?: config.generator.maxInputs
             config.generator.minInputNdim = genMap["min_input_ndim"] as? Int ?: config.generator.minInputNdim
             config.generator.maxInputNdim = genMap["max_input_ndim"] as? Int ?: config.generator.maxInputNdim
-            config.generator.graphCount = genMap["graph_count"] as? Int ?: config.generator.graphCount
             config.generator.strategy = genMap["strategy"] as? String ?: config.generator.strategy
+            // graph_count: 支持单整数（N..N）或 min/max 区间
+            val singleCount = genMap["graph_count"] as? Int
+            val minCount = genMap["graph_count_min"] as? Int
+            val maxCount = genMap["graph_count_max"] as? Int
+            config.generator.graphCount = when {
+                minCount != null && maxCount != null -> minCount..maxCount
+                minCount != null -> minCount..minCount
+                maxCount != null -> 1..maxCount
+                singleCount != null -> singleCount..singleCount
+                else -> config.generator.graphCount
+            }
             config.generator.shapeTier = genMap["shape_tier"] as? String ?: config.generator.shapeTier
             config.generator.avoidNaNInf = genMap["avoid_nan_inf"] as? Boolean ?: config.generator.avoidNaNInf
             config.generator.avoidExtremeOps = genMap["avoid_extreme_ops"] as? Boolean ?: config.generator.avoidExtremeOps

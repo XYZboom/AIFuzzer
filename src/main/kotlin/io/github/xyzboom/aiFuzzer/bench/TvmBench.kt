@@ -30,7 +30,7 @@ class TvmBench {
         }
         val genConfig = GeneratorConfig(
             seed = 42, minNodesPerGraph = 2, maxNodesPerGraph = 5,
-            graphCount = 1, minInputs = 1, maxInputs = 3,
+            graphCount = 1..1, minInputs = 1, maxInputs = 3,
         )
         val pipeline = FuzzingPipeline(
             generatorConfig = genConfig, backends = listOf(backend),

@@ -8,7 +8,7 @@ class UirGeneratorTest {
 
     @Test
     fun `generated program should have correct number of graphs`() {
-        val gen = UirGenerator(GeneratorConfig(graphCount = 2, seed = 42))
+        val gen = UirGenerator(GeneratorConfig(graphCount = 2..2, seed = 42))
         val program = gen.generate()
         assertEquals(2, program.graphs.size)
     }

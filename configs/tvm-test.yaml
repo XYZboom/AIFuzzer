@@ -12,7 +12,6 @@ generator:
   max_inputs: 8
   min_input_ndim: 1
   max_input_ndim: 3
-  graph_count: 1
   strategy: "random"
   ops:
     include_all: true

@@ -16,7 +16,6 @@ generator:
   max_inputs: 15
   min_input_ndim: 1
   max_input_ndim: 4
-  graph_count: 1
   strategy: "random"                  # random | enumerated | template
   template_dir: "./templates"
 

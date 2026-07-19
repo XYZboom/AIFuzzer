@@ -10,7 +10,6 @@ generator:
   maxNodesPerGraph: 8
   minInputs: 1
   maxInputs: 3
-  graphCount: 1
 
 pipeline:
   workers: 1

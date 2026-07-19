@@ -22,7 +22,7 @@ class ShapeAwareGenerationTest {
             try {
                 val config = GeneratorConfig(
                     seed = seed.toLong(),
-                    graphCount = 1,
+                    graphCount = 1..1,
                     minNodesPerGraph = 3,
                     maxNodesPerGraph = 8
                 )
