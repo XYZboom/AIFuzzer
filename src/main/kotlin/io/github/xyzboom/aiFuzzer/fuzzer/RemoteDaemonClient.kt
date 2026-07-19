@@ -244,38 +244,37 @@ class RemoteDaemonClient(
         backendAvailable = false
         port = 0
 
-        // 向远程 daemon 发送 HTTP shutdown（优雅关闭）
-        if (oldPort > 0) {
-            try {
-                runBlocking {
-                    httpClient().post("http://127.0.0.1:$oldPort/shutdown") {
-                        contentType(ContentType.Application.Json)
-                        setBody("{}")
-                    }
-                }
-            } catch (_: Exception) {}
-        }
+        // 1. 先关闭 HTTP 客户端，防止 pending 请求阻塞
+        closeHttpClient()
 
-        // 停止端口转发
+        // 2. 通过 SSH 杀死远程 daemon 进程（在关闭 session 之前）
+        try {
+            val s = session
+            if (s != null && s.isOpen) {
+                val cmd = "pkill -f 'pytorch_daemon.py' 2>/dev/null; " +
+                        "pkill -f 'onnx_daemon.py' 2>/dev/null; " +
+                        "pkill -f 'tvm_daemon.py' 2>/dev/null; true"
+                val channel = s.createExecChannel(cmd)
+                channel.open().verify(5, TimeUnit.SECONDS)
+                channel.close(false).await(5, TimeUnit.SECONDS)
+            }
+        } catch (_: Exception) {}
+
+        // 3. 停止端口转发
         if (oldPort > 0) {
             stopPortForwarding(oldPort)
         }
 
-        // 关闭 SSH 会话和客户端
+        // 4. 关闭 SSH 会话（带超时）
         try {
-            session?.close()
+            session?.close(false)?.await(5, TimeUnit.SECONDS)
         } catch (_: Exception) {}
         session = null
+
+        // 5. 停止 SSH 客户端
         try {
             sshClient?.stop()
         } catch (_: Exception) {}
         sshClient = null
-
-        // 通过 SSH 杀死远程 daemon 进程
-        try {
-            execSsh("pkill -f 'pytorch_daemon.py' 2>/dev/null; pkill -f 'onnx_daemon.py' 2>/dev/null; pkill -f 'tvm_daemon.py' 2>/dev/null; true")
-        } catch (_: Exception) {}
-
-        closeHttpClient()
     }
 }
