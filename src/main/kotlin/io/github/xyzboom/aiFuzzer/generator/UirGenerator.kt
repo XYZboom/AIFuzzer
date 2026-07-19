@@ -123,12 +123,22 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         /**
          * 已知会放大浮点精度误差的极端算子。
          * 当 avoidExtremeOps=true 时排除。
-         * - CEIL / FLOOR / ROUND: 微小浮点误差（1.0000001 vs 0.9999999）→ 离散输出跳动（1 vs 0）
-         * - ARGMAX / ARGMIN: 微小浮点误差 → 选出完全不同的索引
+         *
+         * 这些算子把极其微小的浮点差异放大为完全不同的输出：
+         * - CEIL / FLOOR / ROUND: 微小误差（1.0000001 vs 0.9999999）→ 离散整数跳变（1 vs 0）
+         * - ARGMAX / ARGMIN: 微小误差 → 选出完全不同的索引
+         * - SIGN: 微小的正/负差异（±1e-45）→ 输出 ±1 跳变；+0.0/-0.0 的后端行为不一致
+         * - CUMSUM: 浮点累加顺序不同 → 误差随序列长度累计增长
+         * - REDUCE_SUM: 浮点加法不满足结合律，不同归约顺序产生不同结果
+         * - REDUCE_MEAN: 同 REDUCE_SUM，累加差异+除法
          */
         val extremeOps = setOf(
             UirOpKind.CEIL, UirOpKind.FLOOR, UirOpKind.ROUND,
             UirOpKind.ARGMAX, UirOpKind.ARGMIN,
+            UirOpKind.SIGN,
+            UirOpKind.CUMSUM,
+            UirOpKind.REDUCE_SUM,
+            UirOpKind.REDUCE_MEAN,
         )
     }
 
