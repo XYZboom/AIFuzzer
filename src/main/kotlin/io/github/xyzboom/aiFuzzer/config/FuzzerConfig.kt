@@ -114,6 +114,10 @@ data class TvmConfig(
     var workDir: String = System.getProperty("java.io.tmpdir", "/tmp") + "/aiFuzzer_tvm",
     var dtype: String = "float32",
     var shapeRank: Int = 3,
+    /** TVM build target，如 "llvm" 或 "cuda" */
+    var target: String = "llvm",
+    /** TVM 设备，如 "cpu" 或 "cuda"，对应 tvm.cpu() / tvm.cuda() */
+    var device: String = "cpu",
     /** 远程 SSH 主机配置（可选）。设置后 daemon 在远程主机上运行 */
     var remote: RemoteSshConfig? = null,
 )

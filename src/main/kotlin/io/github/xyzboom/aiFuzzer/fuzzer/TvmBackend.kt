@@ -19,7 +19,7 @@ class TvmBackend(
     override val workDir = workDir.also { it.mkdirs() }
 
     private val translator = if (config != null) {
-        TvmRelaxTranslator(shapeRank = config.shapeRank, dtype = config.dtype)
+        TvmRelaxTranslator(shapeRank = config.shapeRank, dtype = config.dtype, target = config.target, device = config.device)
     } else {
         TvmRelaxTranslator()
     }

@@ -28,6 +28,8 @@ class TvmDaemonBackend(
     private val daemonCount: Int = 1,
     private val shapeRank: Int = 3,
     private val dtype: String = "float32",
+    private val target: String = "llvm",
+    private val device: String = "cpu",
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_tvm_daemon"),
     /** 远程 SSH 配置（可选），设置后 daemon 在远程主机上运行 */
     private val remoteConfig: RemoteSshConfig? = null,
@@ -51,6 +53,8 @@ class TvmDaemonBackend(
         daemonCount = config.daemonCount,
         shapeRank = config.shapeRank,
         dtype = config.dtype,
+        target = config.target,
+        device = config.device,
         workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_tvm_daemon"),
         remoteConfig = config.remote,
     )
@@ -60,6 +64,8 @@ class TvmDaemonBackend(
     override val translator: TvmRelaxTranslator = TvmRelaxTranslator(
         shapeRank = shapeRank,
         dtype = dtype,
+        target = target,
+        device = device,
     )
 
     /**
@@ -77,6 +83,8 @@ class TvmDaemonBackend(
             daemonCount = daemonCount,
             shapeRank = shapeRank,
             dtype = dtype,
+            target = target,
+            device = device,
             workDir = newWorkDir,
             remoteConfig = remoteConfig,
         )

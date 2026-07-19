@@ -24,7 +24,11 @@ class TvmRelaxTranslator(
     private val shapeRank: Int = 16,
     private val dtype: String = "float32",
     private val opNameMapping: Map<UirOpKind, String> = defaultOpNameMapping,
-    private val dtypeMapping: Map<String, String> = emptyMap()
+    private val dtypeMapping: Map<String, String> = emptyMap(),
+    /** TVM build target，如 "llvm" 或 "cuda" */
+    private val target: String = "llvm",
+    /** TVM 设备，如 "cpu" 或 "cuda"，对应 tvm.cpu() / tvm.cuda() */
+    private val device: String = "cpu",
 ) : UirTranslator<UirProgram, String> {
 
     companion object {
@@ -165,8 +169,8 @@ class TvmRelaxTranslator(
         builder.appendLine()
         builder.appendLine("# === Execute compiled module ===")
         builder.appendLine("np.random.seed(42)")
-        builder.appendLine("ex = relax.build(mod, target=\"llvm\")")
-        builder.appendLine("vm = relax.VirtualMachine(ex, tvm.cpu())")
+        builder.appendLine("ex = relax.build(mod, target=\"$target\")")
+        builder.appendLine("vm = relax.VirtualMachine(ex, tvm.$device())")
         
         for ((gIdx, graph) in element.graphs.withIndex()) {
             val funcName = graph.name.ifBlank { "func_$gIdx" }
