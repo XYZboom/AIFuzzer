@@ -39,6 +39,9 @@ dependencies {
     // Ktor HTTP 客户端（与 daemon 通信）
     implementation("io.ktor:ktor-client-core:3.1.2")
     implementation("io.ktor:ktor-client-cio:3.1.2")
+    // Apache MINA SSHD — 纯 Java SSH 库（远程 daemon 隧道、文件上传、命令执行）
+    implementation("org.apache.sshd:sshd-core:2.14.0")
+    implementation("org.apache.sshd:sshd-scp:2.14.0")
     // Kotlin-logging（日志框架）
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
     // SLF4J 实现（Logback）

@@ -342,7 +342,7 @@ class PytorchTranslator(
                 // Generate weight at runtime with C_in matching input's C channel
                 // This handles cases where ShapeInferer predicted wrong shape for intermediate ops
                 // Weight shape: [C_out, C_in, kH, kW] where C_in = input.shape[1]
-                "$pytorchFunc($inputVar, torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3])), " +
+                "$pytorchFunc($inputVar, torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3]), device=\"$device\"), " +
                     "stride=$stride, padding=$padding, dilation=$dilation, groups=$groups)"
             }
 
@@ -408,7 +408,7 @@ class PytorchTranslator(
                 val inputVar = valueMap[node.inputs[0].valueId]!!
                 // Use runtime shape (not IR shape) — ShapeAdapter may have changed dimensions
                 // Also ensure float input (batch_norm not implemented for Int/Long)
-                "F.batch_norm(${inputVar}.float(), running_mean=torch.zeros(${inputVar}.shape[1]), running_var=torch.ones(${inputVar}.shape[1]), training=False)"
+                "F.batch_norm(${inputVar}.float(), running_mean=torch.zeros(${inputVar}.shape[1], device=\"$device\"), running_var=torch.ones(${inputVar}.shape[1], device=\"$device\"), training=False)"
             }
 
             // ===== SOFTMAX =====

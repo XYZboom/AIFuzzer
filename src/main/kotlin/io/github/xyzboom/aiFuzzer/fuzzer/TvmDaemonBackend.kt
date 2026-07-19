@@ -1,6 +1,7 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.github.xyzboom.aiFuzzer.config.RemoteSshConfig
 import io.github.xyzboom.aiFuzzer.config.TvmConfig
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.translator.tvm.TvmRelaxTranslator
@@ -19,6 +20,7 @@ private val log = KotlinLogging.logger {}
  * @param daemonCount daemon 实例数（与 workers 数匹配时最高效）
  * @param shapeRank 生成 TensorStructInfo 时使用的 shape 维度数
  * @param dtype Tensor 默认数据类型
+ * @param remoteConfig 远程 SSH 配置（可选），设置后 daemon 在远程主机上运行
  */
 class TvmDaemonBackend(
     pythonPath: String = "python3",
@@ -27,10 +29,20 @@ class TvmDaemonBackend(
     private val shapeRank: Int = 3,
     private val dtype: String = "float32",
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_tvm_daemon"),
+    /** 远程 SSH 配置（可选），设置后 daemon 在远程主机上运行 */
+    private val remoteConfig: RemoteSshConfig? = null,
 ) : DaemonBackend<TvmBackend.TvmResult>(
     pythonPath = pythonPath,
     daemonScriptPath = daemonScriptPath,
     workDir = workDir,
+    customDaemonClient = if (remoteConfig != null) {
+        RemoteDaemonClient(
+            pythonPath = remoteConfig.python.ifBlank { pythonPath },
+            daemonScriptPath = daemonScriptPath,
+            requestTimeoutMs = 120_000,
+            sshConfig = remoteConfig,
+        )
+    } else null,
 ) {
 
     constructor(config: TvmConfig) : this(
@@ -40,6 +52,7 @@ class TvmDaemonBackend(
         shapeRank = config.shapeRank,
         dtype = config.dtype,
         workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_tvm_daemon"),
+        remoteConfig = config.remote,
     )
 
     override val name = "TVM Relax (daemon)"
@@ -65,6 +78,7 @@ class TvmDaemonBackend(
             shapeRank = shapeRank,
             dtype = dtype,
             workDir = newWorkDir,
+            remoteConfig = remoteConfig,
         )
     }
 

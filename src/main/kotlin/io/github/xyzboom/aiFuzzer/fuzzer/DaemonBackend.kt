@@ -27,12 +27,14 @@ abstract class DaemonBackend<T : BackendResult>(
     private val envProvider: DaemonEnvProvider = DefaultDaemonEnvProvider(pythonPath),
     /** 每个 HTTP 请求的超时（毫秒），传给 DaemonClient */
     protected val requestTimeoutMs: Long = 120_000,
+    /** 自定义 DaemonClient（可选，用于远程 SSH 等场景） */
+    private val customDaemonClient: DaemonClient? = null,
 ) : Backend<T> {
 
     abstract val translator: UirTranslator<UirProgram, String>
 
     /** daemon 客户端 */
-    val daemon: DaemonClient = DaemonClient(
+    val daemon: DaemonClient = customDaemonClient ?: DaemonClient(
         pythonPath = pythonPath,
         daemonScriptPath = daemonScriptPath,
         maxRetries = 3,

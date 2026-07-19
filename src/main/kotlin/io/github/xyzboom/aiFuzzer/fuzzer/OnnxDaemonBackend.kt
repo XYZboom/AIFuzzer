@@ -2,6 +2,7 @@ package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.config.OnnxConfig
+import io.github.xyzboom.aiFuzzer.config.RemoteSshConfig
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.translator.onnx.OnnxTranslator
 import java.io.File
@@ -14,17 +15,28 @@ class OnnxDaemonBackend(
     private val opsetVersion: Int = 21,
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
     requestTimeoutMs: Long = 120_000,
+    /** 远程 SSH 配置（可选），设置后 daemon 在远程主机上运行 */
+    private val remoteConfig: RemoteSshConfig? = null,
 ) : DaemonBackend<OnnxDaemonBackend.OnnxResult>(
     pythonPath = pythonPath,
     daemonScriptPath = daemonScriptPath,
     workDir = workDir,
     requestTimeoutMs = requestTimeoutMs,
+    customDaemonClient = if (remoteConfig != null) {
+        RemoteDaemonClient(
+            pythonPath = remoteConfig.python.ifBlank { pythonPath },
+            daemonScriptPath = daemonScriptPath,
+            requestTimeoutMs = requestTimeoutMs,
+            sshConfig = remoteConfig,
+        )
+    } else null,
 ) {
     constructor(config: OnnxConfig) : this(
         pythonPath = config.python,
         opsetVersion = config.opsetVersion,
         workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
         requestTimeoutMs = (config.timeoutSeconds * 1000L).coerceIn(5000, 300_000),
+        remoteConfig = config.remote,
     )
 
     override val name = "ONNX Runtime (daemon)"
@@ -33,7 +45,7 @@ class OnnxDaemonBackend(
     override fun createCopy(): Backend<OnnxResult> {
         return OnnxDaemonBackend(pythonPath, daemonScriptPath, opsetVersion,
             File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"),
-            requestTimeoutMs)
+            requestTimeoutMs, remoteConfig)
     }
 
     override fun checkEnvironment(): Boolean {

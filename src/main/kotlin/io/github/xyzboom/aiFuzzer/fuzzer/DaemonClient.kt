@@ -31,7 +31,7 @@ private val log = KotlinLogging.logger {}
  * @param requestTimeoutMs 每个 HTTP 请求的超时时间（毫秒）
  * @param envProvider 环境变量提供者，用于设置子进程的环境变量
  */
-class DaemonClient(
+open class DaemonClient(
     val pythonPath: String,
     val daemonScriptPath: String,
     val maxRetries: Int = 3,
@@ -39,14 +39,14 @@ class DaemonClient(
     private val envProvider: DaemonEnvProvider = DefaultDaemonEnvProvider(pythonPath),
 ) : AutoCloseable {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    protected val json = Json { ignoreUnknownKeys = true }
 
     /** Ktor HttpClient，懒加载以支持 close() 后重新创建 */
     @Volatile
     private var _httpClient: HttpClient? = null
 
     @Synchronized
-    private fun httpClient(): HttpClient {
+    protected fun httpClient(): HttpClient {
         _httpClient?.let { return it }
         return createHttpClient()
     }
@@ -63,7 +63,7 @@ class DaemonClient(
         }.also { _httpClient = it }
     }
 
-    private fun closeHttpClient() {
+    protected fun closeHttpClient() {
         val client = _httpClient
         _httpClient = null
         try {
@@ -71,31 +71,34 @@ class DaemonClient(
         } catch (_: Exception) {}
     }
 
-    private var process: Process? = null
-    private var retries = 0
+    /** 本地 daemon 进程（或 SSH 隧道进程），子类可访问 */
+    @Volatile
+    protected var process: Process? = null
+    protected var retries = 0
 
-    /** daemon HTTP 服务端口 */
+    /** daemon HTTP 服务端口（本地监听端口，SSH 隧道会转发到远程） */
     @Volatile
     var port: Int = 0
-        private set
+        protected set
 
     /** 记录 daemon 是否已就绪 */
     @Volatile
     var ready: Boolean = false
-        private set
+        protected set
 
     /** 后端是否可用（daemon 启动时由 ready 消息报告） */
     @Volatile
     var backendAvailable: Boolean = false
-        private set
+        protected set
 
-    private val baseUrl: String
+    protected val baseUrl: String
         get() = "http://127.0.0.1:$port"
 
     /**
      * 查找可用的端口。
+     * 子类可重写此方法以使用不同的端口分配策略。
      */
-    private fun findFreePort(): Int {
+    protected open fun findFreePort(): Int {
         val socket = ServerSocket()
         try {
             socket.bind(InetSocketAddress("127.0.0.1", 0))
@@ -107,8 +110,9 @@ class DaemonClient(
 
     /**
      * 启动 daemon 进程并等待就绪。
+     * 子类可重写此方法以支持 SSH 远程启动等自定义启动方式。
      */
-    fun start(): Boolean {
+    open fun start(): Boolean {
         synchronized(this) {
             if (process != null && process!!.isAlive) {
                 log.debug { "daemon 已运行: port=$port" }
@@ -219,10 +223,10 @@ class DaemonClient(
 
     /**
      * 紧急重启 daemon：跳过 HTTP shutdown，直接强制杀进程。
-     * 在 daemon 卡死在 C 扩展时调用（此时 HTTP 无法处理任何请求）。
+     * 子类可重写以支持远程 daemon 的紧急重启。
      */
     @Synchronized
-    private fun emergencyRestart() {
+    protected open fun emergencyRestart() {
         log.warn { "daemon 请求超时，紧急重启 (port=$port)" }
         val p = process
         process = null
@@ -243,8 +247,9 @@ class DaemonClient(
 
     /**
      * 检查 daemon 进程是否存活（进程级检查 + HTTP 健康检查）。
+     * 子类可重写以支持远程 daemon 的健康检查。
      */
-    fun isAlive(): Boolean {
+    open fun isAlive(): Boolean {
         if (process?.isAlive != true) return false
         return try {
             runBlocking {
@@ -275,10 +280,10 @@ class DaemonClient(
 
     /**
      * 确保 daemon 正在运行，若未运行则重启。
-     * 同步方法，防止多个线程同时进入重启逻辑。
+     * 子类可重写以支持远程 daemon 的启动检查。
      */
     @Synchronized
-    private fun ensureRunning() {
+    protected open fun ensureRunning() {
         if (!isAlive() || !ready) {
             if (retries >= maxRetries) {
                 throw DaemonException("Daemon not running and max retries ($maxRetries) exceeded")
@@ -294,10 +299,10 @@ class DaemonClient(
 
     /**
      * 销毁 daemon 进程。
-     * 同步方法，防止与 start() 竞争。
+     * 子类可重写以支持远程 daemon 的销毁。
      */
     @Synchronized
-    private fun destroy() {
+    protected open fun destroy() {
         val p = process
         val oldPort = port
         process = null

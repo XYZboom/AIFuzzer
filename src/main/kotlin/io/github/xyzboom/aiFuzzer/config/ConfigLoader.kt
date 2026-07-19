@@ -106,6 +106,19 @@ object ConfigLoader {
         (rawMap["backends"] as? Map<String, Any>)?.let { backendMap ->
             config.backends.enabled = (backendMap["enabled"] as? List<*>)?.filterIsInstance<String>() ?: config.backends.enabled
 
+            // 解析全局远程 SSH 配置（所有后端默认继承）
+            val globalRemote = (backendMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
+                val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
+                remote.host = remoteMap["host"] as? String ?: remote.host
+                remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
+                remote.user = remoteMap["user"] as? String ?: remote.user
+                remote.password = remoteMap["password"] as? String ?: remote.password
+                remote.python = remoteMap["python"] as? String ?: remote.python
+                remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
+                remote
+            }
+            config.backends.remote = globalRemote
+
             (backendMap["tvm"] as? Map<String, Any>)?.let { tvmMap ->
                 config.backends.tvm.python = tvmMap["python"] as? String ?: config.backends.tvm.python
                 config.backends.tvm.timeoutSeconds = tvmMap["timeout_seconds"] as? Int ?: config.backends.tvm.timeoutSeconds
@@ -113,6 +126,17 @@ object ConfigLoader {
                 config.backends.tvm.workDir = tvmMap["work_dir"] as? String ?: config.backends.tvm.workDir
                 config.backends.tvm.dtype = tvmMap["dtype"] as? String ?: config.backends.tvm.dtype
                 config.backends.tvm.shapeRank = tvmMap["shape_rank"] as? Int ?: config.backends.tvm.shapeRank
+                // 解析后端远程 SSH 配置（覆盖全局）
+                (tvmMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
+                    val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
+                    remote.host = remoteMap["host"] as? String ?: remote.host
+                    remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
+                    remote.user = remoteMap["user"] as? String ?: remote.user
+                    remote.password = remoteMap["password"] as? String ?: remote.password
+                    remote.python = remoteMap["python"] as? String ?: remote.python
+                    remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
+                    config.backends.tvm.remote = remote
+                }
             }
 
             (backendMap["onnx"] as? Map<String, Any>)?.let { onnxMap ->
@@ -120,6 +144,17 @@ object ConfigLoader {
                 config.backends.onnx.timeoutSeconds = onnxMap["timeout_seconds"] as? Int ?: config.backends.onnx.timeoutSeconds
                 config.backends.onnx.opsetVersion = onnxMap["opset_version"] as? Int ?: config.backends.onnx.opsetVersion
                 config.backends.onnx.irVersion = onnxMap["ir_version"] as? Int ?: config.backends.onnx.irVersion
+                // 解析后端远程 SSH 配置（覆盖全局）
+                (onnxMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
+                    val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
+                    remote.host = remoteMap["host"] as? String ?: remote.host
+                    remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
+                    remote.user = remoteMap["user"] as? String ?: remote.user
+                    remote.password = remoteMap["password"] as? String ?: remote.password
+                    remote.python = remoteMap["python"] as? String ?: remote.python
+                    remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
+                    config.backends.onnx.remote = remote
+                }
             }
 
             (backendMap["iree"] as? Map<String, Any>)?.let { ireeMap ->
@@ -137,7 +172,25 @@ object ConfigLoader {
                 config.backends.pytorch.dtype = pytorchMap["dtype"] as? String ?: config.backends.pytorch.dtype
                 config.backends.pytorch.device = pytorchMap["device"] as? String ?: config.backends.pytorch.device
                 config.backends.pytorch.compileMode = pytorchMap["compile_mode"] as? String ?: config.backends.pytorch.compileMode
+                // 解析后端远程 SSH 配置（覆盖全局）
+                (pytorchMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
+                    val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
+                    remote.host = remoteMap["host"] as? String ?: remote.host
+                    remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
+                    remote.user = remoteMap["user"] as? String ?: remote.user
+                    remote.password = remoteMap["password"] as? String ?: remote.password
+                    remote.python = remoteMap["python"] as? String ?: remote.python
+                    remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
+                    config.backends.pytorch.remote = remote
+                }
             }
+        }
+
+        // 全局 remote 自动传播到没有单独设置 remote 的后端
+        if (config.backends.remote != null) {
+            if (config.backends.tvm.remote == null) config.backends.tvm.remote = config.backends.remote
+            if (config.backends.onnx.remote == null) config.backends.onnx.remote = config.backends.remote
+            if (config.backends.pytorch.remote == null) config.backends.pytorch.remote = config.backends.remote
         }
 
         // 解析 bug_collector 部分

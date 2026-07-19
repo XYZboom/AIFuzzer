@@ -2,6 +2,7 @@ package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.config.PytorchConfig
+import io.github.xyzboom.aiFuzzer.config.RemoteSshConfig
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.translator.pytorch.PytorchTranslator
 import java.io.File
@@ -31,10 +32,22 @@ class PytorchDaemonBackend(
         System.getProperty("java.io.tmpdir") ?: "/tmp",
         "aiFuzzer_pytorch_daemon"
     ),
+    requestTimeoutMs: Long = 120_000,
+    /** 远程 SSH 配置（可选），设置后 daemon 在远程主机上运行 */
+    private val remoteConfig: RemoteSshConfig? = null,
 ) : DaemonBackend<PytorchDaemonBackend.PytorchResult>(
     pythonPath = pythonPath,
     daemonScriptPath = daemonScriptPath,
     workDir = workDir,
+    requestTimeoutMs = requestTimeoutMs,
+    customDaemonClient = if (remoteConfig != null) {
+        RemoteDaemonClient(
+            pythonPath = remoteConfig.python.ifBlank { pythonPath },
+            daemonScriptPath = daemonScriptPath,
+            requestTimeoutMs = requestTimeoutMs,
+            sshConfig = remoteConfig,
+        )
+    } else null,
 ) {
 
     constructor(config: PytorchConfig) : this(
@@ -48,6 +61,8 @@ class PytorchDaemonBackend(
             config.workDir.split("/").lastOrNull()
                 ?: "aiFuzzer_pytorch_daemon"
         ),
+        requestTimeoutMs = (config.timeoutSeconds * 1000L).coerceIn(5000, 300_000),
+        remoteConfig = config.remote,
     )
 
     override val name = "PyTorch.compile (daemon)"
@@ -74,6 +89,8 @@ class PytorchDaemonBackend(
             device = device,
             compileMode = compileMode,
             workDir = newWorkDir,
+            requestTimeoutMs = requestTimeoutMs,
+            remoteConfig = remoteConfig,
         )
     }
 

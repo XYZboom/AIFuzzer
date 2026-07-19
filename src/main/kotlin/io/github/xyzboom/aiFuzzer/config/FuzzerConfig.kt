@@ -99,6 +99,8 @@ data class BackendsConfig(
     var onnx: OnnxConfig = OnnxConfig(),
     var iree: IreeConfig = IreeConfig(),
     var pytorch: PytorchConfig = PytorchConfig(),
+    /** 全局远程 SSH 主机配置。设置后所有后端自动继承，除非后端单独覆盖 */
+    var remote: RemoteSshConfig? = null,
 )
 
 data class TvmConfig(
@@ -112,6 +114,8 @@ data class TvmConfig(
     var workDir: String = System.getProperty("java.io.tmpdir", "/tmp") + "/aiFuzzer_tvm",
     var dtype: String = "float32",
     var shapeRank: Int = 3,
+    /** 远程 SSH 主机配置（可选）。设置后 daemon 在远程主机上运行 */
+    var remote: RemoteSshConfig? = null,
 )
 
 data class OnnxConfig(
@@ -119,6 +123,8 @@ data class OnnxConfig(
     var timeoutSeconds: Int = 60,
     var opsetVersion: Int = 21,
     var irVersion: Int = 8,
+    /** 远程 SSH 主机配置（可选）。设置后 daemon 在远程主机上运行 */
+    var remote: RemoteSshConfig? = null,
 )
 
 data class IreeConfig(
@@ -132,6 +138,8 @@ data class PytorchConfig(
     var python: String = "python3",
     /** 执行模式: "daemon" (常驻进程) */
     var mode: String = "daemon",
+    /** 远程 SSH 主机配置（可选）。设置后 daemon 在远程主机上运行 */
+    var remote: RemoteSshConfig? = null,
     var timeoutSeconds: Int = 120,
     var keepArtifacts: Boolean = false,
     var workDir: String = System.getProperty("java.io.tmpdir", "/tmp") + "/aiFuzzer_pytorch",
@@ -140,6 +148,22 @@ data class PytorchConfig(
     var device: String = "cpu",
     /** torch.compile 模式: "default", "reduce-overhead", "max-autotune" */
     var compileMode: String = "default",
+)
+
+/**
+ * 远程 SSH 主机配置。
+ * 设置后，daemon 将在远程主机上启动，通过 SSH 隧道通信。
+ */
+data class RemoteSshConfig(
+    var host: String = "",
+    var port: Int = 22,
+    var user: String = "root",
+    /** SSH 密码（可选，如设置了 SSH key 可省略） */
+    var password: String = "",
+    /** 远程 Python 路径（如 /root/miniconda3/bin/python） */
+    var python: String = "python3",
+    /** 远程工作目录，daemon 脚本将上传至此 */
+    var workDir: String = "/tmp/aiFuzzer_remote",
 )
 
 data class BugCollectorConfig(
