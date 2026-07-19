@@ -125,30 +125,30 @@ class ShapeInfererTest {
     // ===== GATHER 形状推导 =====
     
     @Test
-    fun `GATHER single_input outputs all_one_shape`() {
-        // GATHER with single input (no explicit indices shape):
-        // PyTorch translator generates torch.gather(x, axis, zeros([1]*x.ndim))
-        // → output shape = [1]*ndim (same rank as input, all 1s)
+    fun `GATHER single_input removes axis dim`() {
+        // GATHER with single input: TVM translator generates relax.op.take(tensor, scalar_index, axis)
+        // → scalar index removes the axis dimension
+        // e.g. take([3, 2], 0, axis=0) → [2]
         val inputShape = shapeOf(3, 2)
         val attrs = mapOf("axis" to buildIntAttr { value = 0 })
         
         val outputShapes = ShapeInferer.inferShape(UirOpKind.GATHER, listOf(inputShape), attrs)
         
         assertEquals(1, outputShapes.size)
-        // Output should be [1, 1] — same rank as input [3, 2], all ones
-        assertShapeEquals(shapeOf(1, 1), outputShapes[0])
+        // Output should be [2] — remove axis=0 dimension from [3, 2]
+        assertShapeEquals(shapeOf(2), outputShapes[0])
     }
     
     @Test
-    fun `GATHER single_input 3D outputs all_one_3D`() {
+    fun `GATHER single_input 3D removes axis dim`() {
         val inputShape = shapeOf(4, 5, 6)
         val attrs = mapOf("axis" to buildIntAttr { value = 1 })
         
         val outputShapes = ShapeInferer.inferShape(UirOpKind.GATHER, listOf(inputShape), attrs)
         
         assertEquals(1, outputShapes.size)
-        // Output should be [1, 1, 1] — same rank as input, all ones
-        assertShapeEquals(shapeOf(1, 1, 1), outputShapes[0])
+        // Output should be [4, 6] — remove axis=1 dimension from [4, 5, 6]
+        assertShapeEquals(shapeOf(4, 6), outputShapes[0])
     }
 
     @Test

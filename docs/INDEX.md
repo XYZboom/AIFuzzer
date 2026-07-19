@@ -12,6 +12,10 @@
 - [**扩展设计**](features/EXTENSION_DESIGN.md) — 扩展机制
 - [**程序缩减模块**](reducer.md) — IR 级缩减
 
+## 问题追踪
+
+- [**避免 NaN/Inf 生成开关**](issues/avoid-nan-inf-switch.md) — P1 功能增强
+
 ## 运维
 
 - [**日志系统**](LOGGING.md)

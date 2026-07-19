@@ -184,7 +184,7 @@ class TvmRelaxTranslator(
                             else -> shapeRank.toString()
                         }
                     }
-                    builder.appendLine("np_${input.valueId} = np.random.randn($shapeStr).astype(np.float32)")
+                    builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
                 }
             }
             

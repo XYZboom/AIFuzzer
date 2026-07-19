@@ -865,11 +865,16 @@ object ShapeInferer {
     ): List<UirShape> {
         if (inputShapes.size == 1) {
             val dataShape = inputShapes[0]
-            // PyTorch translator generates torch.gather(x, axis, zeros([1]*x.ndim))
-            // → output shape = index shape = [1]*ndim (same rank as input, all 1s)
-            // This is the correct semantics for the fuzzer's generated code.
+            // TVM 翻译器生成 relax.op.take(tensor, scalar_index, axis)
+            // 标量索引会移除 axis 维度，而不是保持同 rank。
+            // 例如: take([2,5,3], 0, axis=0) → [5, 3]
             val ndim = dataShape.dims.size
-            val outputDims = (0 until ndim).map { constantDim(1) }
+            val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+            val normalizedAxis = if (axis < 0) axis + ndim else axis
+            val outputDims = dataShape.dims.toMutableList()
+            if (normalizedAxis in outputDims.indices) {
+                outputDims.removeAt(normalizedAxis)
+            }
             return listOf(shapeFromDims(outputDims))
         }
         

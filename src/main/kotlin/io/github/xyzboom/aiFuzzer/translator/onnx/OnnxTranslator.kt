@@ -459,7 +459,7 @@ class OnnxTranslator(
             val shapeStr = shapeToPythonList(shape)
             val dtype = input.type.dtype.name
             val onnxDtype = toOnnxDtype(dtype)
-            builder.appendLine("    np_${input.valueId} = np.random.randn(*$shapeStr).astype(np.float32)")
+            builder.appendLine("    np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
             builder.appendLine("    ${input.valueId}_vi = helper.make_tensor_value_info('${input.valueId}', $onnxDtype, $shapeStr)")
             inputTensors.add("${input.valueId}_vi")
         }

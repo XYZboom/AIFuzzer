@@ -183,7 +183,7 @@ class PytorchTranslator(
         for (input in firstGraph.inputs) {
             val shapeStr = shapeToPython(input.type.shape)
             val ptDtype = dtypeMapping[dtype] ?: "torch.float32"
-            builder.appendLine("${input.valueId} = torch.randn($shapeStr, dtype=$ptDtype, device=\"$device\")")
+            builder.appendLine("${input.valueId} = torch.rand($shapeStr, dtype=$ptDtype, device=\"$device\")")
         }
         builder.appendLine()
 
@@ -548,8 +548,9 @@ class PytorchTranslator(
             UirOpKind.GATHER -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // Use runtime ndim (not IR shape) — intermediate unsqueeze may change actual ndim
-                "torch.gather($inputVar, $axis, torch.zeros([1]*$inputVar.ndim, dtype=torch.int64, device=$inputVar.device))"
+                // 使用 torch.select 移除 axis 维度，与 TVM relax.op.take(scalar_index) 语义一致
+                // 也与 ShapeInferer 对齐（标量索引移除 axis 维）
+                "torch.select($inputVar, $axis, 0)"
             }
             UirOpKind.STRIDED_SLICE -> {
                 // 简化实现：取前半部分，至少保留1个元素

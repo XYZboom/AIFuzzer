@@ -63,6 +63,9 @@ data class GeneratorConfig(
     val dtypeBits: Int = 32,
     /** 形状档位名称，控制形状大小以避免 OOM */
     val shapeTier: String = "tiny",
+    /** 避免生成可能导致 NaN/Inf 的算子。默认开启。
+     * 开启后排除 LOG, LOG2, SQRT, RSQRT, RECIPROCAL, DIVIDE, POWER, EXP, CUMPROD */
+    val avoidNaNInf: Boolean = true,
 )
 
 /**
@@ -74,9 +77,16 @@ data class GeneratorConfig(
 class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     private val rand = Random(config.seed)
-    private val opsEnum: List<UirOpKind> = config.ops.mapNotNull {
-        try { UirOpKind.valueOf(it) } catch (_: IllegalArgumentException) { null }
-    }.ifEmpty { DefaultOps }
+    private val opsEnum: List<UirOpKind> = run {
+        val baseOps = config.ops.mapNotNull {
+            try { UirOpKind.valueOf(it) } catch (_: IllegalArgumentException) { null }
+        }.ifEmpty { DefaultOps }
+        if (config.avoidNaNInf) {
+            baseOps.filter { it !in nanInfProneOps }
+        } else {
+            baseOps
+        }
+    }
 
     private var valueCounter = 0
     private var nodeCounter = 0
@@ -89,6 +99,19 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     /** 缓存的形状档位 */
     private val shapeTier: ShapeTier = ShapeTiers.resolve(config.shapeTier)
+
+    companion object {
+        /** 已知会导致 NaN/Inf 的高风险算子。当 avoidNaNInf=true 时排除。 */
+        val nanInfProneOps = setOf(
+            UirOpKind.LOG, UirOpKind.LOG2,
+            UirOpKind.SQRT, UirOpKind.RSQRT,
+            UirOpKind.RECIPROCAL,
+            UirOpKind.DIVIDE,
+            UirOpKind.POWER,
+            UirOpKind.EXP,
+            UirOpKind.CUMPROD,
+        )
+    }
 
     /** 生成随机 ID 后缀（用于追踪） */
     private fun randomIdSuffix(): String {
