@@ -496,7 +496,12 @@ class FuzzingPipeline(
     private fun translateProgram(program: UirProgram, backend: Backend<*>): String {
         return when (backend) {
             is PytorchDaemonBackend -> PytorchTranslator().translate(program)
-            is TvmDaemonBackend -> TvmRelaxTranslator().translate(program)
+            is TvmDaemonBackend -> TvmRelaxTranslator(
+                shapeRank = backend.shapeRank,
+                dtype = backend.dtype,
+                target = backend.target,
+                device = backend.device,
+            ).translate(program)
             else -> "// re-translation not supported for ${backend.name}"
         }
     }

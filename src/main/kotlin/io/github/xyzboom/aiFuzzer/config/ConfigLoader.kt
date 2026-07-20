@@ -126,6 +126,8 @@ object ConfigLoader {
                 config.backends.tvm.workDir = tvmMap["work_dir"] as? String ?: config.backends.tvm.workDir
                 config.backends.tvm.dtype = tvmMap["dtype"] as? String ?: config.backends.tvm.dtype
                 config.backends.tvm.shapeRank = tvmMap["shape_rank"] as? Int ?: config.backends.tvm.shapeRank
+                config.backends.tvm.target = tvmMap["target"] as? String ?: config.backends.tvm.target
+                config.backends.tvm.device = tvmMap["device"] as? String ?: config.backends.tvm.device
                 // 解析后端远程 SSH 配置（覆盖全局）
                 (tvmMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
                     val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
