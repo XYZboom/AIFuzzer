@@ -189,11 +189,16 @@ class TvmRelaxTranslator(
                         }
                     }
                     builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
+                    if (device != "cpu") {
+                        builder.appendLine("${input.valueId} = tvm.nd.array(np_${input.valueId}, device=tvm.$device())")
+                    } else {
+                        builder.appendLine("${input.valueId} = tvm.nd.array(np_${input.valueId})")
+                    }
                 }
             }
             
             // 执行
-            val inputArgs = graph.inputs.joinToString(", ") { "np_${it.valueId}" }
+            val inputArgs = graph.inputs.joinToString(", ") { "${it.valueId}" }
             builder.appendLine()
             builder.appendLine("$resultVar = vm[\"$funcName\"]($inputArgs)")
             
