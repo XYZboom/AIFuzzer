@@ -41,6 +41,10 @@ class ReduceCommand : CliktCommand(
     private val pythonPath by option("--python", "-p")
         .help("Python executable for the backend daemon (default: python3)")
 
+    private val configFile by option("--config", "-c")
+        .file(mustExist = true, canBeFile = true, mustBeReadable = true)
+        .help("Config file for backend settings (target, device, remote SSH, etc.)")
+
     override fun run() = LogUtils.withTrace {
         log.info { "缩减模式: ${inputIR.absolutePath}" }
         echo("Reduce mode: reducing IR file(s)")
@@ -64,7 +68,7 @@ class ReduceCommand : CliktCommand(
                 val originalNodeCount = originalProgram.graphs.sumOf { it.nodes.size }
                 echo("  Original nodes: $originalNodeCount")
 
-                val (translator, daemon) = createDaemonForBackend(backendChoice, pythonPath)
+                val (translator, daemon) = createDaemonForBackend(backendChoice, pythonPath, configFile)
                 val originalSource = translator(originalProgram)
                 val originalResult = daemon.sendAndWait(originalSource)
                 val originalError = originalResult.stderr
@@ -88,7 +92,7 @@ class ReduceCommand : CliktCommand(
                     minimalIrFile.writeText(UirSerializer.toJsonl(result.minifiedProgram))
 
                     try {
-                        val (minTranslator, minDaemon) = createDaemonForBackend(backendChoice, pythonPath)
+                        val (minTranslator, minDaemon) = createDaemonForBackend(backendChoice, pythonPath, configFile)
                         val minSource = minTranslator(result.minifiedProgram)
                         File(outDir, "${baseName}_minimal_source.py").writeText(minSource)
                         val runResult = minDaemon.sendAndWait(minSource)
@@ -161,23 +165,40 @@ class ReduceCommand : CliktCommand(
             return false
         }
 
-        fun createDaemonForBackend(backend: String, pythonOverride: String? = null): Pair<(UirProgram) -> String, DaemonClient> {
+        fun createDaemonForBackend(
+            backend: String,
+            pythonOverride: String? = null,
+            configFile: File? = null,
+        ): Pair<(UirProgram) -> String, DaemonClient> {
             val pythonPath = pythonOverride ?: "python3"
-            val workDir = "/tmp/aiFuzzer_$backend"
+            val workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_$backend")
             log.info { "缩减 daemon: python=$pythonPath, backend=$backend" }
             if (backend == "tvm") {
-                val b = TvmDaemonBackend(pythonPath = pythonPath, workDir = File(workDir))
+                // Load config if provided, to get target/device/remote settings
+                val config = configFile?.let {
+                    try { ConfigLoader.load(it.absolutePath) } catch (_: Exception) { null }
+                }
+                val target = config?.backends?.tvm?.target ?: "llvm"
+                val device = config?.backends?.tvm?.device ?: "cpu"
+                val remoteConfig = config?.backends?.tvm?.remote
+                val b = TvmDaemonBackend(
+                    pythonPath = pythonPath,
+                    target = target,
+                    device = device,
+                    workDir = workDir,
+                    remoteConfig = remoteConfig,
+                )
                 return Pair(b.translator::translate, b.daemon)
             }
             if (backend == "onnx") {
                 val b = OnnxDaemonBackend(
                     pythonPath = pythonPath,
-                    workDir = File(workDir),
+                    workDir = workDir,
                     opsetVersion = 11,
                 )
                 return Pair(b.translator::translate, b.daemon)
             }
-            val b = PytorchDaemonBackend(pythonPath = pythonPath, workDir = File(workDir))
+            val b = PytorchDaemonBackend(pythonPath = pythonPath, workDir = workDir)
             return Pair(b.translator::translate, b.daemon)
         }
     }

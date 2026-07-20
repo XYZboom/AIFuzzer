@@ -29,7 +29,7 @@ class OnnxTranslator(
     }
 
     override fun translate(element: UirProgram): String {
-        log.debug { "开始翻译 ONNX 程序: ${element.graphs.size} 个图" }
+        log.debug { "开始翻译 ONNX 程序: ${element.graphs.size} 个图（串联）" }
         val startTime = System.currentTimeMillis()
         val builder = StringBuilder()
 
@@ -40,8 +40,60 @@ class OnnxTranslator(
         builder.appendLine("import numpy as np")
         builder.appendLine()
 
+        // 翻译每个图（生成独立的 run_* 函数）
         for ((idx, graph) in element.graphs.withIndex()) {
             translateGraph(builder, graph, idx)
+        }
+
+        // === 生成链式执行代码 ===
+        builder.appendLine("# Chained execution")
+        builder.appendLine("np.random.seed(42)")
+        builder.appendLine()
+
+        val onnxProducedIds = mutableSetOf<String>()
+        for ((gIdx, _) in element.graphs.withIndex()) {
+            builder.appendLine("_sess_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString())")
+        }
+
+        for ((gIdx, graph) in element.graphs.withIndex()) {
+            val funcName = graph.name.ifBlank { "graph_$gIdx" }
+            val freshInputs = graph.inputs.filter { it.valueId !in onnxProducedIds }
+
+            // 生成新鲜输入
+            for (input in freshInputs) {
+                val shape = input.type.shape
+                val shapeStr = shapeToPythonList(shape)
+                builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
+                onnxProducedIds.add(input.valueId)
+            }
+
+            // 如果是链入图，解包上一图输出
+            if (gIdx > 0) {
+                val prevGraph = element.graphs[gIdx - 1]
+                val prevOutputIds = prevGraph.outputs.map { it.valueId }
+                val prevResultVar = "_result_${gIdx - 1}"
+                if (prevOutputIds.size > 1) {
+                    for ((i, outId) in prevOutputIds.withIndex()) {
+                        builder.appendLine("np_$outId = $prevResultVar[$i]")
+                    }
+                } else {
+                    builder.appendLine("np_${prevOutputIds[0]} = $prevResultVar[0]")
+                }
+            }
+
+            // 构建 feed dict
+            val feedEntries = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
+            builder.appendLine("_result_$gIdx = _sess_$gIdx.run(None, {$feedEntries})")
+
+            // 打印输出
+            builder.appendLine("if len(_result_$gIdx) == 1:")
+            builder.appendLine("    print(f\"[ONNX-OUT] $funcName: shape={list(_result_${gIdx}[0].shape)}\")")
+            builder.appendLine("else:")
+            builder.appendLine("    for _i, _r in enumerate(_result_${gIdx}):")
+            builder.appendLine("        print(f\"[ONNX-OUT] $funcName[{_i}]: shape={list(_r.shape)}\")")
+            builder.appendLine()
+
+            graph.outputs.forEach { onnxProducedIds.add(it.valueId) }
         }
 
         builder.appendLine("print('Execution: OK')")
@@ -447,11 +499,9 @@ class OnnxTranslator(
             }
         }
 
-        // ─── Build Python output ─────────────────────────────────
-        builder.appendLine("def run_${funcName}():")
-        builder.appendLine("    np.random.seed(42)")
-
-        tensorInitLines.forEach { builder.appendLine("    $it") }
+        // ─── Build Python output (model only, no execution) ─────
+        builder.appendLine("# Build model for ${funcName}")
+        tensorInitLines.forEach { builder.appendLine(it) }
 
         val inputTensors = mutableListOf<String>()
         for (input in graph.inputs) {
@@ -459,8 +509,7 @@ class OnnxTranslator(
             val shapeStr = shapeToPythonList(shape)
             val dtype = input.type.dtype.name
             val onnxDtype = toOnnxDtype(dtype)
-            builder.appendLine("    np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
-            builder.appendLine("    ${input.valueId}_vi = helper.make_tensor_value_info('${input.valueId}', $onnxDtype, $shapeStr)")
+            builder.appendLine("${input.valueId}_vi = helper.make_tensor_value_info('${input.valueId}', $onnxDtype, $shapeStr)")
             inputTensors.add("${input.valueId}_vi")
         }
 
@@ -469,30 +518,18 @@ class OnnxTranslator(
             val shapeStr = shapeToPythonList(shape)
             val dtype = output.type.dtype.name
             val onnxDtype = toOnnxDtype(dtype)
-            builder.appendLine("    ${output.valueId}_vi = helper.make_tensor_value_info('${output.valueId}', $onnxDtype, $shapeStr)")
+            builder.appendLine("${output.valueId}_vi = helper.make_tensor_value_info('${output.valueId}', $onnxDtype, $shapeStr)")
             outputTensors.add("${output.valueId}_vi")
         }
 
         builder.appendLine()
         val nodeVarNames = nodeLines.joinToString(", ") { it.varName }
-        nodeLines.forEach { builder.appendLine(it.code) }
+        nodeLines.forEach { builder.appendLine(it.code.trimStart()) }
         builder.appendLine()
 
-        builder.appendLine("    _graph = helper.make_graph([$nodeVarNames], '$funcName', [${inputTensors.joinToString(", ")}], [${outputTensors.joinToString(", ")}])")
-        builder.appendLine("    _model = helper.make_model(_graph, opset_imports=[helper.make_opsetid('', $opsetVersion)])")
+        builder.appendLine("_graph_$graphIdx = helper.make_graph([$nodeVarNames], '$funcName', [${inputTensors.joinToString(", ")}], [${outputTensors.joinToString(", ")}])")
+        builder.appendLine("_model_$graphIdx = helper.make_model(_graph_$graphIdx, opset_imports=[helper.make_opsetid('', $opsetVersion)])")
         builder.appendLine()
-        val inputFeed = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
-        builder.appendLine("    _sess = ort.InferenceSession(_model.SerializeToString())")
-        builder.appendLine("    _result = _sess.run(None, {$inputFeed})")
-        builder.appendLine()
-        builder.appendLine("    if len(_result) == 1:")
-        builder.appendLine("        print(f\"[ONNX-OUT] ${funcName}: shape={list(_result[0].shape)}\")")
-        builder.appendLine("    else:")
-        builder.appendLine("        for _i, _r in enumerate(_result):")
-        builder.appendLine("            print(f\"[ONNX-OUT] ${funcName}[{_i}]: shape={list(_r.shape)}\")")
-        builder.appendLine()
-        builder.appendLine()
-        builder.appendLine("run_${funcName}()")
     }
 
     // ────────────────────────────────────────────────────────────────

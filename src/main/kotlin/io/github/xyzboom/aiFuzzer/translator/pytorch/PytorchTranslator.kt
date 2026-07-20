@@ -172,53 +172,128 @@ class PytorchTranslator(
         }
 
         // IMPORTANT: 不要使用 if __name__ == "__main__" 保护，因为 daemon 会直接 exec 脚本
-        builder.appendLine("# Main execution")
-        builder.appendLine("model = TestModule_0()")
-
-        // === 生成随机输入 ===
-        val firstGraph = element.graphs.first()
+        builder.appendLine("# Main execution — chained graphs")
         builder.appendLine()
-        builder.appendLine("# Generate random inputs for verification")
-        builder.appendLine("torch.manual_seed(42)")
-        for (input in firstGraph.inputs) {
-            val shapeStr = shapeToPython(input.type.shape)
-            val ptDtype = dtypeMapping[dtype] ?: "torch.float32"
-            builder.appendLine("${input.valueId} = torch.rand($shapeStr, dtype=$ptDtype, device=\"$device\")")
+
+        // 计算所有图的新增（fresh）输入 valueId（排除来自前图输出的值）
+        val freshInputIds = mutableListOf<String>()
+        val allOutputIds = mutableSetOf<String>()
+        for ((_, graph) in element.graphs.withIndex()) {
+            for (input in graph.inputs) {
+                if (input.valueId !in allOutputIds) {
+                    freshInputIds.add(input.valueId)
+                }
+            }
+            graph.outputs.forEach { allOutputIds.add(it.valueId) }
+        }
+
+        // === 实例化所有 Module ===
+        builder.appendLine("# Instantiate all modules")
+        for ((idx, _) in element.graphs.withIndex()) {
+            builder.appendLine("model_$idx = TestModule_$idx()")
         }
         builder.appendLine()
 
-        // === Eager 模式执行（ground truth）===
-        val inputArgs = firstGraph.inputs.map { it.valueId }.joinToString(", ")
-        builder.appendLine("# Eager execution (ground truth)")
-        builder.appendLine("with torch.no_grad():")
-        builder.appendLine("    ref_output = model($inputArgs)")
+        // === 生成所有图的新增随机输入 ===
+        builder.appendLine("# Generate random inputs")
+        builder.appendLine("torch.manual_seed(42)")
+        for (inputId in freshInputIds) {
+            // 查找此 valueId 对应的 type
+            val refType = findValueType(element, inputId) ?: continue
+            val shapeStr = shapeToPython(refType.shape)
+            val ptDtype = dtypeMapping[refType.dtype.name] ?: "torch.float32"
+            builder.appendLine("$inputId = torch.rand($shapeStr, dtype=$ptDtype, device=\"$device\")")
+        }
         builder.appendLine()
 
-        // === Compiled 模式执行 ===
-        builder.appendLine("# Compiled execution")
+        // === Eager 模式执行（图间串联）===
+        builder.appendLine("# Chained eager execution (ground truth)")
+        builder.appendLine("with torch.no_grad():")
+        val eagerOutputVars = mutableListOf<String>()  // track what vars are in scope
+        eagerOutputVars.addAll(freshInputIds)
+        for ((gIdx, graph) in element.graphs.withIndex()) {
+            val inputArgs = graph.inputs.joinToString(", ") { it.valueId }
+            val resultVar = "ref_out_$gIdx"
+            builder.appendLine("    $resultVar = model_$gIdx($inputArgs)")
+            // 解包输出
+            if (graph.outputs.size > 1) {
+                val outNames = graph.outputs.joinToString(", ") { it.valueId }
+                builder.appendLine("    $outNames = $resultVar")
+            } else {
+                builder.appendLine("    ${graph.outputs[0].valueId} = $resultVar")
+            }
+            graph.outputs.forEach { eagerOutputVars.add(it.valueId) }
+        }
+        builder.appendLine()
+        val lastGraph = element.graphs.last()
+        val finalRefVar = lastGraph.outputs.singleOrNull()?.valueId ?: "ref_out_${element.graphs.size - 1}"
+
+        // === Compiled 模式执行（整条链编译，后端自动融合跨图算子）===
+        builder.appendLine("# Chained compiled execution (entire pipeline compiled together)")
         builder.appendLine("try:")
-        builder.appendLine("    compiled = torch.compile(model, mode=\"$compileMode\")")
+        builder.appendLine("    class ChainedModel(nn.Module):")
+        builder.appendLine("        def __init__(self):")
+        builder.appendLine("            super().__init__()")
+        builder.appendLine("            self._mods = nn.ModuleList([")
+        for ((idx, _) in element.graphs.withIndex()) {
+            builder.appendLine("                TestModule_$idx(),")
+        }
+        builder.appendLine("            ])")
+        // forward 参数列表 = 所有 fresh input valueId
+        val forwardParams = freshInputIds.joinToString(", ")
+        builder.appendLine("        def forward(self, $forwardParams):")
+        // 追踪哪些参数已被消费（分配给图输入）
+        var paramIndex = 0
+        for ((gIdx, graph) in element.graphs.withIndex()) {
+            if (gIdx == 0) {
+                // graph_0: 所有输入都是 fresh params（位置对应）
+                val moduleInputs = graph.inputs.indices.joinToString(", ") { i ->
+                    if (i < freshInputIds.size) freshInputIds[i] else graph.inputs[i].valueId
+                }
+                builder.appendLine("            x = self._mods[0]($moduleInputs)")
+                paramIndex = graph.inputs.size
+            } else {
+                // graph_i: 链入的输入来自 x（上一图输出），新增的来自 fresh params
+                val chainInputIds = graph.inputs.filter { it.valueId in allOutputIds }
+                val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in allOutputIds }
+                val callArgs = mutableListOf<String>()
+                if (chainInputIds.size > 1) {
+                    // 解包 x（可能是元组）
+                    val chainNames = chainInputIds.map { "ch_${it.valueId}" }.joinToString(", ")
+                    builder.appendLine("            $chainNames = x if isinstance(x, tuple) else (x,)")
+                    chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
+                } else {
+                    callArgs.add("x")
+                }
+                // 追加新增输入
+                freshInputIdsForGraph.forEach { callArgs.add(it.valueId) }
+                builder.appendLine("            x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
+            }
+        }
+        builder.appendLine("            return x")
+        builder.appendLine()
+        builder.appendLine("    chained = torch.compile(ChainedModel(), mode=\"$compileMode\")")
         builder.appendLine("except Exception as e:")
         builder.appendLine("    print(f'torch.compile failed: {e}')")
         builder.appendLine("    raise")
         builder.appendLine()
         builder.appendLine("with torch.no_grad():")
-        builder.appendLine("    cmp_output = compiled($inputArgs)")
+        val allFreshArgs = freshInputIds.joinToString(", ")
+        builder.appendLine("    cmp_output = chained($allFreshArgs)")
         builder.appendLine()
 
         // === 差异测试 ===
-        builder.appendLine("# Differential testing: eager vs compile")
-        builder.appendLine("if isinstance(ref_output, tuple):")
-        builder.appendLine("    # Multi-output: compare element-wise, cast to float for allclose compatibility")
+        builder.appendLine("# Differential testing: eager chain vs compiled chain")
+        builder.appendLine("if isinstance($finalRefVar, tuple):")
         builder.appendLine("    all_match = all(torch.allclose(r.float(), c.float(), atol=1e-3, rtol=1e-3, equal_nan=True)")
-        builder.appendLine("                    for r, c in zip(ref_output, cmp_output))")
+        builder.appendLine("                    for r, c in zip($finalRefVar, cmp_output))")
         builder.appendLine("else:")
-        builder.appendLine("    all_match = torch.allclose(ref_output.float(), cmp_output.float(), atol=1e-3, rtol=1e-3, equal_nan=True)")
+        builder.appendLine("    all_match = torch.allclose($finalRefVar.float(), cmp_output.float(), atol=1e-3, rtol=1e-3, equal_nan=True)")
         builder.appendLine()
         builder.appendLine("if all_match:")
         builder.appendLine("    print('VERIFY: PASS')")
         builder.appendLine("else:")
-        builder.appendLine("    raise RuntimeError('VERIFY: FAIL')\n")
+        builder.appendLine("    raise RuntimeError('VERIFY: FAIL')")
         builder.appendLine()
         builder.appendLine("print('Module built successfully')")
 
@@ -637,6 +712,29 @@ class PytorchTranslator(
                 outputVars.forEach { valueMap[it] = it }
             }
         }
+    }
+
+    /**
+     * 在 UIR 程序中查找 valueId 对应的 tensor type。
+     */
+    private fun findValueType(program: UirProgram, valueId: String): UirTensorType? {
+        for (graph in program.graphs) {
+            for (input in graph.inputs) {
+                if (input.valueId == valueId) return input.type
+            }
+            for (output in graph.outputs) {
+                if (output.valueId == valueId) return output.type
+            }
+            for (node in graph.nodes) {
+                for (input in node.inputs) {
+                    if (input.valueId == valueId) return input.type
+                }
+                for (output in node.outputs) {
+                    if (output.valueId == valueId) return output.type
+                }
+            }
+        }
+        return null
     }
 
     /**

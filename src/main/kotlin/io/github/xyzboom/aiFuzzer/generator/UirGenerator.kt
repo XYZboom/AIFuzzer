@@ -156,38 +156,80 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     /**
      * 生成完整的 UIR 程序。
+     *
+     * 多张图之间有数据流连接：graph_{i-1} 的输出作为 graph_i 的输入。
+     * translator 应将图串联执行，后端会看到完整的计算链并有机会做图融合。
      * 形状大小由 [generateRandomShape] 动态控制，保证不超出预算。
      */
     fun generate(): UirProgram {
         usedElements = 0
         val actualCount = config.graphCount.random(rand)
         val program = buildProgram {
+            var prevGraphOutputs: List<UirValueRef>? = null
             for (i in 0 until actualCount) {
                 log.debug { "生成图 $i/$actualCount (range=${config.graphCount})" }
-                graphs.add(generateGraph("graph_$i"))
+                val graph = if (i == 0) {
+                    generateGraph("graph_$i", null)
+                } else {
+                    generateGraph("graph_$i", prevGraphOutputs)
+                }
+                prevGraphOutputs = graph.outputs.toList()
+                graphs.add(graph)
             }
         }
-        log.debug { "程序生成完成，共 $actualCount 个图，使用 ${usedElements}/${shapeTier.maxTotalElements} 元素 (tier=${shapeTier.label})" }
+        log.debug { "程序生成完成，共 $actualCount 个串联图，使用 ${usedElements}/${shapeTier.maxTotalElements} 元素 (tier=${shapeTier.label})" }
         return program
     }
 
-    private fun generateGraph(name: String): UirGraph {
+    /**
+     * 生成单个计算图。
+     *
+     * @param prevGraphOutputs 前一张图的输出，作为本图的额外输入（实现图间串联）。
+     *                          传 null 表示第一张图，无前驱。
+     */
+    private fun generateGraph(name: String, prevGraphOutputs: List<UirValueRef>?): UirGraph {
         log.debug { "生成图: $name" }
-        valueCounter = 0
+        // 不重置 valueCounter，确保跨图 valueId 全局唯一
         
         // 1. 生成图输入
-        val numInputs = rand.nextInt(config.minInputs, config.maxInputs + 1)
-        log.trace { "图输入数量: $numInputs" }
         val availableValues = mutableListOf<String>()
-        
-        val graphInputs = (0 until numInputs).map {
+        val graphInputs = mutableListOf<UirValueRef>()
+
+        // 1a. 前图的输出作为本图输入（串联）
+        var chainedInputCount = 0
+        if (prevGraphOutputs != null) {
+            for (prevOutput in prevGraphOutputs) {
+                availableValues.add(prevOutput.valueId)
+                // 前图输出的 shape 已在 valueShapes 中，直接引用
+                valueShapes[prevOutput.valueId] = prevOutput.type.shape
+                graphInputs.add(prevOutput)
+                chainedInputCount++
+            }
+            log.debug { "图 $name: 从前图串联 ${prevGraphOutputs.size} 个输入" }
+        }
+
+        // 1b. 新增随机输入（第一张图全量生成，后续图适当减少避免输入过多）
+        val remainingBudget = if (prevGraphOutputs != null) {
+            // 串联模式下，额外输入数取最小值
+            minOf(1, config.maxInputs)
+        } else {
+            config.maxInputs
+        }
+        val newInputCount = if (prevGraphOutputs != null) {
+            // 有前图时，额外生成 0~1 个随机输入
+            if (rand.nextBoolean()) 1 else 0
+        } else {
+            rand.nextInt(config.minInputs, remainingBudget + 1)
+        }
+        log.trace { "图 $name: 新增随机输入 $newInputCount 个" }
+
+        val freshInputs = (0 until newInputCount).map {
             val valueId = newValueId()
             availableValues.add(valueId)
             
-            // 为图输入生成形状
             val shape = generateRandomShape(config.minNdim, config.maxNdim)
             valueShapes[valueId] = shape
-            log.trace { "输入值 $valueId: 形状=${shapeDims(shape)}" }
+            log.trace { "新输入值 $valueId: 形状=${shapeDims(shape)}" }
             
             buildValueRef {
                 this.valueId = valueId
@@ -198,6 +240,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
                 }
             }
         }
+        graphInputs.addAll(freshInputs)
         
         // 2. 生成节点
         val numNodes = rand.nextInt(config.minNodesPerGraph, config.maxNodesPerGraph + 1)

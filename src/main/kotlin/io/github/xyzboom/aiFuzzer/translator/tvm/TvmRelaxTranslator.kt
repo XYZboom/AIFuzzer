@@ -165,22 +165,22 @@ class TvmRelaxTranslator(
         builder.appendLine("print('Module built successfully')")
         builder.appendLine("# print(mod)")
         builder.appendLine()
-        // ===== 执行编译后的TVM模块 =====
+        // ===== 执行编译后的TVM模块（图间串联）=====
         builder.appendLine()
-        builder.appendLine("# === Execute compiled module ===")
+        builder.appendLine("# === Execute compiled module (chained graphs) ===")
         builder.appendLine("np.random.seed(42)")
         builder.appendLine("ex = relax.build(mod, target=\"$target\")")
         builder.appendLine("vm = relax.VirtualMachine(ex, tvm.$device())")
-        
+
+        // 计算"已生产"的 valueId（来自前图输出的值不再生成随机输入）
+        val tvmProducedIds = mutableSetOf<String>()
         for ((gIdx, graph) in element.graphs.withIndex()) {
-            val funcName = graph.name.ifBlank { "func_$gIdx" }
-            val resultVar = "tvm_result_$gIdx"
-            
-            // 生成 numpy 输入
-            if (graph.inputs.isNotEmpty()) {
+            // 生成不来自前图的随机输入
+            val freshInputs = graph.inputs.filter { it.valueId !in tvmProducedIds }
+            if (freshInputs.isNotEmpty()) {
                 builder.appendLine()
-                builder.appendLine("# Generate inputs for ${graph.name}")
-                for (input in graph.inputs) {
+                builder.appendLine("# Generate fresh inputs for ${graph.name}")
+                for (input in freshInputs) {
                     val shape = input.type.shape
                     val shapeStr = shape.dims.joinToString(", ") { dim ->
                         when (dim.dimKind) {
@@ -194,14 +194,39 @@ class TvmRelaxTranslator(
                     } else {
                         builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId})")
                     }
+                    tvmProducedIds.add(input.valueId)
                 }
             }
-            
+
             // 执行
-            val inputArgs = graph.inputs.joinToString(", ") { "${it.valueId}" }
+            val funcName = graph.name.ifBlank { "func_$gIdx" }
+            val resultVar = "tvm_result_$gIdx"
+            val inputArgs = graph.inputs.joinToString(", ") { it.valueId }
+
+            if (gIdx > 0) {
+                builder.appendLine()
+                builder.appendLine("# Chained: ${element.graphs[gIdx - 1].name} -> ${graph.name}")
+                // 解包上一图的输出（TVM VM 对多输出返回 tuple）
+                val prevGraph = element.graphs[gIdx - 1]
+                val prevOutputIds = prevGraph.outputs.map { it.valueId }
+                val prevResultVar = "tvm_result_${gIdx - 1}"
+                if (prevOutputIds.size > 1) {
+                    // 多输出：转成列表，按索引解包
+                    builder.appendLine("_prev_out = $prevResultVar if not hasattr($prevResultVar, 'numpy') else [$prevResultVar]")
+                    for ((i, outId) in prevOutputIds.withIndex()) {
+                        builder.appendLine("$outId = _prev_out[$i]")
+                    }
+                } else {
+                    // 单输出：直接赋值
+                    builder.appendLine("${prevOutputIds[0]} = $prevResultVar")
+                }
+            }
             builder.appendLine()
             builder.appendLine("$resultVar = vm[\"$funcName\"]($inputArgs)")
-            
+
+            // 标记本图输出为已生产
+            graph.outputs.forEach { tvmProducedIds.add(it.valueId) }
+
             // 打印结果
             builder.appendLine("# Print output")
             builder.appendLine("if hasattr($resultVar, 'numpy'):")
