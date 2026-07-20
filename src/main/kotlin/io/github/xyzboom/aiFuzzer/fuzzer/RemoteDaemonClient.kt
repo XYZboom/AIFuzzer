@@ -165,8 +165,9 @@ class RemoteDaemonClient(
                 val remoteScriptPath = "$remoteWorkDir/$remoteScriptName"
                 val remotePython = sshConfig.python.ifBlank { "python3" }
 
-                // 1. 创建远程工作目录
+                // 1. 创建远程工作目录并清理旧 daemon
                 execSsh("mkdir -p $remoteWorkDir")
+                execSsh("pkill -f 'pytorch_daemon.py' 2>/dev/null; pkill -f 'onnx_daemon.py' 2>/dev/null; pkill -f 'tvm_daemon.py' 2>/dev/null; true")
 
                 // 2. 上传 daemon 脚本
                 log.info { "上传 daemon 脚本到远程: $remoteScriptPath" }
@@ -253,7 +254,8 @@ class RemoteDaemonClient(
             if (s != null && s.isOpen) {
                 val cmd = "pkill -f 'pytorch_daemon.py' 2>/dev/null; " +
                         "pkill -f 'onnx_daemon.py' 2>/dev/null; " +
-                        "pkill -f 'tvm_daemon.py' 2>/dev/null; true"
+                        "pkill -f 'tvm_daemon.py' 2>/dev/null; " +
+                        "pkill -f 'compile_worker' 2>/dev/null; true"
                 val channel = s.createExecChannel(cmd)
                 channel.open().verify(5, TimeUnit.SECONDS)
                 channel.close(false).await(5, TimeUnit.SECONDS)
