@@ -244,6 +244,8 @@ class PytorchTranslator(
         builder.appendLine("        def forward(self, $forwardParams):")
         // 追踪哪些参数已被消费（分配给图输入）
         var paramIndex = 0
+        // 前面图（prevGraph）的输出集合，用于判断链入输入
+        var prevGraphOutputIds = emptySet<String>()
         for ((gIdx, graph) in element.graphs.withIndex()) {
             if (gIdx == 0) {
                 // graph_0: 所有输入都是 fresh params（位置对应）
@@ -254,8 +256,9 @@ class PytorchTranslator(
                 paramIndex = graph.inputs.size
             } else {
                 // graph_i: 链入的输入来自 x（上一图输出），新增的来自 fresh params
-                val chainInputIds = graph.inputs.filter { it.valueId in allOutputIds }
-                val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in allOutputIds }
+                // 注意：只查找前一个图的输出，而不是所有图的输出（防止跨图误匹配）
+                val chainInputIds = graph.inputs.filter { it.valueId in prevGraphOutputIds }
+                val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in prevGraphOutputIds }
                 val callArgs = mutableListOf<String>()
                 if (chainInputIds.size > 1) {
                     // 解包 x（可能是元组）
@@ -269,6 +272,8 @@ class PytorchTranslator(
                 freshInputIdsForGraph.forEach { callArgs.add(it.valueId) }
                 builder.appendLine("            x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
             }
+            // 更新 prevGraphOutputIds 为当前图的输出，供后续图判断链入输入
+            prevGraphOutputIds = graph.outputs.map { it.valueId }.toSet()
         }
         builder.appendLine("            return x")
         builder.appendLine()
