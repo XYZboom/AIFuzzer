@@ -190,9 +190,9 @@ class TvmRelaxTranslator(
                     }
                     builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
                     if (device != "cpu") {
-                        builder.appendLine("${input.valueId} = tvm.nd.array(np_${input.valueId}, device=tvm.$device())")
+                        builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId}, device=tvm.$device())")
                     } else {
-                        builder.appendLine("${input.valueId} = tvm.nd.array(np_${input.valueId})")
+                        builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId})")
                     }
                 }
             }
