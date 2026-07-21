@@ -107,14 +107,20 @@ ${result.stderr.trimEnd()}
             irFile.writeText(UirSerializer.toJsonl(program))
         }
 
-        // 4. 复制日志文件
+        // 4. 复制日志文件（仅限最近 100KB，避免超大日志撑爆）
         val logFile = File("logs/aifuzzer.log")
         if (logFile.exists()) {
-            logFile.copyTo(File(bugDir, "aifuzzer.log"), overwrite = true)
+            try {
+                val content = logFile.readText().takeLast(100_000)
+                File(bugDir, "aifuzzer.log").writeText(content)
+            } catch (_: Exception) {}
         }
         val traceLogFile = File("logs/aifuzzer-trace.log")
         if (traceLogFile.exists()) {
-            traceLogFile.copyTo(File(bugDir, "aifuzzer-trace.log"), overwrite = true)
+            try {
+                val content = traceLogFile.readText().takeLast(100_000)
+                File(bugDir, "aifuzzer-trace.log").writeText(content)
+            } catch (_: Exception) {}
         }
 
         log.info { "Bug 已保存: ${bugDir.name} (seed=$seed, backend=$backendName)" }

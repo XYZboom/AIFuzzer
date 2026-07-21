@@ -54,4 +54,4 @@ reduction_data/
 # Backup files
 *.bak
 # Local temp configs
-configs/default-pytorch-tmp.yaml
+configs/
