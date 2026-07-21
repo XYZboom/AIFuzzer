@@ -162,7 +162,15 @@ data class RemoteSshConfig(
     var host: String = "",
     var port: Int = 22,
     var user: String = "root",
-    /** SSH 密码（可选，如设置了 SSH key 可省略） */
+    /**
+     * SSH 环境变量名。
+     * 配置文件中指定环境变量名称，实际密码从该环境变量读取。
+     * 例如设置 password_env: "AIFUZZER_GPU_PASSWORD"，
+     * 运行时通过 System.getenv("AIFUZZER_GPU_PASSWORD") 获取密码。
+     * 留空则不使用密码（使用 SSH key 认证）。
+     */
+    var passwordEnv: String = "",
+    /** SSH 密码（运行时由环境变量解析填充，不直接从 YAML 读取） */
     var password: String = "",
     /** 远程 Python 路径（如 /root/miniconda3/bin/python） */
     var python: String = "python3",

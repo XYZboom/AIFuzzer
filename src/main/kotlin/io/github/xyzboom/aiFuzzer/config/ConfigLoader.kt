@@ -112,7 +112,7 @@ object ConfigLoader {
                 remote.host = remoteMap["host"] as? String ?: remote.host
                 remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                 remote.user = remoteMap["user"] as? String ?: remote.user
-                remote.password = remoteMap["password"] as? String ?: remote.password
+                remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                 remote.python = remoteMap["python"] as? String ?: remote.python
                 remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
                 remote
@@ -134,7 +134,7 @@ object ConfigLoader {
                     remote.host = remoteMap["host"] as? String ?: remote.host
                     remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                     remote.user = remoteMap["user"] as? String ?: remote.user
-                    remote.password = remoteMap["password"] as? String ?: remote.password
+                    remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                     remote.python = remoteMap["python"] as? String ?: remote.python
                     remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
                     config.backends.tvm.remote = remote
@@ -152,7 +152,7 @@ object ConfigLoader {
                     remote.host = remoteMap["host"] as? String ?: remote.host
                     remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                     remote.user = remoteMap["user"] as? String ?: remote.user
-                    remote.password = remoteMap["password"] as? String ?: remote.password
+                    remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                     remote.python = remoteMap["python"] as? String ?: remote.python
                     remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
                     config.backends.onnx.remote = remote
@@ -180,7 +180,7 @@ object ConfigLoader {
                     remote.host = remoteMap["host"] as? String ?: remote.host
                     remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                     remote.user = remoteMap["user"] as? String ?: remote.user
-                    remote.password = remoteMap["password"] as? String ?: remote.password
+                    remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                     remote.python = remoteMap["python"] as? String ?: remote.python
                     remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
                     config.backends.pytorch.remote = remote
@@ -194,6 +194,12 @@ object ConfigLoader {
             if (config.backends.onnx.remote == null) config.backends.onnx.remote = config.backends.remote
             if (config.backends.pytorch.remote == null) config.backends.pytorch.remote = config.backends.remote
         }
+
+        // 解析环境变量密码：passwordEnv → password
+        resolvePasswordFromEnv(config.backends.remote)
+        resolvePasswordFromEnv(config.backends.tvm.remote)
+        resolvePasswordFromEnv(config.backends.onnx.remote)
+        resolvePasswordFromEnv(config.backends.pytorch.remote)
 
         // 解析 bug_collector 部分
         (rawMap["bug_collector"] as? Map<String, Any>)?.let { bcMap ->
@@ -216,6 +222,22 @@ object ConfigLoader {
         }
 
         return config
+    }
+
+    /**
+     * 从环境变量解析 SSH 密码。
+     * 如果 passwordEnv 设置了环境变量名，则从 System.getenv 读取实际密码填入 password 字段。
+     */
+    private fun resolvePasswordFromEnv(remote: io.github.xyzboom.aiFuzzer.config.RemoteSshConfig?) {
+        if (remote == null) return
+        if (remote.passwordEnv.isNotBlank()) {
+            val envPassword = System.getenv(remote.passwordEnv)
+            if (envPassword != null) {
+                remote.password = envPassword
+            } else {
+                System.err.println("[WARN] 环境变量 ${remote.passwordEnv} 未设置，SSH 将不使用密码认证")
+            }
+        }
     }
 
     /**
