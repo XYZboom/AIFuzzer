@@ -112,6 +112,7 @@ object ConfigLoader {
                 remote.host = remoteMap["host"] as? String ?: remote.host
                 remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                 remote.user = remoteMap["user"] as? String ?: remote.user
+                remote.password = remoteMap["password"] as? String ?: remote.password
                 remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                 remote.python = remoteMap["python"] as? String ?: remote.python
                 remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
@@ -134,6 +135,7 @@ object ConfigLoader {
                     remote.host = remoteMap["host"] as? String ?: remote.host
                     remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                     remote.user = remoteMap["user"] as? String ?: remote.user
+                    remote.password = remoteMap["password"] as? String ?: remote.password
                     remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                     remote.python = remoteMap["python"] as? String ?: remote.python
                     remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
@@ -152,6 +154,7 @@ object ConfigLoader {
                     remote.host = remoteMap["host"] as? String ?: remote.host
                     remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                     remote.user = remoteMap["user"] as? String ?: remote.user
+                    remote.password = remoteMap["password"] as? String ?: remote.password
                     remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                     remote.python = remoteMap["python"] as? String ?: remote.python
                     remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
@@ -180,6 +183,7 @@ object ConfigLoader {
                     remote.host = remoteMap["host"] as? String ?: remote.host
                     remote.port = (remoteMap["port"] as? Number)?.toInt() ?: remote.port
                     remote.user = remoteMap["user"] as? String ?: remote.user
+                    remote.password = remoteMap["password"] as? String ?: remote.password
                     remote.passwordEnv = remoteMap["password_env"] as? String ?: remote.passwordEnv
                     remote.python = remoteMap["python"] as? String ?: remote.python
                     remote.workDir = remoteMap["work_dir"] as? String ?: remote.workDir
