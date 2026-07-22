@@ -72,6 +72,14 @@ class AutoReducer(
         val steps = mutableListOf<ReductionStep>()
         val reducer = IrDdminReducer(propertyChecker, program)
 
+        // 保存原始程序的深拷贝，用于最终属性检查失败时回滚
+        val originalProgram = try {
+            UirSerializer.fromJsonl(UirSerializer.toJsonl(program))
+        } catch (e: Exception) {
+            log.error(e) { "无法备份原始程序" }
+            return ReductionResult.failed(program, "cannot backup original program: ${e.message}")
+        }
+
         var changed = true
         var iterations = 0
         while (changed && iterations < 10) {
@@ -148,6 +156,22 @@ class AutoReducer(
         val ratio = if (originalNodeCount > 0) {
             1.0 - minifiedNodeCount.toDouble() / originalNodeCount
         } else 0.0
+
+        if (!preserved) {
+            // 属性丢失，回滚到原始程序（使用已有的深拷贝备份）
+            val restored = UirSerializer.fromJsonl(UirSerializer.toJsonl(originalProgram))
+            program.graphs.clear()
+            program.graphs.addAll(restored.graphs)
+            log.warn { "最终属性检查失败，已回滚到原始程序 (${originalNodeCount} 节点)" }
+            return ReductionResult(
+                originalProgram = originalProgram,
+                minifiedProgram = originalProgram,
+                reductionRatio = 0.0,
+                propertyPreserved = true,
+                steps = steps,
+                errorMessage = "property lost during reduction, rolled back to original",
+            )
+        }
 
         return ReductionResult(
             originalProgram = program,
