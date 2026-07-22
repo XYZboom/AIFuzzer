@@ -4,163 +4,176 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.ir.UirGraph
 import io.github.xyzboom.aiFuzzer.ir.UirNode
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
+import io.github.xyzboom.aiFuzzer.ir.UirValueRef
+import io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 
 private val log = KotlinLogging.logger {}
 
 /**
- * 全局 DDMin 缩减器。
- *
- * 所有图的节点放在一个列表里，DDMin 一次跑完。
- * 每个测试：深拷贝 → 删除非候选节点 → 依赖重建（含跨图）→ 验证
+ * 图内 DDMin 缩减器。
+ * 每个图各自做节点级 DDMin，不处理跨图。
  */
 class IrDdminReducer(
     private val propertyChecker: PropertyChecker,
     private val program: UirProgram,
 ) {
-    /**
-     * 全局缩减所有图的所有节点，到不动点。
-     */
-    fun reduceGlobal(
+    fun reduceGraph(
+        graph: UirGraph,
         steps: MutableList<ReductionStep>,
     ): Boolean {
-        // 收集所有节点 + 所在图索引
-        data class GraphNode(val graphIdx: Int, val node: UirNode)
-        val allNodes = mutableListOf<GraphNode>()
-        for ((idx, graph) in program.graphs.withIndex()) {
-            for (node in graph.nodes) {
-                allNodes.add(GraphNode(idx, node))
-            }
+        cleanupInputsOutputs(graph)
+        val allNodes = graph.nodes.toList()
+        if (allNodes.size <= 1) {
+            return propertyChecker.check(program)
         }
-        if (allNodes.isEmpty()) return true
 
-        var changed = true
-        var iterations = 0
-        var finalResult = true
-        while (changed && iterations < 10) {
-            changed = false
-            iterations++
-            val prevCount = allNodes.size
+        var bestSubset: Set<UirNode>? = null
 
-            // 准备 DDMin 测试函数
-            val bestSubset = mutableListOf<GraphNode>()
-
-            val ddmin = DDMin<GraphNode> { candidateNodes ->
-                if (candidateNodes.toSet() == allNodes.toSet()) return@DDMin true
-                val removedNodes = allNodes.filter { it !in candidateNodes }.toSet()
-                if (removedNodes.isEmpty()) return@DDMin true
-
-                val testResult = testSubsetGlobal(removedNodes.map { it.node }.toSet())
-                if (testResult) {
-                    bestSubset.clear()
-                    bestSubset.addAll(candidateNodes)
-                }
-                testResult
+        val ddmin = DDMin<UirNode> { candidateNodes ->
+            if (candidateNodes.toSet() == allNodes.toSet()) return@DDMin true
+            val removedNodes = allNodes.filter { it !in candidateNodes }.toSet()
+            if (removedNodes.isEmpty()) return@DDMin true
+            val testResult = testSubset(graph, removedNodes)
+            if (testResult) {
+                bestSubset = candidateNodes.toSet()
             }
-
-            // DDMin 执行，返回最小子集
-            val minimal = ddmin.execute(allNodes)
-
-            // 应用结果
-            if (minimal.size < allNodes.size) {
-                val removedGlobal = allNodes.filter { it !in minimal }
-                val removedNodes = removedGlobal.map { it.node }.toSet()
-                val removedCount = allNodes.size - minimal.size
-
-                // 在原图上删除节点
-                for (graph in program.graphs) {
-                    graph.nodes.removeAll(removedNodes)
-                }
-
-                // 清理 inputs/outputs
-                for (graph in program.graphs) {
-                    val usedValueIds = graph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
-                    graph.inputs.removeAll { it.valueId !in usedValueIds }
-                    val producedValueIds = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
-                        graph.inputs.map { it.valueId }.toSet()
-                    graph.outputs.removeAll { it.valueId !in producedValueIds }
-                }
-                // 删除空图
-                program.graphs.removeAll { it.nodes.isEmpty() }
-
-                steps.add(ReductionStep(
-                    type = StepType.DDMIN_REMOVE,
-                    description = "全局 DDMin 缩减：移除 $removedCount 个节点 → ${program.graphs.sumOf { it.nodes.size }} 总节点",
-                    removedNodes = removedNodes.map { "${it.op}" },
-                    remainingNodeCount = program.graphs.sumOf { it.nodes.size },
-                ))
-                log.info { "全局 DDMin 缩减: ${allNodes.size} → ${minimal.size} 节点 (移除 $removedCount 个)" }
-                allNodes.clear(); allNodes.addAll(minimal)
-                changed = true
-                finalResult = true
-            }
+            testResult
         }
-        return finalResult
-    }
 
-    /**
-     * 全局测试：深拷贝全程序，删除 [removedNodes]，重建依赖，验证属性。
-     */
-    private fun testSubsetGlobal(removedNodes: Set<UirNode>): Boolean {
-        return try {
-            val jsonl = UirSerializer.toJsonl(program)
-            val copy = UirSerializer.fromJsonl(jsonl)
+        ddmin.execute(allNodes)
 
-            // 在副本上找对应节点，按图分组
-            val copyRemovedByGraph = mutableMapOf<UirGraph, MutableSet<UirNode>>()
-            for (copyGraph in copy.graphs) {
-                copyRemovedByGraph[copyGraph] = mutableSetOf()
-                for (node in copyGraph.nodes) {
-                    if (removedNodes.any { it.name == node.name && it.op == node.op }) {
-                        copyRemovedByGraph[copyGraph]!!.add(node)
-                    }
+        if (bestSubset != null && bestSubset!!.size < allNodes.size) {
+            val removedNodes = allNodes.filter { it !in bestSubset!! }.toSet()
+            val snapshots = graph.nodes.map {
+                InputSnapshot(it, it.inputs.map { ref -> buildValueRef { valueId = ref.valueId; type = ref.type } })
+            }
+            val nodesBackup = graph.nodes.toList()
+            val inputsBackup = graph.inputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toMutableList()
+            val outputsBackup = graph.outputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toMutableList()
+
+            val reconstructor = DependencyReconstructor(graph)
+            val repairPlan = reconstructor.prepare(removedNodes)
+            graph.nodes.removeAll(removedNodes)
+            reconstructor.apply(repairPlan)
+
+            // 更新跨图 inputs
+            for (repair in repairPlan.repairs) {
+                val newValueId = when (repair.type) {
+                    RepairType.WIRE_AROUND -> repair.newValueId
+                    RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
                 }
-            }
-
-            // 对每个图：准备依赖重建 → 删除节点 → 重建
-            val allZerosNodes = mutableListOf<UirNode>()
-            for ((copyGraph, toRemove) in copyRemovedByGraph) {
-                if (toRemove.isEmpty()) continue
-                val reconstructor = DependencyReconstructor(copyGraph)
-                val repairPlan = reconstructor.prepare(toRemove)
-                copyGraph.nodes.removeAll(toRemove)
-                val zerosNodes = reconstructor.apply(repairPlan)
-                allZerosNodes.addAll(zerosNodes)
-            }
-
-            // 跨图引用修复：ZEROS 替代后，其他图的 inputs 需要更新
-            for ((copyGraph, toRemove) in copyRemovedByGraph) {
-                if (toRemove.isEmpty()) continue
-                for (node in toRemove) {
-                    for (outputRef in node.outputs) {
-                        val newValueId = "${outputRef.valueId}_default"
-                        for (otherGraph in copy.graphs) {
-                            if (otherGraph === copyGraph) continue
-                            for (input in otherGraph.inputs) {
-                                if (input.valueId == outputRef.valueId) {
-                                    input.valueId = newValueId
-                                }
+                if (newValueId != null) {
+                    for (otherGraph in program.graphs) {
+                        if (otherGraph === graph) continue
+                        for (input in otherGraph.inputs) {
+                            if (input.valueId == repair.oldValueId) {
+                                input.valueId = newValueId
                             }
                         }
                     }
                 }
             }
 
-            // 清理 inputs/outputs
-            for (copyGraph in copy.graphs) {
-                val usedValueIds = copyGraph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
-                copyGraph.inputs.removeAll { it.valueId !in usedValueIds }
-                val producedValueIds = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
-                    copyGraph.inputs.map { it.valueId }.toSet()
-                copyGraph.outputs.removeAll { it.valueId !in producedValueIds }
-            }
-            copy.graphs.removeAll { it.nodes.isEmpty() }
-            if (copy.graphs.isEmpty()) return false
+            // 清理 outputs（只保留节点产出的值）
+            val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
+            graph.outputs.removeAll { it.valueId !in producedByNodes }
 
+            if (validateGraph(graph) && propertyChecker.check(program)) {
+                val removedCount = allNodes.size - bestSubset!!.size
+                steps.add(ReductionStep(
+                    type = StepType.DDMIN_REMOVE,
+                    description = "DDMin 缩减：移除 $removedCount 个原始节点 → ${graph.nodes.size} 总节点",
+                    removedNodes = removedNodes.map { "${it.op}" },
+                    remainingNodeCount = graph.nodes.size,
+                ))
+                log.info { "DDMin 缩减成功: ${allNodes.size} → ${graph.nodes.size} 节点 (移除 $removedCount 个)" }
+                return true
+            } else {
+                rollback(graph, nodesBackup, snapshots)
+                graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
+                graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
+                return true
+            }
+        }
+        return propertyChecker.check(program)
+    }
+
+    private fun testSubset(graph: UirGraph, removedNodes: Set<UirNode>): Boolean {
+        return try {
+            val jsonl = UirSerializer.toJsonl(program)
+            val copy = UirSerializer.fromJsonl(jsonl)
+            val copyGraph = copy.graphs.firstOrNull { it.name == graph.name } ?: return false
+
+            val copyRemovedNodes = copyGraph.nodes.filter { node ->
+                removedNodes.any { it.name == node.name && it.op == node.op }
+            }.toSet()
+            if (copyRemovedNodes.isEmpty()) return false
+
+            val reconstructor = DependencyReconstructor(copyGraph)
+            val repairPlan = reconstructor.prepare(copyRemovedNodes)
+            copyGraph.nodes.removeAll(copyRemovedNodes)
+            reconstructor.apply(repairPlan)
+
+            // 跨图引用修复
+            for (repair in repairPlan.repairs) {
+                val newValueId = when (repair.type) {
+                    RepairType.WIRE_AROUND -> repair.newValueId
+                    RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
+                }
+                if (newValueId != null) {
+                    for (otherGraph in copy.graphs) {
+                        if (otherGraph === copyGraph) continue
+                        for (input in otherGraph.inputs) {
+                            if (input.valueId == repair.oldValueId) {
+                                input.valueId = newValueId
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 清理 outputs
+            val producedByNodes = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
+            copyGraph.outputs.removeAll { it.valueId !in producedByNodes }
+
+            if (!validateGraph(copyGraph)) return false
             propertyChecker.check(copy)
         } catch (e: Exception) {
-            log.debug { "全局 DDMin 测试异常: ${e.message}" }
+            log.debug { "DDMin 测试异常: ${e.message}" }
             false
         }
+    }
+
+    private fun validateGraph(graph: UirGraph): Boolean {
+        val allOutputValueIds = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
+            graph.inputs.map { it.valueId }.toSet()
+        for (node in graph.nodes) {
+            for (input in node.inputs) {
+                if (input.valueId !in allOutputValueIds) return false
+            }
+        }
+        return true
+    }
+
+    private data class InputSnapshot(val node: UirNode, val originalInputs: List<UirValueRef>)
+
+    private fun rollback(graph: UirGraph, backup: List<UirNode>, snapshots: List<InputSnapshot>) {
+        graph.nodes.clear(); graph.nodes.addAll(backup)
+        for (snapshot in snapshots) {
+            for (i in snapshot.originalInputs.indices) {
+                if (i < snapshot.node.inputs.size) {
+                    snapshot.node.inputs[i].valueId = snapshot.originalInputs[i].valueId
+                    snapshot.node.inputs[i].type = snapshot.originalInputs[i].type
+                }
+            }
+        }
+    }
+
+    private fun cleanupInputsOutputs(graph: UirGraph) {
+        val usedValueIds = graph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
+        graph.inputs.removeAll { it.valueId !in usedValueIds }
+        val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
+        graph.outputs.removeAll { it.valueId !in producedByNodes }
     }
 }
