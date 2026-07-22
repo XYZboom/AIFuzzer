@@ -57,9 +57,35 @@ class AutoReducer(
         val reducer = IrDdminReducer(propertyChecker, program)
 
         for (graph in program.graphs) {
+            // 保存图状态，以便回滚（用 toList 保存引用，和 IrDdminReducer 一致）
+            val nodesBackup = graph.nodes.toList()
+            val inputsBackup = graph.inputs.map { ref ->
+                io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
+                    valueId = ref.valueId; type = ref.type
+                }
+            }.toMutableList()
+            val outputsBackup = graph.outputs.map { ref ->
+                io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
+                    valueId = ref.valueId; type = ref.type
+                }
+            }.toMutableList()
+
             val preserved = reducer.reduceGraph(graph, steps)
             if (!preserved) {
-                log.warn { "Graph '${graph.name}' 缩减后属性丢失" }
+                log.warn { "Graph '${graph.name}' 缩减后内部属性丢失，回滚此图" }
+                graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
+                graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
+                graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
+            } else if (graph.nodes.size < nodesBackup.size) {
+                // 图有改动，验证整体程序
+                if (!propertyChecker.check(program)) {
+                    log.warn { "Graph '${graph.name}' 缩减后整体属性丢失，回滚此图" }
+                    graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
+                    graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
+                    graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
+                } else {
+                    log.info { "Graph '${graph.name}' 缩减: ${nodesBackup.size} → ${graph.nodes.size} 节点 (整体验证通过)" }
+                }
             }
         }
 

@@ -71,9 +71,12 @@ class IrDdminReducer(
 
         // DCE 后属性检查
         if (!propertyChecker.check(program)) {
-            log.warn { "初始 DCE 后属性丢失，回滚 DCE" }
+            log.warn { "初始 DCE 后属性丢失，回滚 DCE (移除 ${initialDce.size} 个节点: ${initialDce.map { it.name }})" }
             graph.nodes.addAll(initialDce)
-            return false
+            // 回滚后图已恢复，属性保持。返回 true 让 DDMin 继续尝试删其他节点。
+            return true
+        } else {
+            log.info { "初始 DCE 后属性保持 (${initialDce.size} 节点移除)" }
         }
 
         // 清理 inputs/outputs（DCE 后可能有新的不可达输入/输出）
@@ -102,17 +105,17 @@ class IrDdminReducer(
             testResult
         }
 
-        // DDMin 确定性自检：对 bestSubset 做二次验证
+        ddmin.execute(allNodes)
+
+        // DDMin 确定性自检：对 bestSubset 做二次验证（在 ddmin.execute 之后）
         if (bestSubset != null && bestSubset!!.size < allNodes.size) {
             val removedNodes = allNodes.filter { it !in bestSubset!! }.toSet()
             val retest = testSubset(graph, removedNodes)
             if (!retest) {
-                log.warn { "DDMin 确定性失败！bestSubset 二次验证不通过，放弃缩减" }
-                return false
+                log.warn { "DDMin 确定性失败！bestSubset 二次验证不通过，清零 bestSubset，保留原始节点" }
+                bestSubset = null
             }
         }
-
-        ddmin.execute(allNodes)
 
         // 应用最优缩减结果到原图
         if (bestSubset != null && bestSubset!!.size < allNodes.size) {
@@ -155,17 +158,19 @@ class IrDdminReducer(
                     removedNodes = removedNodes.map { "${it.op}" },
                     remainingNodeCount = graph.nodes.size,
                 ))
-                log.info { "DDMin reduced ${allNodes.size} → ${graph.nodes.size} nodes (含 ZEROS 替代)" }
+                log.info { "DDMin 缩减成功: ${allNodes.size} → ${graph.nodes.size} 节点 (移除 $removedCount 个)" }
                 return true
             } else {
-                // 最终验证失败，回滚
+                // 最终验证失败，回滚后图已恢复，属性保持，让外层继续尝试
+                val reason = if (!validateGraph(graph)) "图不合法" else "属性检查失败"
+                log.warn { "DDMin 最终验证失败 ($reason)，回滚 ${allNodes.size} → ${bestSubset!!.size} 子集" }
                 rollback(graph, nodesBackup, snapshots)
                 graph.inputs.clear()
                 graph.inputs.addAll(inputsBackup)
                 graph.outputs.clear()
                 graph.outputs.addAll(outputsBackup)
-                log.warn { "DDMin 最终验证失败，已回滚" }
-                return false
+                log.warn { "DDMin 最终验证失败，已回滚，继续尝试" }
+                return true
             }
         }
 
@@ -186,6 +191,8 @@ class IrDdminReducer(
             val copyRemovedNodes = copyGraph.nodes.filter { node ->
                 removedNodes.any { it.name == node.name && it.op == node.op }
             }.toSet()
+
+            log.debug { "testSubset: 删除 ${copyRemovedNodes.size} 个节点 (${copyRemovedNodes.map { it.name }})" }
 
             // 准备依赖重建
             val reconstructor = DependencyReconstructor(copyGraph)
@@ -209,12 +216,18 @@ class IrDdminReducer(
 
             // 验证合法性
             if (!validateGraph(copyGraph)) {
-                log.debug { "深拷贝测试: 中间程序不合法" }
+                log.debug { "深拷贝测试: 中间程序不合法 (删除 ${copyRemovedNodes.size} 节点后图不完整)" }
                 return false
             }
 
             // 验证属性
-            propertyChecker.check(copy)
+            val preserved = propertyChecker.check(copy)
+            if (!preserved) {
+                log.debug { "testSubset: 属性丢失 (删除 ${copyRemovedNodes.size} 节点: ${copyRemovedNodes.map { it.name }})" }
+            } else {
+                log.debug { "testSubset: 属性保持 (删除 ${copyRemovedNodes.size} 节点)" }
+            }
+            preserved
         } catch (e: Exception) {
             log.debug { "深拷贝测试异常: ${e.message}" }
             false

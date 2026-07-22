@@ -76,10 +76,22 @@ class ReduceCommand : CliktCommand(
 
                 val propertyChecker = object : PropertyChecker {
                     override fun check(program: UirProgram): Boolean = try {
-                        val daemonResult = daemon.sendAndWait(translator(program))
+                        val source = translator(program)
+                        val daemonResult = daemon.sendAndWait(source)
                         val matched = matchesBugSignature(daemonResult.stderr, originalError)
-                        !daemonResult.success && matched
-                    } catch (_: Exception) { false }
+                        val result = !daemonResult.success && matched
+                        if (!result) {
+                            log.warn {
+                                "属性检查失败: success=${daemonResult.success}, matched=$matched\n" +
+                                "  daemon stderr (前200): ${daemonResult.stderr.take(200)}\n" +
+                                "  original stderr (前200): ${originalError.take(200)}"
+                            }
+                        }
+                        result
+                    } catch (e: Exception) {
+                        log.warn { "属性检查异常: ${e.message}" }
+                        false
+                    }
 
                     override fun bugSignature(): String = originalError.take(200)
                 }
@@ -138,14 +150,11 @@ class ReduceCommand : CliktCommand(
             if (originalStderr.contains("tvm.error.InternalError")) return currentStderr.contains("tvm.error.InternalError")
             if (originalStderr.contains("[ONNXRuntimeError]")) {
                 // Match by error code + distinctive message content to avoid false positives
-                // when different errors share the same code (e.g., code 2 = INVALID_ARGUMENT)
                 val codePat = Regex("""\[ONNXRuntimeError]\s*:\s*(\d+)\s*:""")
                 val origCode = codePat.find(originalStderr)?.groupValues?.getOrNull(1)
                 val currCode = codePat.find(currentStderr)?.groupValues?.getOrNull(1)
                 if (origCode == null || currCode == null || origCode != currCode) return false
                 if (!currentStderr.contains("[ONNXRuntimeError]")) return false
-                // Extract distinctive message, normalizing tensor/value names
-                // (names in single quotes can change after reduction)
                 val msgPat = Regex("""\[ONNXRuntimeError]\s*:\s*\d+\s*:\s*\w+\s*:\s*(.+)""")
                 val origMsg = msgPat.find(originalStderr)?.groupValues?.getOrNull(1) ?: return true
                 val curMsg = msgPat.find(currentStderr)?.groupValues?.getOrNull(1) ?: return true
@@ -154,14 +163,26 @@ class ReduceCommand : CliktCommand(
                 return normalizeName(curMsg).contains(phrase)
             }
             // 匹配实际抛出错误类型（原始错误链的末行）
+            // 所有已知 Python 异常类型
+            val knownErrorPrefixes = listOf(
+                "RuntimeError:", "tvm.error.", "AttributeError:", "TypeError:",
+                "torch._inductor.exc.InductorError:", "AssertionError:",
+                "IndexError:", "KeyError:", "ValueError:", "ZeroDivisionError:",
+                "onnxruntime.capi.onnxruntime_pybind11_state.",
+            )
             val originalErrorType = originalStderr.lines().map { it.trim() }.filter { it.isNotBlank() }.lastOrNull {
-                it.startsWith("RuntimeError:") || it.startsWith("tvm.error.")
-                    || it.startsWith("torch._inductor.exc.InductorError:")
-                    || it.startsWith("AssertionError:")
-                    || it.startsWith("IndexError:")
-                    || it.startsWith("onnxruntime.capi.onnxruntime_pybind11_state.")
+                knownErrorPrefixes.any { prefix -> it.startsWith(prefix) }
             }
-            if (originalErrorType != null && currentStderr.contains(originalErrorType)) return true
+            if (originalErrorType != null) {
+                // For AttributeError, use a more flexible match: check the error type + key message fragment
+                if (originalErrorType.startsWith("AttributeError:")) {
+                    val origMsg = originalErrorType.removePrefix("AttributeError: ").trim()
+                    val keyFragment = origMsg.take(80)
+                    return currentStderr.contains("AttributeError") && currentStderr.contains(keyFragment)
+                }
+                // For other errors, exact line match
+                if (currentStderr.contains(originalErrorType)) return true
+            }
             return false
         }
 
