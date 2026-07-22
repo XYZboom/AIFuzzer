@@ -219,7 +219,11 @@ class ReduceCommand : CliktCommand(
                 )
                 return Pair(b.translator::translate, b.daemon)
             }
-            val b = PytorchDaemonBackend(pythonPath = pythonPath, workDir = workDir)
+            val b = PytorchDaemonBackend(
+                    pythonPath = pythonPath,
+                    workDir = workDir,
+                    requestTimeoutMs = 30_000, // reduce 模式下每个测试 30s 足够
+                )
             return Pair(b.translator::translate, b.daemon)
         }
     }

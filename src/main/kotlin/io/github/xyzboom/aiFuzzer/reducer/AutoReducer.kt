@@ -4,13 +4,6 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 
-/**
- * AutoReducer 入口：编排多阶段缩减流程。
- *
- * 使用方式：
- *   val reducer = AutoReducer()
- *   val result = reducer.reduceFromJsonl(jsonl, propertyChecker)
- */
 class AutoReducer(
     private val config: ReducerConfig = ReducerConfig(),
 ) {
@@ -19,9 +12,6 @@ class AutoReducer(
         val timeoutSeconds: Int = 300,
     )
 
-    /**
-     * 对 UIR Program 执行缩减（原地修改）。
-     */
     fun reduce(
         program: UirProgram,
         propertyChecker: PropertyChecker,
@@ -30,7 +20,6 @@ class AutoReducer(
         if (program.graphs.isEmpty()) {
             return ReductionResult.failed(program, "no graphs to reduce")
         }
-
         val originalNodeCount = program.graphs.sumOf { it.nodes.size }
         return try {
             doReduce(program, originalNodeCount, propertyChecker)
@@ -48,6 +37,32 @@ class AutoReducer(
         return reduce(program, propertyChecker)
     }
 
+    private fun testGraphSubset(
+        program: UirProgram,
+        candidateIndices: Set<Int>,
+        propertyChecker: PropertyChecker,
+    ): Boolean {
+        if (candidateIndices.isEmpty()) return false
+        return try {
+            val jsonl = UirSerializer.toJsonl(program)
+            val copy = UirSerializer.fromJsonl(jsonl)
+            val toRemove = mutableListOf<Int>()
+            for (idx in copy.graphs.indices) {
+                if (idx !in candidateIndices) {
+                    val g = copy.graphs[idx]
+                    g.nodes.clear(); g.inputs.clear(); g.outputs.clear()
+                    toRemove.add(idx)
+                }
+            }
+            toRemove.sortedDescending().forEach { copy.graphs.removeAt(it) }
+            if (copy.graphs.isEmpty()) return false
+            propertyChecker.check(copy)
+        } catch (e: Exception) {
+            log.debug { "图级别 DDMin 测试异常: ${e.message}" }
+            false
+        }
+    }
+
     private fun doReduce(
         program: UirProgram,
         originalNodeCount: Int,
@@ -56,36 +71,76 @@ class AutoReducer(
         val steps = mutableListOf<ReductionStep>()
         val reducer = IrDdminReducer(propertyChecker, program)
 
-        for (graph in program.graphs) {
-            // 保存图状态，以便回滚（用 toList 保存引用，和 IrDdminReducer 一致）
-            val nodesBackup = graph.nodes.toList()
-            val inputsBackup = graph.inputs.map { ref ->
-                io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
-                    valueId = ref.valueId; type = ref.type
-                }
-            }.toMutableList()
-            val outputsBackup = graph.outputs.map { ref ->
-                io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
-                    valueId = ref.valueId; type = ref.type
-                }
-            }.toMutableList()
+        var changed = true
+        var iterations = 0
+        while (changed && iterations < 10) {
+            changed = false
+            iterations++
+            val prevTotal = program.graphs.sumOf { it.nodes.size }
 
-            val preserved = reducer.reduceGraph(graph, steps)
-            if (!preserved) {
-                log.warn { "Graph '${graph.name}' 缩减后内部属性丢失，回滚此图" }
-                graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
-                graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
-                graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
-            } else if (graph.nodes.size < nodesBackup.size) {
-                // 图有改动，验证整体程序
-                if (!propertyChecker.check(program)) {
-                    log.warn { "Graph '${graph.name}' 缩减后整体属性丢失，回滚此图" }
+            // Stage 1: 图级别 DDMin（先删整图，再缩节点）
+            if (program.graphs.size >= 2) {
+                val graphIndices = program.graphs.indices.toList()
+                val graphDdmin = DDMin<Int> { candidateIndices ->
+                    if (candidateIndices.toSet() == graphIndices.toSet()) return@DDMin true
+                    testGraphSubset(program, candidateIndices.toSet(), propertyChecker)
+                }
+                val minimalGraphs = graphDdmin.execute(graphIndices)
+                val removedGraphs = graphIndices.filter { it !in minimalGraphs }
+                for (idx in removedGraphs) {
+                    val g = program.graphs[idx]
+                    if (g.nodes.isNotEmpty()) {
+                        log.info { "图级别 DDMin: graph_${idx} 完全删除 (${g.nodes.size} 节点)" }
+                        steps.add(ReductionStep(
+                            type = StepType.DDMIN_REMOVE,
+                            description = "图级别 DDMin: graph_${idx} 完全删除 (${g.nodes.size} 节点)",
+                            removedNodes = g.nodes.map { "${it.op}" },
+                            remainingNodeCount = program.graphs.sumOf { it.nodes.size } - g.nodes.size,
+                        ))
+                        g.nodes.clear(); g.inputs.clear(); g.outputs.clear()
+                        changed = true
+                    }
+                }
+                program.graphs.removeAll { it.nodes.isEmpty() }
+            }
+
+            // Stage 2: 节点级别 DDMin（每个保留的图）
+            for (graph in program.graphs) {
+                if (graph.nodes.isEmpty()) continue
+                val nodesBackup = graph.nodes.toList()
+                val inputsBackup = graph.inputs.map { ref ->
+                    io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
+                        valueId = ref.valueId; type = ref.type
+                    }
+                }.toMutableList()
+                val outputsBackup = graph.outputs.map { ref ->
+                    io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
+                        valueId = ref.valueId; type = ref.type
+                    }
+                }.toMutableList()
+
+                val preserved = reducer.reduceGraph(graph, steps)
+                if (!preserved) {
+                    log.warn { "Graph '${graph.name}' 节点缩减后内部属性丢失，回滚此图" }
                     graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
                     graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
                     graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
-                } else {
-                    log.info { "Graph '${graph.name}' 缩减: ${nodesBackup.size} → ${graph.nodes.size} 节点 (整体验证通过)" }
+                } else if (graph.nodes.size < nodesBackup.size) {
+                    if (!propertyChecker.check(program)) {
+                        log.warn { "Graph '${graph.name}' 节点缩减后整体属性丢失，回滚此图" }
+                        graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
+                        graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
+                        graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
+                    } else {
+                        log.info { "Graph '${graph.name}' 节点缩减: ${nodesBackup.size} → ${graph.nodes.size} 节点 (整体验证通过)" }
+                        changed = true
+                    }
                 }
+            }
+
+            val newTotal = program.graphs.sumOf { it.nodes.size }
+            if (newTotal < prevTotal) {
+                log.info { "外层缩减第 $iterations 轮: ${prevTotal} → ${newTotal} 总节点" }
             }
         }
 

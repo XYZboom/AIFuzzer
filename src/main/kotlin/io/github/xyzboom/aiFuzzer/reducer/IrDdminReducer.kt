@@ -57,29 +57,7 @@ class IrDdminReducer(
         graph: UirGraph,
         steps: MutableList<ReductionStep>,
     ): Boolean {
-        // Stage 0: 初始 DCE（零风险，直接在原图上做）
-        val initialDce = DeadCodeEliminator.eliminateToFixpoint(graph)
-        if (initialDce.isNotEmpty()) {
-            steps.add(ReductionStep(
-                type = StepType.DEAD_CODE_ELIMINATION,
-                description = "初始死代码消除：移除 ${initialDce.size} 个不可达节点",
-                removedNodes = initialDce.map { "${it.op}" },
-                remainingNodeCount = graph.nodes.size,
-            ))
-            log.info { "初始 DCE 移除 ${initialDce.size} 个节点 → ${graph.nodes.size} 剩余" }
-        }
-
-        // DCE 后属性检查
-        if (!propertyChecker.check(program)) {
-            log.warn { "初始 DCE 后属性丢失，回滚 DCE (移除 ${initialDce.size} 个节点: ${initialDce.map { it.name }})" }
-            graph.nodes.addAll(initialDce)
-            // 回滚后图已恢复，属性保持。返回 true 让 DDMin 继续尝试删其他节点。
-            return true
-        } else {
-            log.info { "初始 DCE 后属性保持 (${initialDce.size} 节点移除)" }
-        }
-
-        // 清理 inputs/outputs（DCE 后可能有新的不可达输入/输出）
+        // 清理 inputs/outputs
         cleanupInputsOutputs(graph)
 
         // Stage 1: DDMin 阶段——操作当前 graph 的所有节点
@@ -137,8 +115,25 @@ class IrDdminReducer(
             // 执行依赖重建
             reconstructor.apply(repairPlan)
 
-            // 死代码消除
-            DeadCodeEliminator.eliminateToFixpoint(graph)
+            // 跨图引用修复：删除节点的输出可能在别的图的 inputs 里引用
+            // 需要更新这些 inputs 到新的 valueId（ZEROS 替代或 wire-around）
+            for (repair in repairPlan.repairs) {
+                val newValueId = when (repair.type) {
+                    RepairType.WIRE_AROUND -> repair.newValueId
+                    RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
+                }
+                if (newValueId != null) {
+                    for (otherGraph in program.graphs) {
+                        if (otherGraph === graph) continue
+                        for (input in otherGraph.inputs) {
+                            if (input.valueId == repair.oldValueId) {
+                                input.valueId = newValueId
+                                log.debug { "跨图引用修复: graph '${otherGraph.name}' input ${repair.oldValueId} → $newValueId" }
+                            }
+                        }
+                    }
+                }
+            }
 
             // 清理 graph.inputs：删除不被任何保留节点使用的输入
             val usedValueIds = graph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
@@ -198,14 +193,50 @@ class IrDdminReducer(
             val reconstructor = DependencyReconstructor(copyGraph)
             val repairPlan = reconstructor.prepare(copyRemovedNodes)
 
+            // 记录 wire-around 前后的形状变化，用于追踪形状不匹配
+            val shapeMismatches = mutableListOf<String>()
+            for (repair in repairPlan.repairs) {
+                if (repair.type == RepairType.WIRE_AROUND && repair.targetNode != null) {
+                    val targetNode = repair.targetNode!!
+                    val oldInput = targetNode.inputs.firstOrNull { it.valueId == repair.oldValueId }
+                    val oldType = oldInput?.type
+                    val newType = repair.newType
+                    if (oldType != null && newType != null && oldType != newType) {
+                        shapeMismatches.add(
+                            "${targetNode.name}: input ${repair.oldValueId} " +
+                            "oldType=${oldType.shape.dims.map { it.value }} " +
+                            "newType=${newType.shape.dims.map { it.value }}"
+                        )
+                    }
+                }
+            }
+            if (shapeMismatches.isNotEmpty()) {
+                log.debug { "testSubset: 形状不匹配 (${shapeMismatches.size}处): ${shapeMismatches.joinToString("; ")}" }
+            }
+
             // 删除节点
             copyGraph.nodes.removeAll(copyRemovedNodes)
 
             // 执行依赖重建
             reconstructor.apply(repairPlan)
 
-            // 死代码消除
-            DeadCodeEliminator.eliminateToFixpoint(copyGraph)
+            // 跨图引用修复（深拷贝上）
+            for (repair in repairPlan.repairs) {
+                val newValueId = when (repair.type) {
+                    RepairType.WIRE_AROUND -> repair.newValueId
+                    RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
+                }
+                if (newValueId != null) {
+                    for (otherGraph in copy.graphs) {
+                        if (otherGraph === copyGraph) continue
+                        for (input in otherGraph.inputs) {
+                            if (input.valueId == repair.oldValueId) {
+                                input.valueId = newValueId
+                            }
+                        }
+                    }
+                }
+            }
 
             // 清理 inputs/outputs
             val copyUsedValueIds = copyGraph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()

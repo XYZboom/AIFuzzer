@@ -46,8 +46,8 @@ class DependencyReconstructor(private val graph: UirGraph) {
                 val survivingConsumers = consumers.filter { it !in nodesToRemove }
                 if (survivingConsumers.isEmpty()) continue
 
-                if (removedNode.inputs.isNotEmpty()) {
-                    // Wire-around: 重连到第一个输入（无论是否 identity-like）
+                if (removedNode.inputs.isNotEmpty() && isWireAroundable(removedNode.op)) {
+                    // Wire-around: 只对 identity-like 算子做直通替换
                     val sourceRef = removedNode.inputs[0]
                     for (consumer in survivingConsumers) {
                         for (input in consumer.inputs) {
@@ -63,7 +63,8 @@ class DependencyReconstructor(private val graph: UirGraph) {
                         }
                     }
                 } else {
-                    // 无输入节点（常量生成等）: 插入 ZEROS 替代
+                    // 非 identity-like 算子或无输入节点：插入 ZEROS 替代
+                    // 用 ZEROS 替代比 wire-around 更安全，因为 ZEROS 保持输出形状不变
                     repairs.add(RepairAction(
                         type = RepairType.DEFAULT_VALUE,
                         oldValueId = outputRef.valueId,
@@ -149,8 +150,7 @@ class DependencyReconstructor(private val graph: UirGraph) {
         fun isWireAroundable(op: UirOpKind): Boolean = op in WIRE_AROUNDABLE_OPS
 
         val WIRE_AROUNDABLE_OPS = setOf(
-            UirOpKind.RESHAPE, UirOpKind.SQUEEZE, UirOpKind.UNSQUEEZE,
-            UirOpKind.EXPAND_DIMS, UirOpKind.BROADCAST_TO, UirOpKind.TRANSPOSE, UirOpKind.TILE,
+            // 纯形状保持的算子（输入输出形状相同）
             UirOpKind.CAST,
             UirOpKind.RELU, UirOpKind.LEAKY_RELU, UirOpKind.ELU,
             UirOpKind.SELU, UirOpKind.MISH, UirOpKind.HARDTANH,
