@@ -11,6 +11,8 @@ import io.github.xyzboom.aiFuzzer.cli.ReduceCommand
 /**
  * AiFuzzer CLI — AI Compiler Fuzzing Framework.
  *
+ * 目标：通过随机生成计算图，自动发现 AI 编译器（TVM Relax / PyTorch / ONNX）中的缺陷。
+ *
  * Usage:
  *   aiFuzzer fuzz [--config] [--runs]      Run fuzzing campaigns
  *   aiFuzzer reproduce --ir <path>         Re-run IR file(s)
