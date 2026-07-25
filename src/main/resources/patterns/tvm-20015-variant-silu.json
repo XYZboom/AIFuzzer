@@ -1,0 +1,33 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-20015-variant-silu",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector dominance crash variant: C=4, H×W≡2(mod4), H×W≥10",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "SILU",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 4,
+          "shape": [
+            {"$eq": 4},
+            {"$any": true},
+            {"$any": true},
+            {"$eq": 1}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

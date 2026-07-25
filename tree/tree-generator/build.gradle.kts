@@ -7,6 +7,10 @@ repositories {
     mavenCentral()
 }
 
+kotlin {
+    jvmToolchain(17)
+}
+
 application {
     mainClass = "io.github.xyzboom.aiFuzzer.tree.generator.MainKt"
 }

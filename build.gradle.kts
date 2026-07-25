@@ -12,9 +12,14 @@ repositories {
     mavenCentral()
 }
 
+kotlin {
+    jvmToolchain(17)
+}
+
 subprojects {
     pluginManager.apply("org.jetbrains.kotlin.jvm")
     kotlin {
+        jvmToolchain(17)
         compilerOptions {
             extraWarnings = true
             allWarningsAsErrors = true
