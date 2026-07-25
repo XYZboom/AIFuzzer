@@ -1,0 +1,39 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-189787",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor constant-folds sum(softmax) to exactly 1.0, floor() produces wrong integer",
+      "severity": "silent_correctness",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "SOFTMAX",
+          "inputs": ["v_in"],
+          "outputs": ["v_softmax"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n1", "op": "REDUCE_SUM",
+          "inputs": ["v_softmax"],
+          "outputs": ["v_sum"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n2", "op": "FLOOR",
+          "inputs": ["v_sum"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": {"$gte": 2},
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

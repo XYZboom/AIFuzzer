@@ -1,0 +1,77 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "onnx-8204",
+      "compiler": "onnx",
+      "target": "opset11",
+      "description": "keepdims=0 + opset=11 causes node output to be lost in shape inference",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "REDUCE_MEAN",
+          "inputs": ["v_in"],
+          "outputs": ["v_mean"],
+          "attrs": {"axis": {"$eq": -1}, "keepdims": 0}
+        },
+        {
+          "match": "node", "id": "n1", "op": "SUBTRACT",
+          "inputs": ["v_in", "v_mean"],
+          "outputs": ["v_centered"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n2", "op": "POWER",
+          "inputs": ["v_centered", "v_two"],
+          "outputs": ["v_sq"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n3", "op": "REDUCE_MEAN",
+          "inputs": ["v_sq"],
+          "outputs": ["v_var"],
+          "attrs": {"axis": {"$eq": -1}, "keepdims": 0}
+        },
+        {
+          "match": "node", "id": "n4", "op": "ADD",
+          "inputs": ["v_var", "v_eps"],
+          "outputs": ["v_var_eps"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n5", "op": "SQRT",
+          "inputs": ["v_var_eps"],
+          "outputs": ["v_std"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n6", "op": "DIVIDE",
+          "inputs": ["v_centered", "v_std"],
+          "outputs": ["v_norm"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n7", "op": "MULTIPLY",
+          "inputs": ["v_norm", "v_z"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_two",
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_eps",
+          "ndim": 0,
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

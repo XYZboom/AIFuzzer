@@ -1,0 +1,34 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-190421",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor sum(inf, dtype=int32) OverflowError in index_propagation",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "LOG",
+          "inputs": ["v_in"],
+          "outputs": ["v_log"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n1", "op": "REDUCE_SUM",
+          "inputs": ["v_log"],
+          "outputs": ["v_out"],
+          "attrs": {
+            "dtype": {"$eq": "int32"}
+          }
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

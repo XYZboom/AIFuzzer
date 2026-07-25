@@ -223,6 +223,15 @@ object ConfigLoader {
             (plMap["reducer"] as? Map<String, Any>)?.let { reduceMap ->
                 config.pipeline.reducer.enabled = reduceMap["enabled"] as? Boolean ?: config.pipeline.reducer.enabled
             }
+            // 解析去重配置
+            (plMap["dedup"] as? Map<String, Any>)?.let { dedupMap ->
+                config.pipeline.dedup.enabled = dedupMap["enabled"] as? Boolean ?: config.pipeline.dedup.enabled
+                config.pipeline.dedup.patternDir = dedupMap["pattern_dir"] as? String ?: config.pipeline.dedup.patternDir
+                config.pipeline.dedup.compiler = dedupMap["compiler"] as? String ?: config.pipeline.dedup.compiler
+                config.pipeline.dedup.target = dedupMap["target"] as? String ?: config.pipeline.dedup.target
+            }
+            // 同步到 generator 的 dedup 配置
+            config.generator.dedup = config.pipeline.dedup
         }
 
         return config

@@ -1,0 +1,43 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-190417",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor layer_norm(log2(zeros)) triggers sympy NaN in bounds analysis",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "ZEROS",
+          "inputs": [],
+          "outputs": ["v_zero"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n1", "op": "LOG2",
+          "inputs": ["v_zero"],
+          "outputs": ["v_log"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n2", "op": "LAYER_NORM",
+          "inputs": ["v_log"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_zero",
+          "ndim": {"$gte": 1},
+          "shape": [
+            {"$eq": 2},
+            {"$eq": 1}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

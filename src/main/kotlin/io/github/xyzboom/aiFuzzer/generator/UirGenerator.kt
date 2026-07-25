@@ -72,6 +72,17 @@ data class GeneratorConfig(
      * 默认开启，排除 CEIL, FLOOR, ROUND, ARGMAX, ARGMIN。
      */
     val avoidExtremeOps: Boolean = true,
+    /** 去重配置：在生成阶段规避已知 bug pattern */
+    val dedup: DedupConfig = DedupConfig(),
+)
+
+/** 去重配置 */
+data class DedupConfig(
+    val enabled: Boolean = false,
+    val patternDatabase: io.github.xyzboom.aiFuzzer.pattern.PatternDatabase? = null,
+    val compiler: String = "tvm",
+    val target: String = "llvm",
+    val maxRetries: Int = 5,
 )
 
 /**
@@ -80,7 +91,7 @@ data class GeneratorConfig(
  * 生成形状兼容的 DAG 图，直接输出可执行的 UIR 程序。
  * 形状大小自动受 [shapeTier] 预算控制，不超限，不重试。
  */
-class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
+open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
 
     private val rand = Random(config.seed)
     private val opsEnum: List<UirOpKind> = run {
@@ -95,6 +106,16 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         }
         baseOps
     }
+
+    /** 去重匹配器（如果启用） */
+    private val patternMatcher: io.github.xyzboom.aiFuzzer.pattern.PatternMatcher? =
+        if (config.dedup.enabled && config.dedup.patternDatabase != null) {
+            io.github.xyzboom.aiFuzzer.pattern.PatternMatcher(
+                config.dedup.patternDatabase!!,
+                config.dedup.compiler,
+                config.dedup.target,
+            )
+        } else null
 
     private var valueCounter = 0
     private var nodeCounter = 0
@@ -250,7 +271,43 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         liveTips[currentBranch] = availableValues.last()
         
         repeat(numNodes) { nodeIndex ->
-            val nodes = generateNode(nodeIndex, availableValues, liveTips, currentBranch)
+            // 去重重试循环
+            val maxRetries = if (config.dedup.enabled) config.dedup.maxRetries else 1
+            var finalNodes: List<UirNode>? = null
+            for (retry in 0 until maxRetries) {
+                // 回退：如果重试，需要移除上次生成的节点及其对 availableValues 的贡献
+                if (retry > 0 && finalNodes != null) {
+                    for (n in finalNodes!!) {
+                        n.outputs.forEach { o -> availableValues.remove(o.valueId) }
+                    }
+                }
+                val nodes = generateNode(nodeIndex, availableValues, liveTips, currentBranch)
+                val mainNode = nodes.last()
+
+                // 去重检查（仅对主节点，跳过 wrapper 节点）
+                if (patternMatcher != null) {
+                    val resolver: (String) -> UirValueRef? = { vid ->
+                        nodes.flatMap { n -> n.inputs + n.outputs }.find { it.valueId == vid }
+                    }
+                    log.trace { "节点 $nodeIndex (${mainNode.op}): 检查去重" }
+                    val matched = patternMatcher.onNodeGenerated(mainNode, resolver)
+                    if (matched != null) {
+                        log.warn { "节点 $nodeIndex: 与已知 pattern ${matched.id} 匹配！重试第 ${retry + 1} 次" }
+                        if (retry < maxRetries - 1) {
+                            for (n in nodes) {
+                                n.outputs.forEach { o -> valueShapes.remove(o.valueId) }
+                            }
+                            continue
+                        }
+                        log.warn { "节点 $nodeIndex: 重试 $maxRetries 次后仍匹配，接受" }
+                    }
+                }
+
+                finalNodes = nodes
+                break
+            }
+
+            val nodes = finalNodes ?: generateNode(nodeIndex, availableValues, liveTips, currentBranch)
             nodeList.addAll(nodes)
             
             // 更新可用值（只添加最后一个节点的输出）
@@ -314,7 +371,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * 对于单输入算子，检查是否有至少一个可用值满足约束；
      * 对于双输入算子，检查是否有至少一对可用值满足约束。
      */
-    private fun selectOpWithConstraints(availableValues: MutableList<String>): UirOpKind {
+    open fun selectOpWithConstraints(availableValues: MutableList<String>): UirOpKind {
         val maxRetries = 10
         for (retry in 0 until maxRetries) {
             val candidate = when {
@@ -368,7 +425,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
         return UirOpKind.RELU
     }
     
-    private fun generateNode(
+    open fun generateNode(
         nodeIndex: Int,
         availableValues: MutableList<String>,
         liveTips: Map<Int, String>,
@@ -765,7 +822,7 @@ class UirGenerator(private val config: GeneratorConfig = GeneratorConfig()) {
      * 根据当前 [usedElements] 剩余预算动态缩减每维上限，从源头保证不超 [shapeTier]。
      * 当剩余预算紧张时，优先缩小维度值而非缩减维度数，保持图结构多样性。
      */
-    private fun generateRandomShape(minNdim: Int, maxNdim: Int): UirShape {
+    open fun generateRandomShape(minNdim: Int, maxNdim: Int): UirShape {
         // 至少 2D，避免很多算子不支持 1D
         val ndim = rand.nextInt(maxOf(2, minNdim), maxOf(2, maxNdim) + 1)
         // 根据剩余预算计算此张量每维上限

@@ -1,0 +1,30 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-189799",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor add(-0.0, +0.0) preserves -0.0 violating IEEE 754",
+      "severity": "silent_correctness",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "ADD",
+          "inputs": ["v_a", "v_b"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_a",
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_b",
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

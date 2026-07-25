@@ -1,0 +1,32 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-20036",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "batch_norm CUDA storage_rewrite buffer_red before declaration",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "BATCH_NORM",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [
+            {"$eq": 1},
+            {"$any": true},
+            {"$eq": 1}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

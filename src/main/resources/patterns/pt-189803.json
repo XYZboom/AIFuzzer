@@ -1,0 +1,44 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-189803",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor reciprocal(elu+exp(elu)) catastrophic cancellation",
+      "severity": "silent_correctness",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "ELU",
+          "inputs": ["v_in"],
+          "outputs": ["v_elu"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n1", "op": "EXP",
+          "inputs": ["v_elu"],
+          "outputs": ["v_exp"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n2", "op": "ADD",
+          "inputs": ["v_elu", "v_exp"],
+          "outputs": ["v_sum"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n3", "op": "RECIPROCAL",
+          "inputs": ["v_sum"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

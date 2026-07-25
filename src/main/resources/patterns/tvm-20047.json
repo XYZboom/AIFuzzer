@@ -1,0 +1,49 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-20047",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "conv2d dlight GPU gemv FloorDiv extent assertion",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CONV2D",
+          "inputs": ["v_input", "v_weight"],
+          "outputs": ["v_out"],
+          "attrs": {
+            "stride": 1,
+            "padding": 0,
+            "dilation": 1,
+            "groups": 1
+          }
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_input",
+          "ndim": 4,
+          "shape": [
+            {"$any": true},
+            {"$eq": 1},
+            {"$gte": 2},
+            {"$any": true}
+          ],
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_weight",
+          "ndim": 4,
+          "shape": [
+            {"$eq": 1},
+            {"$eq": 1},
+            {"$eq": 1},
+            {"$eq": 2}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

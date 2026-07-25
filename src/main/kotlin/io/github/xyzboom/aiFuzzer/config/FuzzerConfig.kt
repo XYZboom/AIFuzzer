@@ -42,17 +42,33 @@ data class FuzzerGenConfig(
     var shapeTier: String = "tiny",
     /** 避免生成可能导致 NaN/Inf 的算子。默认开启 */
     var avoidNaNInf: Boolean = true,
-    /**
-     * 避免生成向上/向下取整、argmin/argmax 等极端算子。
-     * 这些算子会放大极其微小的浮点精度误差（如 1.0000001 vs 0.9999999 → 取整后 1 vs 0）。
-     * 当前排除: CEIL, FLOOR, ROUND, ARGMAX, ARGMIN, SIGN, CUMSUM, REDUCE_SUM, REDUCE_MEAN。
-     * 默认开启。
-     */
+    /** 避免生成向上/向下取整、argmin/argmax 等极端算子。当前排除: CEIL, FLOOR, ROUND, ARGMAX, ARGMIN, SIGN, CUMSUM, REDUCE_SUM, REDUCE_MEAN。默认开启。 */
     var avoidExtremeOps: Boolean = true,
+    /** 去重配置 */
+    var dedup: PipelineConfig.DedupConfig = PipelineConfig.DedupConfig(),
 ) {
     /** 转换为 backend 使用的 GeneratorConfig */
     fun toGeneratorConfig(seed: Long): GeneratorConfig {
         val resolvedOps = resolveOps()
+        val patternDb = if (dedup.enabled && dedup.patternDir.isNotBlank()) {
+            try {
+                val file = java.io.File(dedup.patternDir)
+                if (file.exists()) {
+                    val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(file.readText())
+                    System.err.println("[INFO] 加载 pattern 数据库: ${db.patterns.size} 个 pattern (${dedup.compiler}/${dedup.target})")
+                    db
+                } else {
+                    System.err.println("[WARN] pattern 文件不存在: ${dedup.patternDir}")
+                    null
+                }
+            } catch (e: Exception) {
+                System.err.println("[WARN] 加载 pattern 数据库失败: ${e.message}")
+                null
+            }
+        } else {
+            if (dedup.enabled) System.err.println("[WARN] dedup.enabled=true 但 patternDir 为空")
+            null
+        }
         return GeneratorConfig(
             seed = seed,
             minNodesPerGraph = minNodesPerGraph,
@@ -68,6 +84,13 @@ data class FuzzerGenConfig(
             shapeTier = shapeTier,
             avoidNaNInf = avoidNaNInf,
             avoidExtremeOps = avoidExtremeOps,
+            dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
+                enabled = dedup.enabled,
+                patternDatabase = patternDb,
+                compiler = dedup.compiler,
+                target = dedup.target,
+                maxRetries = 5,
+            ),
         )
     }
 
@@ -195,9 +218,21 @@ data class PipelineConfig(
     var failFast: Boolean = false,
     /** 缩减配置，不设置或 enabled=false 时禁用缩减 */
     var reducer: ReducerConfig = ReducerConfig(),
+    /** 去重配置：生成阶段规避已知 bug pattern */
+    var dedup: DedupConfig = DedupConfig(),
 ) {
     data class ReducerConfig(
         var enabled: Boolean = true,   // 默认开启自动缩减
+    )
+
+    data class DedupConfig(
+        var enabled: Boolean = false,
+        /** pattern 数据库路径，支持目录或单个文件 */
+        var patternDir: String = "",
+        /** 编译器名称，用于筛选 pattern */
+        var compiler: String = "tvm",
+        /** 编译目标，用于筛选 pattern */
+        var target: String = "llvm",
     )
 
     fun toFuzzingConfig(): FuzzingPipeline.FuzzingConfig {

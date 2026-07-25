@@ -36,7 +36,54 @@ class FuzzingPipeline(
         val failFast: Boolean = false,
         /** 缩减配置，null 表示不启用缩减 */
         val reducerConfig: AutoReducer.ReducerConfig? = AutoReducer.ReducerConfig(enabled = true),
-    )
+        /** 去重配置 */
+        val dedup: DedupConfig = DedupConfig(),
+    ) {
+        data class DedupConfig(
+            val enabled: Boolean = false,
+            val compiler: String = "tvm",
+            val target: String = "llvm",
+            val patternDir: String = "",
+        )
+    }
+
+    /** 缓存的 pattern 数据库 */
+    private val patternDatabase: io.github.xyzboom.aiFuzzer.pattern.PatternDatabase? by lazy {
+        if (!config.dedup.enabled) return@lazy null
+        loadPatternDatabase(config.dedup)
+    }
+
+    private fun loadPatternDatabase(dedup: FuzzingConfig.DedupConfig): io.github.xyzboom.aiFuzzer.pattern.PatternDatabase {
+        // 先尝试从指定目录加载
+        val dir = if (dedup.patternDir.isNotBlank()) {
+            java.io.File(dedup.patternDir)
+        } else {
+            // 从默认资源目录加载
+            val resource = this::class.java.classLoader.getResource("patterns")
+            if (resource == null) {
+                log.warn { "resources/patterns 目录未找到，去重已禁用" }
+                return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = emptyList())
+            }
+            java.io.File(resource.toURI())
+        }
+        if (!dir.isDirectory) {
+            log.warn { "Pattern 目录 $dir 不存在，去重已禁用" }
+            return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = emptyList())
+        }
+        val allPatterns = mutableListOf<io.github.xyzboom.aiFuzzer.pattern.PatternDef>()
+        val files = dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
+        for (file in files) {
+            try {
+                val json = file.readText()
+                val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(json)
+                allPatterns.addAll(db.patterns)
+            } catch (e: Exception) {
+                log.warn(e) { "加载 pattern 文件 ${file.name} 失败" }
+            }
+        }
+        log.info { "加载了 ${allPatterns.size} 个 pattern (${files.size} 个文件)" }
+        return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = allPatterns)
+    }
 
     /**
      * 单次 Fuzzing 运行（单线程，调用方负责上下文）。
@@ -45,7 +92,19 @@ class FuzzingPipeline(
     fun runOnce(seed: Long = System.currentTimeMillis()): List<FuzzingResult> {
         log.debug { "运行单次测试: seed=$seed" }
         // 每次创建新的 generator，避免共享可变状态
-        val generator = UirGenerator(generatorConfig.copy(seed = seed))
+        var genConfig = generatorConfig.copy(seed = seed)
+        if (config.dedup.enabled && patternDatabase != null) {
+            genConfig = genConfig.copy(
+                dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
+                    enabled = true,
+                    patternDatabase = patternDatabase,
+                    compiler = config.dedup.compiler,
+                    target = config.dedup.target,
+                    maxRetries = 5,
+                )
+            )
+        }
+        val generator = UirGenerator(genConfig)
         val program = generator.generate()
         log.trace { "生成程序: ${program.graphs.size} 个图" }
         return backends.map { backend ->
