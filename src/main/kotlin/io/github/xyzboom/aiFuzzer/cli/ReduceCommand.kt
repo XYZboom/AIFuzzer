@@ -148,6 +148,7 @@ class ReduceCommand : CliktCommand(
             // fast-path: exact type signatures
             if (originalStderr.contains("VERIFY: FAIL")) return currentStderr.contains("VERIFY: FAIL")
             if (originalStderr.contains("tvm.error.InternalError")) return currentStderr.contains("tvm.error.InternalError")
+            if (originalStderr.contains("ScheduleError")) return currentStderr.contains("ScheduleError")
             if (originalStderr.contains("[ONNXRuntimeError]")) {
                 // Match by error code + distinctive message content to avoid false positives
                 val codePat = Regex("""\[ONNXRuntimeError]\s*:\s*(\d+)\s*:""")
@@ -169,6 +170,7 @@ class ReduceCommand : CliktCommand(
                 "torch._inductor.exc.InductorError:", "AssertionError:",
                 "IndexError:", "KeyError:", "ValueError:", "ZeroDivisionError:",
                 "onnxruntime.capi.onnxruntime_pybind11_state.",
+                "tvm.s_tir.schedule.schedule.ScheduleError:", "ScheduleError:",
             )
             val originalErrorType = originalStderr.lines().map { it.trim() }.filter { it.isNotBlank() }.lastOrNull {
                 knownErrorPrefixes.any { prefix -> it.startsWith(prefix) }
