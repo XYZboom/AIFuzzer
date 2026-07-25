@@ -470,6 +470,8 @@ class FuzzingPipeline(
             "KeyError:", "AttributeError:", "ModuleNotFoundError:", "ImportError:",
             "SyntaxError:", "IndentationError:", "ZeroDivisionError:",
             "AssertionError:", "NotImplementedError:", "StopIteration:",
+            "tvm.error.InternalError:", "tvm.s_tir.schedule.schedule.ScheduleError:",
+            "tvm.error.TVMError:", "ScheduleError:",
         )
         return stderr.lines()
             .map { it.trim() }
