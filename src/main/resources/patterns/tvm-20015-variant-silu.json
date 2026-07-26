@@ -5,7 +5,7 @@
       "id": "tvm-20015-variant-silu",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "silu LLVM shufflevector dominance crash: C=4, ndim 3 or 4, inner product ≡2 mod 4, ≥10",
+      "description": "silu LLVM shufflevector dominance crash: ndim 3 or 4, C=4 variant",
       "severity": "crash",
       "nodes": [
         {
@@ -20,7 +20,7 @@
           "match": "value", "id": "v_in",
           "ndim": {"$in": [3, 4]},
           "shape": [
-            {"$eq": 4},
+            {"$any": true},
             {"$any": true},
             {"$any": true}
           ],
