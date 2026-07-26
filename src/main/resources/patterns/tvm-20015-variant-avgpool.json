@@ -2,25 +2,30 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20015-variant-silu",
+      "id": "tvm-20015-variant-avgpool",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "silu LLVM shufflevector dominance crash: C=4, ndim 3 or 4, inner product ≡2 mod 4, ≥10",
+      "description": "avg_pool2d LLVM shufflevector dominance crash: N=4, C=1, kernel=2, stride=2",
       "severity": "crash",
       "nodes": [
         {
-          "match": "node", "id": "n0", "op": "SILU",
+          "match": "node", "id": "n0", "op": "AVG_POOL2D",
           "inputs": ["v_in"],
           "outputs": ["v_out"],
-          "attrs": {}
+          "attrs": {
+            "kernel_size": 2,
+            "stride": 2,
+            "padding": 0
+          }
         }
       ],
       "values": [
         {
           "match": "value", "id": "v_in",
-          "ndim": {"$in": [3, 4]},
+          "ndim": 4,
           "shape": [
             {"$eq": 4},
+            {"$eq": 1},
             {"$any": true},
             {"$any": true}
           ],

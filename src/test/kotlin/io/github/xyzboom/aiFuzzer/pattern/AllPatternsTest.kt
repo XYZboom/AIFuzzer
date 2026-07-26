@@ -10,7 +10,7 @@ import org.junit.jupiter.api.BeforeAll
 import java.io.File
 
 /**
- * 对所有 17 个已知 bug pattern 的完整测试。
+ * 对所有 18 个已知 bug pattern 的完整测试。
  *
  * 每个 pattern 测试三种情况：
  * 1. 正例：匹配 op + 触发形状 → 应该匹配
@@ -87,8 +87,8 @@ class AllPatternsTest {
     // ===== 测试 =====
 
     @Test
-    fun `load all 17 patterns from resources`() {
-        assertEquals(17, allPatterns.size)
+    fun `load all 18 patterns from resources`() {
+        assertEquals(18, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
@@ -169,11 +169,57 @@ class AllPatternsTest {
             listOf(shapeOf(8, 5, 2, 1)), listOf(shapeOf(8, 5, 2, 1)))
         assertNull(matcher.onNodeGenerated(wrongC2, resolverOf(wrongC2)), "tvm-20015-variant-silu C=8")
 
-        // 反例-不同形状: 3D [4,5,2] (ndim=3, not 4)
+        // 正例: 3D [4,5,2] — ndim=3 also triggers (widened pattern)
         matcher.reset()
         val ndim3 = mockNode("silu", UirOpKind.SILU,
             listOf(shapeOf(4, 5, 2)), listOf(shapeOf(4, 5, 2)))
-        assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-silu 3D")
+        assertNotNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-silu positive 3D [4,5,2]")
+
+        // 反例-不同形状: 2D [4,5] (ndim=2, not 3 or 4)
+        matcher.reset()
+        val ndim2 = mockNode("silu", UirOpKind.SILU,
+            listOf(shapeOf(4, 5)), listOf(shapeOf(4, 5)))
+        assertNull(matcher.onNodeGenerated(ndim2, resolverOf(ndim2)), "tvm-20015-variant-silu 2D")
+    }
+
+    @Test
+    fun `tvm-20015-variant-avgpool avg_pool2d LLVM shufflevector`() {
+        val pattern = allPatterns.first { it.id == "tvm-20015-variant-avgpool" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
+
+        // 正例: [4,1,10,4] — N=4, C=1, kernel=2, stride=2
+        val pos = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(4, 1, 10, 4)), listOf(shapeOf(4, 1, 5, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-avgpool positive")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
+            listOf(shapeOf(4, 1, 10, 4)), listOf(shapeOf(4, 1, 5, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-avgpool diff op")
+
+        // 反例-不同形状: N=2 (not 4)
+        matcher.reset()
+        val wrongN = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(2, 1, 10, 4)), listOf(shapeOf(2, 1, 5, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(wrongN, resolverOf(wrongN)), "tvm-20015-variant-avgpool N=2")
+
+        // 反例-不同形状: C=2 (not 1)
+        matcher.reset()
+        val wrongC = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(4, 2, 10, 4)), listOf(shapeOf(4, 2, 5, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(wrongC, resolverOf(wrongC)), "tvm-20015-variant-avgpool C=2")
+
+        // 反例-不同形状: N=1 (not 4)
+        matcher.reset()
+        val wrongN2 = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(1, 1, 10, 4)), listOf(shapeOf(1, 1, 5, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(wrongN2, resolverOf(wrongN2)), "tvm-20015-variant-avgpool N=1")
     }
 
     @Test
