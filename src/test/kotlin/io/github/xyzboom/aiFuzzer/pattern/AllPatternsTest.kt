@@ -140,10 +140,16 @@ class AllPatternsTest {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-silu" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
 
-        // 正例: [4,5,2,1] — C=4, last dim=1
+        // 正例: [4,5,2,1] — C=4, any last dim
         val pos = mockNode("silu", UirOpKind.SILU,
             listOf(shapeOf(4, 5, 2, 1)), listOf(shapeOf(4, 5, 2, 1)))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu positive")
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu positive [4,5,2,1]")
+
+        // 正例: [4,1,5,2] — C=4, last dim=2 (widened pattern)
+        matcher.reset()
+        val pos2 = mockNode("silu", UirOpKind.SILU,
+            listOf(shapeOf(4, 1, 5, 2)), listOf(shapeOf(4, 1, 5, 2)))
+        assertNotNull(matcher.onNodeGenerated(pos2, resolverOf(pos2)), "tvm-20015-variant-silu positive [4,1,5,2]")
 
         // 反例-不同算子
         matcher.reset()
@@ -157,13 +163,13 @@ class AllPatternsTest {
             listOf(shapeOf(3, 5, 2, 1)), listOf(shapeOf(3, 5, 2, 1)))
         assertNull(matcher.onNodeGenerated(wrongC, resolverOf(wrongC)), "tvm-20015-variant-silu C=3")
 
-        // 反例-不同形状: last dim=2 (not 1)
+        // 反例-不同形状: C=8 (not 4)
         matcher.reset()
-        val wrongW = mockNode("silu", UirOpKind.SILU,
-            listOf(shapeOf(4, 5, 2, 2)), listOf(shapeOf(4, 5, 2, 2)))
-        assertNull(matcher.onNodeGenerated(wrongW, resolverOf(wrongW)), "tvm-20015-variant-silu last dim=2")
+        val wrongC2 = mockNode("silu", UirOpKind.SILU,
+            listOf(shapeOf(8, 5, 2, 1)), listOf(shapeOf(8, 5, 2, 1)))
+        assertNull(matcher.onNodeGenerated(wrongC2, resolverOf(wrongC2)), "tvm-20015-variant-silu C=8")
 
-        // 反例-不同形状: 3D [4,5,2] (not 4D)
+        // 反例-不同形状: 3D [4,5,2] (ndim=3, not 4)
         matcher.reset()
         val ndim3 = mockNode("silu", UirOpKind.SILU,
             listOf(shapeOf(4, 5, 2)), listOf(shapeOf(4, 5, 2)))
