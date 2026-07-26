@@ -50,23 +50,55 @@ data class FuzzerGenConfig(
     /** 转换为 backend 使用的 GeneratorConfig */
     fun toGeneratorConfig(seed: Long): GeneratorConfig {
         val resolvedOps = resolveOps()
-        val patternDb = if (dedup.enabled && dedup.patternDir.isNotBlank()) {
-            try {
-                val file = java.io.File(dedup.patternDir)
-                if (file.exists()) {
-                    val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(file.readText())
-                    System.err.println("[INFO] 加载 pattern 数据库: ${db.patterns.size} 个 pattern (${dedup.compiler}/${dedup.target})")
-                    db
-                } else {
-                    System.err.println("[WARN] pattern 文件不存在: ${dedup.patternDir}")
+        val patternDb = if (dedup.enabled) {
+            if (dedup.patternDir.isNotBlank()) {
+                try {
+                    val file = java.io.File(dedup.patternDir)
+                    if (file.exists()) {
+                        val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(file.readText())
+                        System.err.println("[INFO] 加载 pattern 数据库: ${db.patterns.size} 个 pattern (${dedup.compiler}/${dedup.target})")
+                        db
+                    } else {
+                        System.err.println("[WARN] pattern 文件不存在: ${dedup.patternDir}")
+                        null
+                    }
+                } catch (e: Exception) {
+                    System.err.println("[WARN] 加载 pattern 数据库失败: ${e.message}")
                     null
                 }
-            } catch (e: Exception) {
-                System.err.println("[WARN] 加载 pattern 数据库失败: ${e.message}")
-                null
+            } else {
+                // 从 classpath resources/patterns/ 加载
+                try {
+                    val resource = this::class.java.classLoader.getResource("patterns")
+                    if (resource != null) {
+                        val dir = java.io.File(resource.toURI())
+                        if (dir.isDirectory) {
+                            val allPatterns = mutableListOf<io.github.xyzboom.aiFuzzer.pattern.PatternDef>()
+                            val files = dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
+                            for (file in files) {
+                                try {
+                                    val json = file.readText()
+                                    val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(json)
+                                    allPatterns.addAll(db.patterns)
+                                } catch (e: Exception) {
+                                    System.err.println("[WARN] 加载 pattern 文件 ${file.name} 失败: ${e.message}")
+                                }
+                            }
+                            System.err.println("[INFO] 从 classpath 加载了 ${allPatterns.size} 个 pattern (${files.size} 个文件)")
+                            io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = allPatterns)
+                        } else {
+                            null
+                        }
+                    } else {
+                        System.err.println("[WARN] resources/patterns 目录未找到")
+                        null
+                    }
+                } catch (e: Exception) {
+                    System.err.println("[WARN] 从 classpath 加载 pattern 失败: ${e.message}")
+                    null
+                }
             }
         } else {
-            if (dedup.enabled) System.err.println("[WARN] dedup.enabled=true 但 patternDir 为空")
             null
         }
         return GeneratorConfig(
