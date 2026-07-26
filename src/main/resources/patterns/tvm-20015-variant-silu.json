@@ -2,10 +2,10 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20015-variant-silu",
+      "id": "tvm-20015-variant-silu-2d",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "silu LLVM shufflevector dominance crash: ndim 3 or 4, C=4 variant",
+      "description": "silu LLVM shufflevector dominance crash: ndim=2",
       "severity": "crash",
       "nodes": [
         {
@@ -18,8 +18,62 @@
       "values": [
         {
           "match": "value", "id": "v_in",
-          "ndim": {"$in": [3, 4]},
+          "ndim": 2,
           "shape": [
+            {"$any": true},
+            {"$any": true}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-20015-variant-silu-3d",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector dominance crash: ndim=3",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "SILU",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [
+            {"$any": true},
+            {"$any": true},
+            {"$any": true}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-20015-variant-silu-4d",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector dominance crash: ndim=4",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "SILU",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 4,
+          "shape": [
+            {"$any": true},
             {"$any": true},
             {"$any": true},
             {"$any": true}

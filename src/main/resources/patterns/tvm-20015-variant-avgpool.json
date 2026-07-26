@@ -24,7 +24,7 @@
           "match": "value", "id": "v_in",
           "ndim": 4,
           "shape": [
-            {"$eq": 4},
+            {"$any": true},
             {"$any": true},
             {"$any": true},
             {"$any": true}
