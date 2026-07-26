@@ -292,7 +292,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     log.trace { "节点 $nodeIndex (${mainNode.op}): 检查去重" }
                     val matched = patternMatcher.onNodeGenerated(mainNode, resolver)
                     if (matched != null) {
-                        log.warn { "节点 $nodeIndex: 与已知 pattern ${matched.id} 匹配！重试第 ${retry + 1} 次" }
+                        log.trace { "节点 $nodeIndex: 与已知 pattern ${matched.id} 匹配！重试第 ${retry + 1} 次" }
                         if (retry < maxRetries - 1) {
                             // 先保存为 finalNodes 再清理，确保下一轮能正确清理
                             val prevNodes = finalNodes
