@@ -1,0 +1,30 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-20015-variant-silu-1d",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector dominance crash: 1D input",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "SILU",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 1,
+          "shape": [
+            {"$any": true}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}
