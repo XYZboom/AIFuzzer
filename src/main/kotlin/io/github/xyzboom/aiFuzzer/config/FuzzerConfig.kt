@@ -277,6 +277,12 @@ data class PipelineConfig(
             keepArtifacts = false,
             failFast = failFast,
             reducerConfig = rc,
+            dedup = FuzzingPipeline.FuzzingConfig.DedupConfig(
+                enabled = dedup.enabled,
+                compiler = dedup.compiler,
+                target = dedup.target,
+                patternDir = dedup.patternDir,
+            ),
         )
     }
 }
