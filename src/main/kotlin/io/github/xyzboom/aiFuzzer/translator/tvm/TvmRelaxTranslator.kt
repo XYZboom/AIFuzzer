@@ -29,6 +29,8 @@ class TvmRelaxTranslator(
     private val target: String = "llvm",
     /** TVM 设备，如 "cpu" 或 "cuda"，对应 tvm.cpu() / tvm.cuda() */
     private val device: String = "cpu",
+    /** 跨目标差分测试：同时在 CPU 和 GPU 上编译执行，比较输出是否一致 */
+    private val crossTargetDifferential: Boolean = false,
 ) : UirTranslator<UirProgram, String> {
 
     companion object {
@@ -169,8 +171,19 @@ class TvmRelaxTranslator(
         builder.appendLine()
         builder.appendLine("# === Execute compiled module (chained graphs) ===")
         builder.appendLine("np.random.seed(42)")
-        builder.appendLine("ex = relax.build(mod, target=\"$target\")")
-        builder.appendLine("vm = relax.VirtualMachine(ex, tvm.$device())")
+
+        if (crossTargetDifferential) {
+            // 差分测试模式：分别构建 CPU (llvm) 和 GPU (cuda) 版本，比较输出
+            builder.appendLine()
+            builder.appendLine("# === Cross-target differential mode: CPU vs GPU ===")
+            builder.appendLine("ex_cpu = relax.build(mod, target=\"llvm\")")
+            builder.appendLine("vm_cpu = relax.VirtualMachine(ex_cpu, tvm.cpu())")
+            builder.appendLine("ex_gpu = relax.build(mod, target=\"cuda\")")
+            builder.appendLine("vm_gpu = relax.VirtualMachine(ex_gpu, tvm.cuda())")
+        } else {
+            builder.appendLine("ex = relax.build(mod, target=\"$target\")")
+            builder.appendLine("vm = relax.VirtualMachine(ex, tvm.$device())")
+        }
 
         // 计算"已生产"的 valueId（来自前图输出的值不再生成随机输入）
         val tvmProducedIds = mutableSetOf<String>()
@@ -189,55 +202,120 @@ class TvmRelaxTranslator(
                         }
                     }
                     builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
-                    if (device != "cpu") {
-                        builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId}, device=tvm.$device())")
+                    if (crossTargetDifferential) {
+                        builder.appendLine("${input.valueId}_cpu = tvm.runtime.tensor(np_${input.valueId})")
+                        builder.appendLine("${input.valueId}_gpu = tvm.runtime.tensor(np_${input.valueId}, device=tvm.cuda())")
                     } else {
-                        builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId})")
+                        if (device != "cpu") {
+                            builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId}, device=tvm.$device())")
+                        } else {
+                            builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId})")
+                        }
                     }
                     tvmProducedIds.add(input.valueId)
                 }
             }
 
-            // 执行
-            val funcName = graph.name.ifBlank { "func_$gIdx" }
-            val resultVar = "tvm_result_$gIdx"
-            val inputArgs = graph.inputs.joinToString(", ") { it.valueId }
+            if (crossTargetDifferential) {
+                // 差分模式：分别在 CPU 和 GPU 上执行，比较输出
+                val funcName = graph.name.ifBlank { "func_$gIdx" }
+                val cpuArgs = graph.inputs.joinToString(", ") { it.valueId + "_cpu" }
+                val gpuArgs = graph.inputs.joinToString(", ") { it.valueId + "_gpu" }
 
-            if (gIdx > 0) {
-                builder.appendLine()
-                builder.appendLine("# Chained: ${element.graphs[gIdx - 1].name} -> ${graph.name}")
-                // 解包上一图的输出（TVM VM 对多输出返回 tuple）
-                val prevGraph = element.graphs[gIdx - 1]
-                val prevOutputIds = prevGraph.outputs.map { it.valueId }
-                val prevResultVar = "tvm_result_${gIdx - 1}"
-                if (prevOutputIds.size > 1) {
-                    // 多输出：转成列表，按索引解包
-                    builder.appendLine("_prev_out = $prevResultVar if not hasattr($prevResultVar, 'numpy') else [$prevResultVar]")
-                    for ((i, outId) in prevOutputIds.withIndex()) {
-                        builder.appendLine("$outId = _prev_out[$i]")
+                if (gIdx > 0) {
+                    val prevGraph = element.graphs[gIdx - 1]
+                    val prevOutputIds = prevGraph.outputs.map { it.valueId }
+                    if (prevOutputIds.isNotEmpty()) {
+                        builder.appendLine()
+                        builder.appendLine("# Chained: ${prevGraph.name} -> ${graph.name}")
+                        val prevCpuVar = "tvm_result_cpu_${gIdx - 1}"
+                        val prevGpuVar = "tvm_result_gpu_${gIdx - 1}"
+                        if (prevOutputIds.size > 1) {
+                            builder.appendLine("_prev_cpu = $prevCpuVar")
+                            builder.appendLine("_prev_gpu = $prevGpuVar")
+                            for ((i, outId) in prevOutputIds.withIndex()) {
+                                builder.appendLine("${outId}_cpu = _prev_cpu[$i]")
+                                builder.appendLine("${outId}_gpu = _prev_gpu[$i]")
+                            }
+                        } else {
+                            builder.appendLine("${prevOutputIds[0]}_cpu = $prevCpuVar")
+                            builder.appendLine("${prevOutputIds[0]}_gpu = $prevGpuVar")
+                        }
                     }
-                } else {
-                    // 单输出：直接赋值
-                    builder.appendLine("${prevOutputIds[0]} = $prevResultVar")
                 }
+
+                builder.appendLine()
+                builder.appendLine("# CPU execution")
+                builder.appendLine("tvm_result_cpu_$gIdx = vm_cpu[\"$funcName\"]($cpuArgs)")
+                builder.appendLine("# GPU execution")
+                builder.appendLine("tvm_result_gpu_$gIdx = vm_gpu[\"$funcName\"]($gpuArgs)")
+
+                // 比较输出
+                builder.appendLine("# Compare CPU vs GPU outputs")
+                builder.appendLine("_cpu_val = tvm_result_cpu_$gIdx")
+                builder.appendLine("_gpu_val = tvm_result_gpu_$gIdx")
+                builder.appendLine("if hasattr(_cpu_val, 'numpy'):")
+                builder.appendLine("    _cpu_arr = _cpu_val.numpy()")
+                builder.appendLine("    _gpu_arr = _gpu_val.numpy()")
+                builder.appendLine("    if _cpu_arr.shape != _gpu_arr.shape:")
+                builder.appendLine("        print(f'[DIFF-MISMATCH] ${graph.name}: shape mismatch CPU={list(_cpu_arr.shape)} GPU={list(_gpu_arr.shape)}')")
+                builder.appendLine("    else:")
+                builder.appendLine("        _max_diff = float(np.max(np.abs(_cpu_arr.astype(np.float64) - _gpu_arr.astype(np.float64))))")
+                builder.appendLine("        if _max_diff > 1e-3:")
+                builder.appendLine("            print(f'[DIFF-MISMATCH] ${graph.name}: CPU vs GPU mismatch, max_diff={_max_diff}')")
+                builder.appendLine("        else:")
+                builder.appendLine("            print(f'[TVM-OUT] ${graph.name}: shape={list(_cpu_arr.shape)} (CPU=GPU match)')")
+                builder.appendLine("else:")
+                builder.appendLine("    # tvm.runtime.Array (multi-output container)")
+                builder.appendLine("    for _ci in range(len(_cpu_val)):")
+                builder.appendLine("        _cpu_arr = _cpu_val[_ci].numpy()")
+                builder.appendLine("        _gpu_arr = _gpu_val[_ci].numpy()")
+                builder.appendLine("        if _cpu_arr.shape != _gpu_arr.shape:")
+                builder.appendLine("            print(f'[DIFF-MISMATCH] ${graph.name}[{_ci}]: shape mismatch CPU={list(_cpu_arr.shape)} GPU={list(_gpu_arr.shape)}')")
+                builder.appendLine("        else:")
+                builder.appendLine("            _max_diff = float(np.max(np.abs(_cpu_arr.astype(np.float64) - _gpu_arr.astype(np.float64))))")
+                builder.appendLine("            if _max_diff > 1e-3:")
+                builder.appendLine("                print(f'[DIFF-MISMATCH] ${graph.name}[{_ci}]: CPU vs GPU mismatch, max_diff={_max_diff}')")
+
+                // 为后续图标记输出
+                graph.outputs.forEach { tvmProducedIds.add(it.valueId) }
+            } else {
+                // 普通模式：单后端执行
+                val funcName = graph.name.ifBlank { "func_$gIdx" }
+                val resultVar = "tvm_result_$gIdx"
+                val inputArgs = graph.inputs.joinToString(", ") { it.valueId }
+
+                if (gIdx > 0) {
+                    builder.appendLine()
+                    builder.appendLine("# Chained: ${element.graphs[gIdx - 1].name} -> ${graph.name}")
+                    val prevGraph = element.graphs[gIdx - 1]
+                    val prevOutputIds = prevGraph.outputs.map { it.valueId }
+                    val prevResultVar = "tvm_result_${gIdx - 1}"
+                    if (prevOutputIds.size > 1) {
+                        builder.appendLine("_prev_out = $prevResultVar if not hasattr($prevResultVar, 'numpy') else [$prevResultVar]")
+                        for ((i, outId) in prevOutputIds.withIndex()) {
+                            builder.appendLine("$outId = _prev_out[$i]")
+                        }
+                    } else {
+                        builder.appendLine("${prevOutputIds[0]} = $prevResultVar")
+                    }
+                }
+                builder.appendLine()
+                builder.appendLine("$resultVar = vm[\"$funcName\"]($inputArgs)")
+
+                graph.outputs.forEach { tvmProducedIds.add(it.valueId) }
+
+                builder.appendLine("# Print output")
+                builder.appendLine("if hasattr($resultVar, 'numpy'):")
+                builder.appendLine("    _arr = $resultVar.numpy()")
+                builder.appendLine("    print(f\"[TVM-OUT] graph_${gIdx}: shape={list(_arr.shape)}\")")
+                builder.appendLine("else:")
+                builder.appendLine("    for _tvmi in range(len($resultVar)):")
+                builder.appendLine("        _arr = $resultVar[_tvmi].numpy()")
+                builder.appendLine("        print(f\"[TVM-OUT] graph_${gIdx}[{_tvmi}]: shape={list(_arr.shape)}\")")
             }
-            builder.appendLine()
-            builder.appendLine("$resultVar = vm[\"$funcName\"]($inputArgs)")
-
-            // 标记本图输出为已生产
-            graph.outputs.forEach { tvmProducedIds.add(it.valueId) }
-
-            // 打印结果
-            builder.appendLine("# Print output")
-            builder.appendLine("if hasattr($resultVar, 'numpy'):")
-            builder.appendLine("    _arr = $resultVar.numpy()")
-            builder.appendLine("    print(f\"[TVM-OUT] graph_${gIdx}: shape={list(_arr.shape)}\")")
-            builder.appendLine("else:")
-            builder.appendLine("    for _tvmi in range(len($resultVar)):")
-            builder.appendLine("        _arr = $resultVar[_tvmi].numpy()")
-            builder.appendLine("        print(f\"[TVM-OUT] graph_${gIdx}[{_tvmi}]: shape={list(_arr.shape)}\")")
         }
-        
+
         builder.appendLine("print(\"Execution: OK\")")
 
         val elapsed = System.currentTimeMillis() - startTime

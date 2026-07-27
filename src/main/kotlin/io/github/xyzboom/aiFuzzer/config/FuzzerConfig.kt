@@ -173,6 +173,8 @@ data class TvmConfig(
     var target: String = "llvm",
     /** TVM 设备，如 "cpu" 或 "cuda"，对应 tvm.cpu() / tvm.cuda() */
     var device: String = "cpu",
+    /** 跨目标差分测试：同时在 CPU 和 GPU 上编译执行，比较输出是否一致 */
+    var crossTargetDifferential: Boolean = false,
     /** 远程 SSH 主机配置（可选）。设置后 daemon 在远程主机上运行 */
     var remote: RemoteSshConfig? = null,
 )

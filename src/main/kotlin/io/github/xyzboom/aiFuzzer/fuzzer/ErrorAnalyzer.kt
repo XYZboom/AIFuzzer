@@ -26,6 +26,8 @@ enum class ErrorCategory {
     OP_NOT_IMPLEMENTED,
     // 其他 TVM 编译错误
     TVM_COMPILE_ERROR,
+    // 跨目标差分测试结果不一致（CPU vs GPU 输出差异）
+    CROSS_TARGET_DIFF,
     // Dynamo 捕获错误（PyTorch）
     DYNAMO_ERROR,
     // Inductor 编译错误（PyTorch）
@@ -113,6 +115,10 @@ object ErrorAnalyzer {
                     else -> extractLine(stderr, "tvm.error")
                 }
                 ErrorInfo(ErrorCategory.TVM_ERROR, msg)
+            }
+            stderr.contains("[DIFF-MISMATCH]") -> {
+                val msg = extractLine(stderr, "[DIFF-MISMATCH]")
+                ErrorInfo(ErrorCategory.CROSS_TARGET_DIFF, msg)
             }
             stderr.contains("Check failed") -> {
                 val msg = extractLine(stderr, "Check failed")

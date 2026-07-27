@@ -88,7 +88,7 @@ class AllPatternsTest {
 
     @Test
     fun `load all 20 patterns from resources`() {
-        assertEquals(22, allPatterns.size)
+        assertEquals(24, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
@@ -268,6 +268,58 @@ class AllPatternsTest {
             listOf(shapeOf(4, 3, 6)), listOf(shapeOf(4, 2, 5)),
             mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
         assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-avgpool-stride1 3D")
+    }
+
+    @Test
+    fun `tvm-20015-variant-maxpool max_pool2d LLVM shufflevector k=2 stride=2`() {
+        val pattern = allPatterns.first { it.id == "tvm-20015-variant-maxpool" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
+
+        // 正例: [4,5,2,5] — any N,C,H,W, k=2, stride=2
+        val pos = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
+            listOf(shapeOf(4, 5, 2, 5)), listOf(shapeOf(4, 5, 1, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-maxpool positive")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(4, 5, 2, 5)), listOf(shapeOf(4, 5, 1, 2)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-maxpool diff op")
+
+        // 反例-不同ndim: 3D (not 4D)
+        matcher.reset()
+        val ndim3 = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
+            listOf(shapeOf(4, 5, 2)), listOf(shapeOf(4, 5, 1)),
+            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-maxpool 3D")
+    }
+
+    @Test
+    fun `tvm-20015-variant-maxpool-stride1 max_pool2d LLVM shufflevector k=2 stride=1`() {
+        val pattern = allPatterns.first { it.id == "tvm-20015-variant-maxpool-stride1" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
+
+        // 正例: [4,6,4,5] — any N,C,H,W, k=2, stride=1
+        val pos = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
+            listOf(shapeOf(4, 6, 4, 5)), listOf(shapeOf(4, 6, 3, 4)),
+            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-maxpool-stride1 positive")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(4, 6, 4, 5)), listOf(shapeOf(4, 6, 3, 4)),
+            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-maxpool-stride1 diff op")
+
+        // 反例-不同ndim: 3D (not 4D)
+        matcher.reset()
+        val ndim3 = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
+            listOf(shapeOf(4, 6, 4)), listOf(shapeOf(4, 6, 3)),
+            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-maxpool-stride1 3D")
     }
 
     @Test

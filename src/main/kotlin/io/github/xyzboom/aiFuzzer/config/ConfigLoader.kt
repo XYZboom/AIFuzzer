@@ -129,6 +129,7 @@ object ConfigLoader {
                 config.backends.tvm.shapeRank = tvmMap["shape_rank"] as? Int ?: config.backends.tvm.shapeRank
                 config.backends.tvm.target = tvmMap["target"] as? String ?: config.backends.tvm.target
                 config.backends.tvm.device = tvmMap["device"] as? String ?: config.backends.tvm.device
+                config.backends.tvm.crossTargetDifferential = tvmMap["cross_target_differential"] as? Boolean ?: config.backends.tvm.crossTargetDifferential
                 // 解析后端远程 SSH 配置（覆盖全局）
                 (tvmMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
                     val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
