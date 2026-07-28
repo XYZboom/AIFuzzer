@@ -51,6 +51,8 @@ __pycache__/
 *.pyc
 # Local data / reduction outputs
 reduction_data/
+# Symlink to external bug data storage
+maybeBug
 # Backup files
 *.bak
 # Local temp configs
