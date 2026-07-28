@@ -88,11 +88,11 @@ class AllPatternsTest {
 
     @Test
     fun `load all 20 patterns from resources`() {
-        assertEquals(24, allPatterns.size)
+        assertEquals(31, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
-        assertEquals("tvm-20048", ids.last())
+        assertEquals("tvm-20061", ids.last())
     }
 
     @Test
@@ -794,6 +794,113 @@ class AllPatternsTest {
                 assertNotNull(result, "onnx-8204 should match on complete chain")
             }
         }
+    }
+
+    @Test
+    fun `tvm-20060-argmin reduce-to-scalar CUDA global memory`() {
+        val pattern = allPatterns.first { it.id == "tvm-20060-argmin" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
+
+        // 正例: ARGMIN with 1D input → 0D output
+        val pos = mockNode("argmin", UirOpKind.ARGMIN,
+            listOf(shapeOf(1)), listOf(shapeOf()))
+        val resolver: (String) -> UirValueRef? = { vid ->
+            if (vid == "v_in") pos.inputs[0]
+            else if (vid == "v_out") pos.outputs[0]
+            else null
+        }
+        assertNotNull(matcher.onNodeGenerated(pos, resolver), "tvm-20060-argmin positive")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("relu", UirOpKind.RELU,
+            listOf(shapeOf(1)), listOf(shapeOf(1)))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20060-argmin diff op")
+
+        // 反例-不同形状: output is 1D not 0D
+        matcher.reset()
+        val notScalar = mockNode("argmin", UirOpKind.ARGMIN,
+            listOf(shapeOf(1, 2)), listOf(shapeOf(2)))
+        val r2: (String) -> UirValueRef? = { vid ->
+            if (vid == "v_in") notScalar.inputs[0]
+            else if (vid == "v_out") notScalar.outputs[0]
+            else null
+        }
+        assertNull(matcher.onNodeGenerated(notScalar, r2), "tvm-20060-argmin non-scalar output")
+    }
+
+    @Test
+    fun `tvm-20060-reduce_mean reduce-to-scalar CUDA global memory`() {
+        val pattern = allPatterns.first { it.id == "tvm-20060-reduce_mean" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
+
+        // 正例: REDUCE_MEAN with 1D input → 0D output
+        val pos = mockNode("reduce_mean", UirOpKind.REDUCE_MEAN,
+            listOf(shapeOf(1)), listOf(shapeOf()))
+        val resolver: (String) -> UirValueRef? = { vid ->
+            if (vid == "v_in") pos.inputs[0]
+            else if (vid == "v_out") pos.outputs[0]
+            else null
+        }
+        assertNotNull(matcher.onNodeGenerated(pos, resolver), "tvm-20060-reduce_mean positive")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("relu", UirOpKind.RELU,
+            listOf(shapeOf(1)), listOf(shapeOf(1)))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20060-reduce_mean diff op")
+
+        // 反例: output is 1D not 0D
+        matcher.reset()
+        val notScalar = mockNode("reduce_mean", UirOpKind.REDUCE_MEAN,
+            listOf(shapeOf(1, 2)), listOf(shapeOf(2)))
+        val r2: (String) -> UirValueRef? = { vid ->
+            if (vid == "v_in") notScalar.inputs[0]
+            else if (vid == "v_out") notScalar.outputs[0]
+            else null
+        }
+        assertNull(matcher.onNodeGenerated(notScalar, r2), "tvm-20060-reduce_mean non-scalar output")
+    }
+
+    @Test
+    fun `tvm-20061 dual reduce_mean chain dLight rfactor`() {
+        val pattern = allPatterns.first { it.id == "tvm-20061" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
+
+        // 正例: REDUCE_MEAN → REDUCE_MEAN chain (2D→1D→0D)
+        val m1 = mockNode("reduce_mean", UirOpKind.REDUCE_MEAN,
+            listOf(shapeOf(6, 6)), listOf(shapeOf(6)),
+            mapOf("axis" to -1, "keepdims" to 0))
+        assertNull(matcher.onNodeGenerated(m1, resolverOf(m1)), "tvm-20061 first node only")
+
+        // Need a value resolver that resolves v_a, v_b, v_c by position
+        val m2 = mockNode("reduce_mean2", UirOpKind.REDUCE_MEAN,
+            listOf(shapeOf(6)), listOf(shapeOf()),
+            mapOf("axis" to -1, "keepdims" to 0))
+        // v_a = m1.inputs[0], v_b = m1.outputs[0] = m2.inputs[0], v_c = m2.outputs[0]
+        val resolver: (String) -> UirValueRef? = { vid ->
+            when (vid) {
+                "v_a" -> m1.inputs[0]
+                "v_b" -> m1.outputs[0]
+                "v_c" -> m2.outputs[0]
+                else -> null
+            }
+        }
+        assertNotNull(matcher.onNodeGenerated(m2, resolver), "tvm-20061 complete chain")
+
+        // 反例-不同算子: REDUCE_MEAN → RELU (not second REDUCE_MEAN)
+        matcher.reset()
+        matcher.onNodeGenerated(m1, resolverOf(m1))
+        val diffOp = mockNode("relu", UirOpKind.RELU,
+            listOf(shapeOf(6)), listOf(shapeOf(6)))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20061 different second op")
+
+        // 反例-不同形状: 3D input (not 2D)
+        matcher.reset()
+        val m1_3d = mockNode("reduce_mean", UirOpKind.REDUCE_MEAN,
+            listOf(shapeOf(6, 6, 6)), listOf(shapeOf(6, 6)),
+            mapOf("axis" to -1, "keepdims" to 0))
+        assertNull(matcher.onNodeGenerated(m1_3d, resolverOf(m1_3d)), "tvm-20061 3D input on first node")
     }
 
     @Test

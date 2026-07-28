@@ -1,0 +1,46 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-20061",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "chain of two REDUCE_MEAN dLight rfactor SBlock stale pointer crash — 2D→1D→0D",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "REDUCE_MEAN",
+          "inputs": ["v_a"],
+          "outputs": ["v_b"],
+          "attrs": {"axis": -1, "keepdims": 0}
+        },
+        {
+          "match": "node", "id": "n1", "op": "REDUCE_MEAN",
+          "inputs": ["v_b"],
+          "outputs": ["v_c"],
+          "attrs": {"axis": -1, "keepdims": 0}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_a",
+          "ndim": 2,
+          "shape": [{"$gte": 2}, {"$gte": 2}],
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_b",
+          "ndim": 1,
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_c",
+          "ndim": 0,
+          "shape": [],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}
