@@ -25,10 +25,10 @@
           "match": "value", "id": "v_input",
           "ndim": 4,
           "shape": [
-            {"$gte": 2},
             {"$any": true},
-            {"$gte": 4},
-            {"$gte": 18}
+            {"$any": true},
+            {"$gte": 2},
+            {"$gte": 2}
           ],
           "dtype": "float32"
         },
@@ -38,7 +38,7 @@
           "shape": [
             {"$eq": 1},
             {"$any": true},
-            {"$gte": 2},
+            {"$any": true},
             {"$eq": 1}
           ],
           "dtype": "float32"

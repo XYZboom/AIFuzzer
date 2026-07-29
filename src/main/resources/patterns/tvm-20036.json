@@ -18,12 +18,8 @@
       "values": [
         {
           "match": "value", "id": "v_in",
-          "ndim": 3,
-          "shape": [
-            {"$eq": 1},
-            {"$any": true},
-            {"$eq": 1}
-          ],
+          "ndim": {"$in": [3, 4]},
+          "shape": [],
           "dtype": "float32"
         }
       ]
