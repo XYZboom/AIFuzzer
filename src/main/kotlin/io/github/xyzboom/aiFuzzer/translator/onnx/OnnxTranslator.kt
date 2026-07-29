@@ -11,6 +11,7 @@ private val log = KotlinLogging.logger {}
 class OnnxTranslator(
     private val opsetVersion: Int = 11,
     private val irVersion: Int = 8,
+    private val differentialTesting: Boolean = false,
 ) : UirTranslator<UirProgram, String> {
 
     companion object {
@@ -38,6 +39,7 @@ class OnnxTranslator(
         builder.appendLine("from onnx import helper, TensorProto")
         builder.appendLine("import onnxruntime as ort")
         builder.appendLine("import numpy as np")
+        builder.appendLine("import sys")
         builder.appendLine()
 
         // 翻译每个图（生成独立的 run_* 函数）
@@ -52,7 +54,14 @@ class OnnxTranslator(
 
         val onnxProducedIds = mutableSetOf<String>()
         for ((gIdx, _) in element.graphs.withIndex()) {
-            builder.appendLine("_sess_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString())")
+            if (differentialTesting) {
+                builder.appendLine("_sess_opt_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])")
+                builder.appendLine("_so_ref_$gIdx = ort.SessionOptions()")
+                builder.appendLine("_so_ref_${gIdx}.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL")
+                builder.appendLine("_sess_ref_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'], sess_options=_so_ref_$gIdx)")
+            } else {
+                builder.appendLine("_sess_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])")
+            }
         }
 
         for ((gIdx, graph) in element.graphs.withIndex()) {
@@ -71,26 +80,52 @@ class OnnxTranslator(
             if (gIdx > 0) {
                 val prevGraph = element.graphs[gIdx - 1]
                 val prevOutputIds = prevGraph.outputs.map { it.valueId }
-                val prevResultVar = "_result_${gIdx - 1}"
+                val prevResultVar = if (differentialTesting) "_result_opt_${gIdx - 1}" else "_result_${gIdx - 1}"
                 if (prevOutputIds.size > 1) {
                     for ((i, outId) in prevOutputIds.withIndex()) {
-                        builder.appendLine("np_$outId = $prevResultVar[$i]")
+                        builder.appendLine("np_$outId = np.asarray($prevResultVar[$i])")
                     }
                 } else {
-                    builder.appendLine("np_${prevOutputIds[0]} = $prevResultVar[0]")
+                    builder.appendLine("np_${prevOutputIds[0]} = np.asarray($prevResultVar[0])")
                 }
             }
 
-            // 构建 feed dict
-            val feedEntries = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
-            builder.appendLine("_result_$gIdx = _sess_$gIdx.run(None, {$feedEntries})")
+            if (differentialTesting) {
+                val feedEntries = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
+                builder.appendLine("_result_opt_$gIdx = _sess_opt_$gIdx.run(None, {$feedEntries})")
+                builder.appendLine("_result_ref_$gIdx = _sess_ref_$gIdx.run(None, {$feedEntries})")
+                // 比较所有输出
+                builder.appendLine("for _diff_i in range(len(_result_opt_$gIdx)):")
+                builder.appendLine("    _a = np.asarray(_result_opt_${gIdx}[_diff_i])")
+                builder.appendLine("    _b = np.asarray(_result_ref_${gIdx}[_diff_i])")
+                builder.appendLine("    # both NaN is OK; only flag if one is NaN and the other isn't, or values differ")
+                builder.appendLine("    _nan_a = np.isnan(_a)")
+                builder.appendLine("    _nan_b = np.isnan(_b)")
+                builder.appendLine("    if not np.array_equal(_nan_a, _nan_b):")
+                builder.appendLine("        print(f\"[ONNX-DIFF] $funcName[{_diff_i}]: NaN mismatch! opt_nan_count={np.sum(_nan_a)} ref_nan_count={np.sum(_nan_b)}\", file=sys.stderr)")
+                builder.appendLine("        sys.exit(2)")
+                builder.appendLine("    _mask = ~_nan_a")
+                builder.appendLine("    if np.any(_mask) and not np.allclose(_a[_mask], _b[_mask], atol=0.5, rtol=0.1):")
+                builder.appendLine("        print(f\"[ONNX-DIFF] $funcName[{_diff_i}]: opt={_a.flatten()[:5]} ref={_b.flatten()[:5]}\", file=sys.stderr)")
+                builder.appendLine("        sys.exit(2)")
+                // 打印输出
+                builder.appendLine("if len(_result_opt_$gIdx) == 1:")
+                builder.appendLine("    print(f\"[ONNX-OUT] $funcName: shape={list(np.asarray(_result_opt_${gIdx}[0]).shape)}\")")
+                builder.appendLine("else:")
+                builder.appendLine("    for _i, _r in enumerate(_result_opt_${gIdx}):")
+                builder.appendLine("        print(f\"[ONNX-OUT] $funcName[{_i}]: shape={list(np.asarray(_r).shape)}\")")
+            } else {
+                // 构建 feed dict
+                val feedEntries = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
+                builder.appendLine("_result_$gIdx = _sess_$gIdx.run(None, {$feedEntries})")
 
-            // 打印输出
-            builder.appendLine("if len(_result_$gIdx) == 1:")
-            builder.appendLine("    print(f\"[ONNX-OUT] $funcName: shape={list(_result_${gIdx}[0].shape)}\")")
-            builder.appendLine("else:")
-            builder.appendLine("    for _i, _r in enumerate(_result_${gIdx}):")
-            builder.appendLine("        print(f\"[ONNX-OUT] $funcName[{_i}]: shape={list(_r.shape)}\")")
+                // 打印输出
+                builder.appendLine("if len(_result_$gIdx) == 1:")
+                builder.appendLine("    print(f\"[ONNX-OUT] $funcName: shape={list(_result_${gIdx}[0].shape)}\")")
+                builder.appendLine("else:")
+                builder.appendLine("    for _i, _r in enumerate(_result_${gIdx}):")
+                builder.appendLine("        print(f\"[ONNX-OUT] $funcName[{_i}]: shape={list(_r.shape)}\")")
+            }
             builder.appendLine()
 
             graph.outputs.forEach { onnxProducedIds.add(it.valueId) }
@@ -415,14 +450,30 @@ class OnnxTranslator(
                     val sqId = "c${outputId}_wsq"
                     val axes = (0 until weightNdim - 4).joinToString(", ")
                     val nvSq = nextNodeVar()
-                    nodeLines.add(NodeLine(nvSq, "    $nvSq = helper.make_node('Squeeze', inputs=['$rawWeightId'], outputs=['$sqId'], axes=[$axes])"))
+                    if (opsetVersion >= 13) {
+                        val sqAxId = "c${outputId}_sqax"
+                        tensorInitLines.add("""${sqAxId}_t = helper.make_tensor("${sqAxId}_v", $INT64, [${weightNdim - 4}], [$axes])""")
+                        val nvSqAx = nextNodeVar()
+                        nodeLines.add(NodeLine(nvSqAx, "    $nvSqAx = helper.make_node('Constant', inputs=[], outputs=['$sqAxId'], value=${sqAxId}_t)"))
+                        nodeLines.add(NodeLine(nvSq, "    $nvSq = helper.make_node('Squeeze', inputs=['$rawWeightId', '$sqAxId'], outputs=['$sqId'])"))
+                    } else {
+                        nodeLines.add(NodeLine(nvSq, "    $nvSq = helper.make_node('Squeeze', inputs=['$rawWeightId'], outputs=['$sqId'], axes=[$axes])"))
+                    }
                     sqId
                 } else if (weightNdim < 4) {
                     val usId = "c${outputId}_wus"
                     val missing = 4 - weightNdim
                     val axes = (0 until missing).joinToString(", ")
                     val nvUs = nextNodeVar()
-                    nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$rawWeightId'], outputs=['$usId'], axes=[$axes])"))
+                    if (opsetVersion >= 13) {
+                        val usAxId = "c${outputId}_usax"
+                        tensorInitLines.add("""${usAxId}_t = helper.make_tensor("${usAxId}_v", $INT64, [$missing], [$axes])""")
+                        val nvUsAx = nextNodeVar()
+                        nodeLines.add(NodeLine(nvUsAx, "    $nvUsAx = helper.make_node('Constant', inputs=[], outputs=['$usAxId'], value=${usAxId}_t)"))
+                        nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$rawWeightId', '$usAxId'], outputs=['$usId'])"))
+                    } else {
+                        nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$rawWeightId'], outputs=['$usId'], axes=[$axes])"))
+                    }
                     usId
                 } else {
                     rawWeightId
@@ -434,13 +485,16 @@ class OnnxTranslator(
                         ws.dims.takeLast(4).forEach { dim -> dims.add(dim) }
                     }
                 }
-                val attrs = buildOnnxAttrs(node.op, node.attributes,
+                val (attrs, extraInputs) = buildOnnxAttrs(node.op, node.attributes,
                     inputShapes = listOfNotNull(
                         node.inputs.getOrNull(0)?.type?.shape,
                         fourDWeightShape
-                    )
+                    ),
+                    tensorInitLines = tensorInitLines, nodeLines = nodeLines, outputId = outputId
                 )
-                val onnxInputs = "'$dataId', '$adjWeightId'"
+                val convInputs = mutableListOf("'$dataId'", "'$adjWeightId'")
+                convInputs.addAll(extraInputs)
+                val onnxInputs = convInputs.joinToString(", ")
                 val nv = nextNodeVar()
                 val callLine = if (attrs.isEmpty()) {
                     "    $nv = helper.make_node('Conv', inputs=[$onnxInputs], outputs=['$outputId'])"
@@ -480,10 +534,11 @@ class OnnxTranslator(
                 inputIds.toMutableList()
             }
 
-            val attrs = buildOnnxAttrs(node.op, node.attributes, inputShapes = inputIds.mapNotNull { id ->
+            val (attrs, extraInputs) = buildOnnxAttrs(node.op, node.attributes, inputShapes = inputIds.mapNotNull { id ->
                 node.inputs.find { it.valueId == id }?.type?.shape
-            })
-            val onnxInputs = floatInputs.filter { it.isNotEmpty() }.joinToString(", ") { "'$it'" }
+            }, tensorInitLines = tensorInitLines, nodeLines = nodeLines, outputId = outputId)
+            val allInputs = floatInputs.filter { it.isNotEmpty() }.map { "'$it'" } + extraInputs
+            val onnxInputs = allInputs.joinToString(", ")
             val onnxOutputs = outputIds.joinToString(", ") { "'$it'" }
 
             val nv = nextNodeVar()
@@ -704,7 +759,15 @@ class OnnxTranslator(
                     val usAxes = (0 until ndim - 2).joinToString(", ")
                     val usId = "t${outputId}_us"
                     val nvUs = nextNodeVar()
-                    nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$maskId'], outputs=['$usId'], axes=[$usAxes])"))
+                    if (opsetVersion >= 13) {
+                        val trUsAxId = "c${outputId}_usax"
+                        tensorInitLines.add("""${trUsAxId}_t = helper.make_tensor("${trUsAxId}_v", $INT64, [${ndim - 2}], [$usAxes])""")
+                        val nvTrUsAx = nextNodeVar()
+                        nodeLines.add(NodeLine(nvTrUsAx, "    $nvTrUsAx = helper.make_node('Constant', inputs=[], outputs=['$trUsAxId'], value=${trUsAxId}_t)"))
+                        nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$maskId', '$trUsAxId'], outputs=['$usId'])"))
+                    } else {
+                        nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$maskId'], outputs=['$usId'], axes=[$usAxes])"))
+                    }
                     // Expand mask to full output shape
                     val outDims = outputShape?.dims?.joinToString(", ") { it.value?.toString() ?: "1" } ?: "$h, $w"
                     val shId = "c${outputId}_sh"
@@ -743,7 +806,15 @@ class OnnxTranslator(
                 // mean = ReduceMean(x, axis=-1, keepdims=1)
                 val meanId = "t${outputId}_mn"
                 val nvMean = nextNodeVar()
-                nodeLines.add(NodeLine(nvMean, "    $nvMean = helper.make_node('ReduceMean', inputs=['$inputId'], outputs=['$meanId'], axes=[-1], keepdims=1)"))
+                if (opsetVersion >= 18) {
+                    val mnAxId = "c${outputId}_mnax"
+                    tensorInitLines.add("""${mnAxId}_t = helper.make_tensor("${mnAxId}_v", $INT64, [1], [-1])""")
+                    val nvMeanAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvMeanAx, "    $nvMeanAx = helper.make_node('Constant', inputs=[], outputs=['$mnAxId'], value=${mnAxId}_t)"))
+                    nodeLines.add(NodeLine(nvMean, "    $nvMean = helper.make_node('ReduceMean', inputs=['$inputId', '$mnAxId'], outputs=['$meanId'], keepdims=1)"))
+                } else {
+                    nodeLines.add(NodeLine(nvMean, "    $nvMean = helper.make_node('ReduceMean', inputs=['$inputId'], outputs=['$meanId'], axes=[-1], keepdims=1)"))
+                }
                 // centered = Sub(x, mean)
                 val centId = "t${outputId}_ct"
                 val nvCent = nextNodeVar()
@@ -755,7 +826,15 @@ class OnnxTranslator(
                 // var = ReduceMean(centered_sq, axis=-1, keepdims=1)
                 val varId = "t${outputId}_vr"
                 val nvVar = nextNodeVar()
-                nodeLines.add(NodeLine(nvVar, "    $nvVar = helper.make_node('ReduceMean', inputs=['$sqId'], outputs=['$varId'], axes=[-1], keepdims=1)"))
+                if (opsetVersion >= 18) {
+                    val vrAxId = "c${outputId}_vrax"
+                    tensorInitLines.add("""${vrAxId}_t = helper.make_tensor("${vrAxId}_v", $INT64, [1], [-1])""")
+                    val nvVarAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvVarAx, "    $nvVarAx = helper.make_node('Constant', inputs=[], outputs=['$vrAxId'], value=${vrAxId}_t)"))
+                    nodeLines.add(NodeLine(nvVar, "    $nvVar = helper.make_node('ReduceMean', inputs=['$sqId', '$vrAxId'], outputs=['$varId'], keepdims=1)"))
+                } else {
+                    nodeLines.add(NodeLine(nvVar, "    $nvVar = helper.make_node('ReduceMean', inputs=['$sqId'], outputs=['$varId'], axes=[-1], keepdims=1)"))
+                }
                 // var_eps = Add(var, eps)
                 val varEpsId = "t${outputId}_ve"
                 val nvVarEps = nextNodeVar()
@@ -788,9 +867,16 @@ class OnnxTranslator(
 
     // ────────────────────────────────────────────────────────────────
     // Attribute builder (only for ops keeping attrs in opset 11+)
+    // Returns Pair(attrString, extraInputIds) — extra inputs for opset 13+ axes
     // ────────────────────────────────────────────────────────────────
-    private fun buildOnnxAttrs(op: UirOpKind, attrs: Map<String, Attribute>, inputShapes: List<UirShape>): String {
+    private fun buildOnnxAttrs(
+        op: UirOpKind, attrs: Map<String, Attribute>, inputShapes: List<UirShape>,
+        tensorInitLines: MutableList<String>,
+        nodeLines: MutableList<NodeLine>,
+        outputId: String,
+    ): Pair<String, List<String>> {
         val p = mutableListOf<String>()
+        val extraInputs = mutableListOf<String>()
         when (op) {
             UirOpKind.LEAKY_RELU -> p.add("alpha=${(attrs["negative_slope"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.01}")
             UirOpKind.ELU -> p.add("alpha=${(attrs["alpha"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0}")
@@ -802,21 +888,84 @@ class OnnxTranslator(
             UirOpKind.CONCAT -> p.add("axis=${(attrs["axis"] as? UirIntAttr)?.value ?: 0}")
             UirOpKind.GATHER -> p.add("axis=${(attrs["axis"] as? UirIntAttr)?.value ?: 0}")
             UirOpKind.CAST -> p.add("to=${toOnnxDtype((attrs["dtype"] as? UirStringAttr)?.value ?: "float32")}")
-            // Reduce ops: axes as attribute (opset 11)
-            UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
+            // Reduce ops: axes as input (opset 13+) or attribute (opset 11-12)
+            UirOpKind.REDUCE_SUM -> {
                 val axis = (attrs["axis"] as? UirIntAttr)?.value ?: -1
                 val kd = (attrs["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
-                p.add("axes=[$axis]"); p.add("keepdims=${kd.toString().replaceFirstChar { it.uppercase() }}")
-            }
-            // Unsqueeze/Squeeze: axes as attribute (opset 11)
-            UirOpKind.UNSQUEEZE, UirOpKind.EXPAND_DIMS -> p.add("axes=[${(attrs["axis"] as? UirIntAttr)?.value ?: 0}]")
-            UirOpKind.SQUEEZE -> {
-                val inputShape = inputShapes.firstOrNull()
-                val ndim = inputShape?.dims?.size ?: 1
-                val squeezeDims = (0 until ndim).filter { i ->
-                    inputShape?.dims?.getOrNull(i)?.value == 1
+                p.add("keepdims=${kd.toString().replaceFirstChar { it.uppercase() }}")
+                if (opsetVersion >= 13) {
+                    val axesId = "c${outputId}_ax"
+                    tensorInitLines.add("""${axesId}_t = helper.make_tensor("${axesId}_v", $INT64, [1], [$axis])""")
+                    val nvAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$axesId'], value=${axesId}_t)"))
+                    extraInputs.add("'$axesId'")
+                } else {
+                    p.add("axes=[$axis]")
                 }
-                if (squeezeDims.isNotEmpty()) p.add("axes=[${squeezeDims.joinToString(", ")}]")
+            }
+            UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
+                val axis = (attrs["axis"] as? UirIntAttr)?.value ?: -1
+                val kd = (attrs["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
+                p.add("keepdims=${kd.toString().replaceFirstChar { it.uppercase() }}")
+                if (opsetVersion >= 18) {
+                    val axesId = "c${outputId}_ax"
+                    tensorInitLines.add("""${axesId}_t = helper.make_tensor("${axesId}_v", $INT64, [1], [$axis])""")
+                    val nvAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$axesId'], value=${axesId}_t)"))
+                    extraInputs.add("'$axesId'")
+                } else {
+                    p.add("axes=[$axis]")
+                }
+            }
+                                    UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
+                val axis = (attrs["axis"] as? UirIntAttr)?.value ?: -1
+                val kd = (attrs["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
+                p.add("keepdims=${kd.toString().replaceFirstChar { it.uppercase() }}")
+                if (opsetVersion >= 18) {
+                    val axesId = "c${outputId}_ax"
+                    tensorInitLines.add("""${axesId}_t = helper.make_tensor("${axesId}_v", $INT64, [1], [$axis])""")
+                    val nvAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$axesId'], value=${axesId}_t)"))
+                    extraInputs.add("'$axesId'")
+                } else {
+                    p.add("axes=[$axis]")
+                }
+            }
+            // Unsqueeze/Squeeze: axes as input (opset 13+) or attribute (opset 11-12)
+            UirOpKind.UNSQUEEZE, UirOpKind.EXPAND_DIMS -> {
+                val axis = (attrs["axis"] as? UirIntAttr)?.value ?: 0
+                if (opsetVersion >= 13) {
+                    val axesId = "c${outputId}_ax"
+                    tensorInitLines.add("""${axesId}_t = helper.make_tensor("${axesId}_v", $INT64, [1], [$axis])""")
+                    val nvAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$axesId'], value=${axesId}_t)"))
+                    extraInputs.add("'$axesId'")
+                } else {
+                    p.add("axes=[$axis]")
+                }
+            }
+            UirOpKind.SQUEEZE -> {
+                if (opsetVersion >= 13) {
+                    val inputShape = inputShapes.firstOrNull()
+                    val ndim = inputShape?.dims?.size ?: 1
+                    val squeezeDims = (0 until ndim).filter { i ->
+                        inputShape?.dims?.getOrNull(i)?.value == 1
+                    }
+                    val dimsStr = if (squeezeDims.isNotEmpty()) squeezeDims.joinToString(", ") else "0"
+                    val axesId = "c${outputId}_ax"
+                    val nDims = squeezeDims.size.coerceAtLeast(1)
+                    tensorInitLines.add("""${axesId}_t = helper.make_tensor("${axesId}_v", $INT64, [$nDims], [$dimsStr])""")
+                    val nvAx = nextNodeVar()
+                    nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$axesId'], value=${axesId}_t)"))
+                    extraInputs.add("'$axesId'")
+                } else {
+                    val inputShape = inputShapes.firstOrNull()
+                    val ndim = inputShape?.dims?.size ?: 1
+                    val squeezeDims = (0 until ndim).filter { i ->
+                        inputShape?.dims?.getOrNull(i)?.value == 1
+                    }
+                    if (squeezeDims.isNotEmpty()) p.add("axes=[${squeezeDims.joinToString(", ")}]")
+                }
             }
             UirOpKind.CONV2D -> {
                 val s = (attrs["stride"] as? UirIntAttr)?.value ?: 1
@@ -854,7 +1003,7 @@ class OnnxTranslator(
             }
             else -> {}
         }
-        return p.joinToString(", ")
+        return Pair(p.joinToString(", "), extraInputs)
     }
 
     // ────────────────────────────────────────────────────────────────

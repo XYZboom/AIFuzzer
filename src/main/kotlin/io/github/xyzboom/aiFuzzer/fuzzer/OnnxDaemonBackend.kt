@@ -13,6 +13,7 @@ class OnnxDaemonBackend(
     pythonPath: String = "python3",
     daemonScriptPath: String = "daemon/onnx_daemon.py",
     private val opsetVersion: Int = 21,
+    private val differentialTesting: Boolean = false,
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
     requestTimeoutMs: Long = 120_000,
     /** 远程 SSH 配置（可选），设置后 daemon 在远程主机上运行 */
@@ -34,16 +35,17 @@ class OnnxDaemonBackend(
     constructor(config: OnnxConfig) : this(
         pythonPath = config.python,
         opsetVersion = config.opsetVersion,
+        differentialTesting = config.differentialTesting,
         workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
         requestTimeoutMs = (config.timeoutSeconds * 1000L).coerceIn(5000, 300_000),
         remoteConfig = config.remote,
     )
 
     override val name = "ONNX Runtime (daemon)"
-    override val translator: OnnxTranslator = OnnxTranslator(opsetVersion = opsetVersion)
+    override val translator: OnnxTranslator = OnnxTranslator(opsetVersion = opsetVersion, differentialTesting = differentialTesting)
 
     override fun createCopy(): Backend<OnnxResult> {
-        return OnnxDaemonBackend(pythonPath, daemonScriptPath, opsetVersion,
+        return OnnxDaemonBackend(pythonPath, daemonScriptPath, opsetVersion, differentialTesting,
             File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"),
             requestTimeoutMs, remoteConfig)
     }

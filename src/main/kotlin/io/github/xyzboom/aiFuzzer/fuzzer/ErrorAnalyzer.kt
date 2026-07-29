@@ -28,6 +28,8 @@ enum class ErrorCategory {
     TVM_COMPILE_ERROR,
     // 跨目标差分测试结果不一致（CPU vs GPU 输出差异）
     CROSS_TARGET_DIFF,
+    // ONNX 差分测试结果不一致（优化前 vs 优化后输出差异）
+    ONNX_DIFF,
     // Dynamo 捕获错误（PyTorch）
     DYNAMO_ERROR,
     // Inductor 编译错误（PyTorch）
@@ -115,6 +117,10 @@ object ErrorAnalyzer {
                     else -> extractLine(stderr, "tvm.error")
                 }
                 ErrorInfo(ErrorCategory.TVM_ERROR, msg)
+            }
+            stderr.contains("[ONNX-DIFF]") -> {
+                val msg = extractLine(stderr, "[ONNX-DIFF]")
+                ErrorInfo(ErrorCategory.ONNX_DIFF, msg)
             }
             stderr.contains("[DIFF-MISMATCH]") -> {
                 val msg = extractLine(stderr, "[DIFF-MISMATCH]")
