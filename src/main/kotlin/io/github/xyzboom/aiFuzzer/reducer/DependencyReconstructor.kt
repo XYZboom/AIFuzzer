@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.ir.UirGraph
 import io.github.xyzboom.aiFuzzer.ir.UirNode
 import io.github.xyzboom.aiFuzzer.ir.UirOpKind
+import io.github.xyzboom.aiFuzzer.ir.UirTypeKind
 import io.github.xyzboom.aiFuzzer.ir.builder.buildNode
 import io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef
 import io.github.xyzboom.aiFuzzer.ir.types.UirTensorType
@@ -100,6 +101,7 @@ class DependencyReconstructor(
     private fun createZerosNode(originalValueId: String, originalType: UirTensorType): UirNode {
         val newValueId = "${originalValueId}_default"
         val outputType = buildTensorType {
+            typeKind = UirTypeKind.TENSOR
             shape = buildShape {
                 for (dim in originalType.shape.dims) {
                     dims.add(buildDim {

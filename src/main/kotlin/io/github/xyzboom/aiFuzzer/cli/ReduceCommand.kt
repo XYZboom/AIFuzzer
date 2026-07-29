@@ -163,6 +163,10 @@ class ReduceCommand : CliktCommand(
                 val phrase = normalizeName(origMsg).take(80)
                 return normalizeName(curMsg).contains(phrase)
             }
+            // Match ONNX-DIFF output mismatch (wrong-output bugs from differential testing)
+            if (originalStderr.contains("[ONNX-DIFF]")) {
+                return currentStderr.contains("[ONNX-DIFF]")
+            }
             // 匹配实际抛出错误类型（原始错误链的末行）
             // 所有已知 Python 异常类型
             val knownErrorPrefixes = listOf(
