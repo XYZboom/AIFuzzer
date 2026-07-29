@@ -1,8 +1,10 @@
 package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.github.xyzboom.aiFuzzer.config.MutationConfig
 import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
+import io.github.xyzboom.aiFuzzer.generator.UirMutator
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 import io.github.xyzboom.aiFuzzer.reducer.AutoReducer
@@ -53,6 +55,39 @@ class FuzzingPipeline(
         loadPatternDatabase(config.dedup)
     }
 
+    /** 变异器 */
+    private val mutator: UirMutator? by lazy {
+        if (mutationConfig.enabled) {
+            log.info { "变异器已启用: rate=${mutationConfig.rate}, maxMutations=${mutationConfig.maxMutations}" }
+            val dedupTarget = resolveDedupTarget()
+            UirMutator(
+                config = mutationConfig,
+                patternMatcher = if (config.dedup.enabled) patternDatabase?.let { db ->
+                    io.github.xyzboom.aiFuzzer.pattern.PatternMatcher(db, config.dedup.compiler, dedupTarget)
+                } else null,
+            )
+        } else {
+            null
+        }
+    }
+
+    /** 变异配置（从 generatorConfig 派生） */
+    private val mutationConfig: MutationConfig
+        get() = generatorConfig.mutationConfig
+
+    /**
+     * 自动推断去重 target。
+     * 跨目标差分模式（CPU vs GPU）时返回 null（不过滤 target），
+     * 否则返回配置的 target。
+     */
+    private fun resolveDedupTarget(): String? {
+        val isCrossTarget = backends.any { backend ->
+            (backend as? TvmDaemonBackend)?.crossTargetDifferential == true ||
+            (backend as? PytorchDaemonBackend)?.crossTargetDifferential == true
+        }
+        return if (isCrossTarget) null else config.dedup.target
+    }
+
     private fun loadPatternDatabase(dedup: FuzzingConfig.DedupConfig): io.github.xyzboom.aiFuzzer.pattern.PatternDatabase {
         // 先尝试从指定目录加载
         val dir = if (dedup.patternDir.isNotBlank()) {
@@ -94,19 +129,40 @@ class FuzzingPipeline(
         // 每次创建新的 generator，避免共享可变状态
         var genConfig = generatorConfig.copy(seed = seed)
         if (config.dedup.enabled && patternDatabase != null) {
+            // 自动推断去重 target：跨目标差分时不过滤 target
+            val dedupTarget = resolveDedupTarget()
             genConfig = genConfig.copy(
                 dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
                     enabled = true,
                     patternDatabase = patternDatabase,
                     compiler = config.dedup.compiler,
-                    target = config.dedup.target,
+                    target = dedupTarget,
                     maxRetries = 5,
                 )
             )
         }
         val generator = UirGenerator(genConfig)
-        val program = generator.generate()
-        log.trace { "生成程序: ${program.graphs.size} 个图" }
+        val originalProgram = generator.generate()
+
+        // 尝试变异（如果变异器已启用且有种子）
+        val program = mutator?.let { m ->
+            synchronized(m) {
+                m.mutate()
+            }
+        } ?: originalProgram
+
+        // 只有原始生成的程序加入种子池（变异程序本身来自种子池，不入池）
+        if (mutator != null && program === originalProgram) {
+            synchronized(mutator!!) {
+                mutator!!.addSeed(originalProgram)
+                // 如果种子池超过上限，丢弃最旧的种子
+                while (mutator!!.seedCount > mutationConfig.maxSeeds) {
+                    mutator!!.removeOldestSeed()
+                }
+            }
+        }
+
+        log.trace { "程序: ${program.graphs.size} 个图 (种子池: ${mutator?.seedCount ?: 0})" }
         return backends.map { backend ->
             runOnBackend(program, backend, seed)
         }

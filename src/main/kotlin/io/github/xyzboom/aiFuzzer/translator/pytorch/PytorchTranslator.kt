@@ -26,6 +26,7 @@ class PytorchTranslator(
     private val dtype: String = "float32",
     private val device: String = "cpu",
     private val compileMode: String = "default",
+    private val crossTargetDifferential: Boolean = false,
 ) : UirTranslator<UirProgram, String> {
 
     companion object {
@@ -164,6 +165,8 @@ class PytorchTranslator(
         builder.appendLine("import torch")
         builder.appendLine("import torch.nn as nn")
         builder.appendLine("import torch.nn.functional as F")
+        builder.appendLine("import sys")
+        builder.appendLine("import copy")
         builder.appendLine()
 
         // 翻译每个图
@@ -190,7 +193,7 @@ class PytorchTranslator(
         // === 实例化所有 Module ===
         builder.appendLine("# Instantiate all modules")
         for ((idx, _) in element.graphs.withIndex()) {
-            builder.appendLine("model_$idx = TestModule_$idx()")
+            builder.appendLine("model_$idx = TestModule_$idx(device='$device')")
         }
         builder.appendLine()
 
@@ -229,18 +232,13 @@ class PytorchTranslator(
         val finalRefVar = lastGraph.outputs.singleOrNull()?.valueId ?: "ref_out_${element.graphs.size - 1}"
 
         // === Compiled 模式执行（整条链编译，后端自动融合跨图算子）===
+        val forwardParams = freshInputIds.joinToString(", ")
         builder.appendLine("# Chained compiled execution (entire pipeline compiled together)")
         builder.appendLine("try:")
         builder.appendLine("    class ChainedModel(nn.Module):")
-        builder.appendLine("        def __init__(self):")
+        builder.appendLine("        def __init__(self, mods):")
         builder.appendLine("            super().__init__()")
-        builder.appendLine("            self._mods = nn.ModuleList([")
-        for ((idx, _) in element.graphs.withIndex()) {
-            builder.appendLine("                TestModule_$idx(),")
-        }
-        builder.appendLine("            ])")
-        // forward 参数列表 = 所有 fresh input valueId
-        val forwardParams = freshInputIds.joinToString(", ")
+        builder.appendLine("            self._mods = mods")
         builder.appendLine("        def forward(self, $forwardParams):")
         // 追踪哪些参数已被消费（分配给图输入）
         var paramIndex = 0
@@ -277,7 +275,8 @@ class PytorchTranslator(
         }
         builder.appendLine("            return x")
         builder.appendLine()
-        builder.appendLine("    chained = torch.compile(ChainedModel(), mode=\"$compileMode\")")
+        val modList = element.graphs.indices.joinToString(", ") { "model_$it" }
+        builder.appendLine("    chained = torch.compile(ChainedModel(nn.ModuleList([$modList])), mode=\"$compileMode\")")
         builder.appendLine("except Exception as e:")
         builder.appendLine("    print(f'torch.compile failed: {e}')")
         builder.appendLine("    raise")
@@ -296,11 +295,53 @@ class PytorchTranslator(
         builder.appendLine("    all_match = torch.allclose($finalRefVar.float(), cmp_output.float(), atol=1e-3, rtol=1e-3, equal_nan=True)")
         builder.appendLine()
         builder.appendLine("if all_match:")
-        builder.appendLine("    print('VERIFY: PASS')")
-        builder.appendLine("else:")
-        builder.appendLine("    raise RuntimeError('VERIFY: FAIL')")
-        builder.appendLine()
-        builder.appendLine("print('Module built successfully')")
+                builder.appendLine("    print('VERIFY: PASS')")
+                builder.appendLine("else:")
+                builder.appendLine("    raise RuntimeError('VERIFY: FAIL')")
+                builder.appendLine()
+
+                // 跨目标差分测试（GPU compiled vs CPU eager）
+                                if (crossTargetDifferential) {
+                                    builder.appendLine("# Cross-target differential testing: GPU compiled vs CPU eager")
+                                    builder.appendLine("try:")
+                                    builder.appendLine("    # Create CPU models (no weights to copy — all functional)")
+                                    for ((gIdx, _) in element.graphs.withIndex()) {
+                                        builder.appendLine("    cpu_model_$gIdx = TestModule_$gIdx(device='cpu')")
+                                    }
+                                    for (inputId in freshInputIds) {
+                                        builder.appendLine("    ${inputId}_cpu = $inputId.cpu()")
+                                    }
+                                    builder.appendLine("    with torch.no_grad():")
+                                    for ((gIdx, graph) in element.graphs.withIndex()) {
+                                        val inputArgs = graph.inputs.joinToString(", ") { "${it.valueId}_cpu" }
+                                        val resultVar = "cpu_ref_$gIdx"
+                                        builder.appendLine("        $resultVar = cpu_model_$gIdx($inputArgs)")
+                                        if (graph.outputs.size > 1) {
+                                            val outNames = graph.outputs.joinToString(", ") { "${it.valueId}_cpu" }
+                                            builder.appendLine("        $outNames = $resultVar")
+                                        } else {
+                                            builder.appendLine("        ${graph.outputs[0].valueId}_cpu = $resultVar")
+                                        }
+                                    }
+                                    val cpuFinalVar = element.graphs.last().outputs.singleOrNull()?.valueId?.let { "${it}_cpu" }
+                                        ?: "cpu_ref_${element.graphs.size - 1}"
+                                    builder.appendLine("    # Compare GPU compiled vs CPU eager")
+                                    builder.appendLine("    if isinstance($finalRefVar, tuple):")
+                                    builder.appendLine("        for _ci, (_gpu, _cpu) in enumerate(zip($finalRefVar, $cpuFinalVar)):")
+                                    builder.appendLine("            if not torch.allclose(_gpu.cpu().float(), _cpu.float(), atol=0.5, rtol=0.1):")
+                                    builder.appendLine("                print(f\"[DIFF-MISMATCH] output[{_ci}]\", file=sys.stderr)")
+                                    builder.appendLine("                sys.exit(2)")
+                                    builder.appendLine("    else:")
+                                    builder.appendLine("        if not torch.allclose($finalRefVar.cpu().float(), $cpuFinalVar.float(), atol=0.5, rtol=0.1):")
+                                    builder.appendLine("            print(f\"[DIFF-MISMATCH] output\", file=sys.stderr)")
+                                    builder.appendLine("            sys.exit(2)")
+                                    builder.appendLine("except Exception as _cde:")
+                                    builder.appendLine("    print(f'CPU execution failed: {_cde}', file=sys.stderr)")
+                                    builder.appendLine("    sys.exit(2)")
+                                    builder.appendLine()
+                                }
+
+                builder.appendLine("print('Module built successfully')")
 
         return builder.toString()
     }
@@ -313,8 +354,9 @@ class PytorchTranslator(
         builder.appendLine("class $className(nn.Module):")
 
         // 构造函数
-        builder.appendLine("    def __init__(self):")
+        builder.appendLine("    def __init__(self, device):")
         builder.appendLine("        super().__init__()")
+        builder.appendLine("        self.device = device")
 
         // forward 函数
         val params = graph.inputs.map { it.valueId }.joinToString(", ")
@@ -422,7 +464,7 @@ class PytorchTranslator(
                 // Generate weight at runtime with C_in matching input's C channel
                 // This handles cases where ShapeInferer predicted wrong shape for intermediate ops
                 // Weight shape: [C_out, C_in, kH, kW] where C_in = input.shape[1]
-                "$pytorchFunc($inputVar, torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3]), device=\"$device\"), " +
+                "$pytorchFunc($inputVar, torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3]), device=self.device), " +
                     "stride=$stride, padding=$padding, dilation=$dilation, groups=$groups)"
             }
 
@@ -488,7 +530,7 @@ class PytorchTranslator(
                 val inputVar = valueMap[node.inputs[0].valueId]!!
                 // Use runtime shape (not IR shape) — ShapeAdapter may have changed dimensions
                 // Also ensure float input (batch_norm not implemented for Int/Long)
-                "F.batch_norm(${inputVar}.float(), running_mean=torch.zeros(${inputVar}.shape[1], device=\"$device\"), running_var=torch.ones(${inputVar}.shape[1], device=\"$device\"), training=False)"
+                "F.batch_norm(${inputVar}.float(), running_mean=torch.zeros(${inputVar}.shape[1], device=self.device), running_var=torch.ones(${inputVar}.shape[1], device=self.device), training=False)"
             }
 
             // ===== SOFTMAX =====
@@ -664,25 +706,25 @@ class PytorchTranslator(
                 val totalSize = outputShape.dims.fold(1) { acc, dim ->
                     acc * (if (dim.dimKind == UirDimKind.CONSTANT) (dim.value ?: 1) else 1)
                 }
-                "$pytorchFunc(0, $totalSize, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(0, $totalSize, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=self.device)"
             }
             UirOpKind.FULL -> {
                 val outputShape = node.outputs[0].type.shape
                 val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), 0.0, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(($shapeStr), 0.0, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=self.device)"
             }
             UirOpKind.ONES -> {
                 val outputShape = node.outputs[0].type.shape
                 val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=self.device)"
             }
             UirOpKind.ZEROS -> {
                 val outputShape = node.outputs[0].type.shape
                 val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=\"$device\")"
+                "$pytorchFunc(($shapeStr), dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=self.device)"
             }
 
             // ===== 三角矩阵 =====

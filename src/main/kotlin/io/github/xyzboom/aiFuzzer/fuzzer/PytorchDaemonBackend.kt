@@ -28,6 +28,7 @@ class PytorchDaemonBackend(
     private val dtype: String = "float32",
     private val device: String = "cpu",
     private val compileMode: String = "default",
+    val crossTargetDifferential: Boolean = false,
     override val workDir: File = File(
         System.getProperty("java.io.tmpdir") ?: "/tmp",
         "aiFuzzer_pytorch_daemon"
@@ -56,6 +57,7 @@ class PytorchDaemonBackend(
         dtype = config.dtype,
         device = config.device,
         compileMode = config.compileMode,
+        crossTargetDifferential = config.crossTargetDifferential,
         workDir = File(
             System.getProperty("java.io.tmpdir") ?: "/tmp",
             config.workDir.split("/").lastOrNull()
@@ -71,6 +73,7 @@ class PytorchDaemonBackend(
         dtype = dtype,
         device = device,
         compileMode = compileMode,
+        crossTargetDifferential = crossTargetDifferential,
     )
 
     /**
@@ -88,6 +91,7 @@ class PytorchDaemonBackend(
             dtype = dtype,
             device = device,
             compileMode = compileMode,
+            crossTargetDifferential = crossTargetDifferential,
             workDir = newWorkDir,
             requestTimeoutMs = requestTimeoutMs,
             remoteConfig = remoteConfig,

@@ -123,6 +123,7 @@ data class FuzzerGenConfig(
                 target = dedup.target,
                 maxRetries = 5,
             ),
+            mutationConfig = mutation,
         )
     }
 
@@ -144,8 +145,19 @@ data class OpsConfig(
 )
 
 data class MutationConfig(
-    var enabled: Boolean = false,
-    var rate: Double = 0.1,
+    var enabled: Boolean = true,
+    /** 变异概率（每轮测试触发的概率） */
+    var rate: Double = 0.3,
+    /** 每个图最多变异次数 */
+    var maxMutations: Int = 3,
+    /** 种子池上限 */
+    var maxSeeds: Int = 100,
+    /** 各类型变异的开关 */
+    var shapeMutation: Boolean = true,
+    var opMutation: Boolean = true,
+    var insertMutation: Boolean = true,
+    var deleteMutation: Boolean = true,
+    var attributeMutation: Boolean = true,
 )
 
 data class BackendsConfig(
@@ -184,6 +196,8 @@ data class OnnxConfig(
     var timeoutSeconds: Int = 60,
     var opsetVersion: Int = 21,
     var irVersion: Int = 8,
+    /** 差分测试：对比优化前和优化后的输出是否一致 */
+    var differentialTesting: Boolean = false,
     /** 远程 SSH 主机配置（可选）。设置后 daemon 在远程主机上运行 */
     var remote: RemoteSshConfig? = null,
 )
@@ -209,6 +223,8 @@ data class PytorchConfig(
     var device: String = "cpu",
     /** torch.compile 模式: "default", "reduce-overhead", "max-autotune" */
     var compileMode: String = "default",
+    /** 跨目标差分测试：同时在 CPU 和 GPU 上执行，比较输出是否一致 */
+    var crossTargetDifferential: Boolean = false,
 )
 
 /**
