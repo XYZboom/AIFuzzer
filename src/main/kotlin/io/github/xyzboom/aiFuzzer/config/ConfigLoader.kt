@@ -94,6 +94,19 @@ object ConfigLoader {
             config.generator.avoidNaNInf = genMap["avoid_nan_inf"] as? Boolean ?: config.generator.avoidNaNInf
             config.generator.avoidExtremeOps = genMap["avoid_extreme_ops"] as? Boolean ?: config.generator.avoidExtremeOps
 
+            // 解析 mutation 子部分
+            (genMap["mutation"] as? Map<String, Any>)?.let { mutMap ->
+                config.generator.mutation.enabled = mutMap["enabled"] as? Boolean ?: config.generator.mutation.enabled
+                config.generator.mutation.rate = (mutMap["rate"] as? Number)?.toDouble() ?: config.generator.mutation.rate
+                config.generator.mutation.maxMutations = mutMap["max_mutations"] as? Int ?: config.generator.mutation.maxMutations
+                config.generator.mutation.maxSeeds = mutMap["max_seeds"] as? Int ?: config.generator.mutation.maxSeeds
+                config.generator.mutation.shapeMutation = mutMap["shape_mutation"] as? Boolean ?: config.generator.mutation.shapeMutation
+                config.generator.mutation.opMutation = mutMap["op_mutation"] as? Boolean ?: config.generator.mutation.opMutation
+                config.generator.mutation.insertMutation = mutMap["insert_mutation"] as? Boolean ?: config.generator.mutation.insertMutation
+                config.generator.mutation.deleteMutation = mutMap["delete_mutation"] as? Boolean ?: config.generator.mutation.deleteMutation
+                config.generator.mutation.attributeMutation = mutMap["attribute_mutation"] as? Boolean ?: config.generator.mutation.attributeMutation
+            }
+
             // 解析 ops 子部分
             (genMap["ops"] as? Map<String, Any>)?.let { opsMap ->
                 config.generator.ops.includeAll = opsMap["include_all"] as? Boolean ?: config.generator.ops.includeAll
@@ -149,6 +162,7 @@ object ConfigLoader {
                 config.backends.onnx.timeoutSeconds = onnxMap["timeout_seconds"] as? Int ?: config.backends.onnx.timeoutSeconds
                 config.backends.onnx.opsetVersion = onnxMap["opset_version"] as? Int ?: config.backends.onnx.opsetVersion
                 config.backends.onnx.irVersion = onnxMap["ir_version"] as? Int ?: config.backends.onnx.irVersion
+                config.backends.onnx.differentialTesting = onnxMap["differential_testing"] as? Boolean ?: config.backends.onnx.differentialTesting
                 // 解析后端远程 SSH 配置（覆盖全局）
                 (onnxMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
                     val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()
@@ -178,6 +192,7 @@ object ConfigLoader {
                 config.backends.pytorch.dtype = pytorchMap["dtype"] as? String ?: config.backends.pytorch.dtype
                 config.backends.pytorch.device = pytorchMap["device"] as? String ?: config.backends.pytorch.device
                 config.backends.pytorch.compileMode = pytorchMap["compile_mode"] as? String ?: config.backends.pytorch.compileMode
+                config.backends.pytorch.crossTargetDifferential = pytorchMap["cross_target_differential"] as? Boolean ?: config.backends.pytorch.crossTargetDifferential
                 // 解析后端远程 SSH 配置（覆盖全局）
                 (pytorchMap["remote"] as? Map<String, Any>)?.let { remoteMap ->
                     val remote = io.github.xyzboom.aiFuzzer.config.RemoteSshConfig()

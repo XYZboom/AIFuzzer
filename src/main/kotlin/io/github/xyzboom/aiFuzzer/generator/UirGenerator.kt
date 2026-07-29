@@ -74,6 +74,8 @@ data class GeneratorConfig(
     val avoidExtremeOps: Boolean = true,
     /** 去重配置：在生成阶段规避已知 bug pattern */
     val dedup: DedupConfig = DedupConfig(),
+    /** 变异配置 */
+    val mutationConfig: io.github.xyzboom.aiFuzzer.config.MutationConfig = io.github.xyzboom.aiFuzzer.config.MutationConfig(),
 )
 
 /** 去重配置 */
@@ -81,7 +83,7 @@ data class DedupConfig(
     val enabled: Boolean = false,
     val patternDatabase: io.github.xyzboom.aiFuzzer.pattern.PatternDatabase? = null,
     val compiler: String = "tvm",
-    val target: String = "llvm",
+    val target: String? = "llvm",
     val maxRetries: Int = 5,
 )
 
