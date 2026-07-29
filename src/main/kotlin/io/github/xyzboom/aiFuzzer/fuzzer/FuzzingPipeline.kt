@@ -151,6 +151,9 @@ class FuzzingPipeline(
             }
         } ?: originalProgram
 
+        // 标记程序来源：generated（原始生成）或 mutated（变异产生）
+        program.metadata["source"] = if (program === originalProgram) "generated" else "mutated"
+
         // 只有原始生成的程序加入种子池（变异程序本身来自种子池，不入池）
         if (mutator != null && program === originalProgram) {
             synchronized(mutator!!) {
