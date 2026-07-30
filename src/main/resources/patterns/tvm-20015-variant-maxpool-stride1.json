@@ -5,7 +5,7 @@
       "id": "tvm-20015-variant-maxpool-stride1",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "max_pool2d LLVM shufflevector dominance: any 4D, k=2, stride=1",
+      "description": "max_pool2d LLVM shufflevector dominance: any 4D, k=2, stride=1, C=4",
       "severity": "crash",
       "nodes": [
         {
@@ -25,13 +25,16 @@
           "ndim": 4,
           "shape": [
             {"$any": true},
-            {"$any": true},
+            {"$eq": 4},
             {"$any": true},
             {"$any": true}
           ],
           "dtype": "float32"
         }
-      ]
+      ],
+      "graphConstraints": {
+        "minNodes": 3
+      }
     }
   ]
 }

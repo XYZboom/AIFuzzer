@@ -2,32 +2,6 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20015-variant-silu-2d",
-      "compiler": "tvm",
-      "target": "llvm",
-      "description": "silu LLVM shufflevector dominance crash: ndim=2",
-      "severity": "crash",
-      "nodes": [
-        {
-          "match": "node", "id": "n0", "op": "SILU",
-          "inputs": ["v_in"],
-          "outputs": ["v_out"],
-          "attrs": {}
-        }
-      ],
-      "values": [
-        {
-          "match": "value", "id": "v_in",
-          "ndim": 2,
-          "shape": [
-            {"$any": true},
-            {"$any": true}
-          ],
-          "dtype": "float32"
-        }
-      ]
-    },
-    {
       "id": "tvm-20015-variant-silu-3d",
       "compiler": "tvm",
       "target": "llvm",
@@ -52,7 +26,10 @@
           ],
           "dtype": "float32"
         }
-      ]
+      ],
+      "graphConstraints": {
+        "minNodes": 3
+      }
     },
     {
       "id": "tvm-20015-variant-silu-4d",
@@ -80,7 +57,10 @@
           ],
           "dtype": "float32"
         }
-      ]
+      ],
+      "graphConstraints": {
+        "minNodes": 3
+      }
     }
   ]
 }

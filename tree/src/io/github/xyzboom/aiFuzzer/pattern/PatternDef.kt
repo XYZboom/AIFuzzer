@@ -255,6 +255,34 @@ data class PatternNodeDef(
 )
 
 /**
+ * 图级约束——对生成中的整个图进行条件检查。
+ * 所有约束均通过增量维护实现，检查成本 O(1)。
+ */
+data class GraphConstraints(
+    /** 图至少达到这个节点数才匹配 */
+    val minNodes: Int? = null,
+    /** 图最多不超过这个节点数才匹配 */
+    val maxNodes: Int? = null,
+    /** 图中必须存在至少一个这些 op（op 组合约束） */
+    val requiredOps: List<String>? = null,
+)
+
+/**
+ * 数据流约束——检查 pattern 中两个节点的输出/输入是否连通。
+ * 例如 n0 的输出 valueId 必须出现在 n1 的输入中。
+ */
+data class FlowConstraint(
+    /** 源节点 ID（如 "n0"） */
+    val fromNode: String,
+    /** 源节点的输出索引（默认 0） */
+    val fromOutput: Int = 0,
+    /** 目标节点 ID（如 "n1"） */
+    val toNode: String,
+    /** 目标节点的输入索引（默认 0） */
+    val toInput: Int = 0,
+)
+
+/**
  * Pattern 中的值定义——匹配一个 UirValueRef 的 shape/dtype。
  */
 data class PatternValueDef(
@@ -275,6 +303,10 @@ data class PatternDef(
     val severity: String? = null,  // "crash", "silent_correctness", "error"
     val nodes: List<PatternNodeDef>,
     val values: Map<String, PatternValueDef>,
+    /** 图级约束（可选） */
+    val graphConstraints: GraphConstraints? = null,
+    /** 数据流约束（可选） */
+    val flowConstraints: List<FlowConstraint>? = null,
 )
 
 /**

@@ -107,7 +107,12 @@ ${result.stderr.trimEnd()}
             irFile.writeText(UirSerializer.toJsonl(program))
         }
 
-        // 4. 复制日志文件（仅限最近 100KB，避免超大日志撑爆）
+        // 4. 写入 pattern 匹配信息（如果有）
+        if (lastPatternMatches != null) {
+            File(bugDir, "pattern_matches.txt").writeText(lastPatternMatches!!)
+        }
+
+        // 5. 复制日志文件（仅限最近 100KB，避免超大日志撑爆）
         val logFile = File("logs/aifuzzer.log")
         if (logFile.exists()) {
             try {
@@ -194,6 +199,9 @@ ${result.stderr.trimEnd()}
 
         log.info { "缩减产物已保存: ${bugDir.name} (${originalNodeCount}→${reducedNodeCount} nodes)" }
     }
+
+    /** 上次生成时记录的 pattern 匹配信息，用于写入 bug 报告 */
+    var lastPatternMatches: String? = null
 
     fun reset() { bugCounter.set(0) }
 }

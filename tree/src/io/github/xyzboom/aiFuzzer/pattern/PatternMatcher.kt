@@ -35,6 +35,12 @@ class PatternMatcher(
     /** Per-pattern match count: pattern ID -> count */
     val matchCountByPattern = mutableMapOf<String, Int>()
 
+    // ===== 增量维护的图级状态（O(1) 维护成本） =====
+    /** 当前图中已生成的节点数量 */
+    private var currentNodeCount = 0
+    /** 当前图中出现过的所有 op 集合 */
+    private val seenOps = mutableSetOf<String>()
+
     private data class ActivePattern(
         val matchedIndex: Int,
         val matchedNodes: List<UirNode>,
@@ -51,6 +57,9 @@ class PatternMatcher(
         valueResolver: (String) -> UirValueRef?
     ): PatternDef? {
         totalNodesChecked++
+        // 增量维护图级状态
+        currentNodeCount++
+        seenOps.add(node.op.name)
 
         val newActive = mutableMapOf<PatternDef, ActivePattern>()
         for ((pattern, active) in activePatterns) {
@@ -60,7 +69,9 @@ class PatternMatcher(
             if (matchNode(node, pattern.nodes[nextIdx])) {
                 val allNodes = active.matchedNodes + node
                 if (nextIdx == pattern.nodes.size - 1) {
-                    if (checkAllValueConstraints(pattern, allNodes, valueResolver)) {
+                    if (checkAllValueConstraints(pattern, allNodes, valueResolver) &&
+                        checkGraphConstraints(pattern) &&
+                        checkFlowConstraints(pattern, allNodes)) {
                         matchCount++
                         matchCountByPattern[pattern.id] = matchCountByPattern.getOrDefault(pattern.id, 0) + 1
                         return pattern
@@ -83,7 +94,9 @@ class PatternMatcher(
         val singlePatterns = singleOpPatterns[node.op.name]
         if (singlePatterns != null) {
             for (pattern in singlePatterns) {
-                if (checkAllValueConstraints(pattern, listOf(node), valueResolver)) {
+                if (checkAllValueConstraints(pattern, listOf(node), valueResolver) &&
+                    checkGraphConstraints(pattern) &&
+                    checkFlowConstraints(pattern, listOf(node))) {
                     matchCount++
                     matchCountByPattern[pattern.id] = matchCountByPattern.getOrDefault(pattern.id, 0) + 1
                     return pattern
@@ -96,7 +109,11 @@ class PatternMatcher(
         return null
     }
 
-    fun reset() { activePatterns.clear() }
+    fun reset() {
+        activePatterns.clear()
+        currentNodeCount = 0
+        seenOps.clear()
+    }
 
     // ===== 匹配逻辑 =====
 
@@ -194,5 +211,44 @@ class PatternMatcher(
             }
         }
         return valueResolver(valueId)
+    }
+
+    /**
+     * 检查图级约束（O(1)）。
+     * - minNodes: 当前节点数 >= 阈值
+     * - maxNodes: 当前节点数 <= 阈值
+     * - requiredOps: 图中已出现至少一个指定 op
+     */
+    private fun checkGraphConstraints(pattern: PatternDef): Boolean {
+        val gc = pattern.graphConstraints ?: return true
+        if (gc.minNodes != null && currentNodeCount < gc.minNodes) return false
+        if (gc.maxNodes != null && currentNodeCount > gc.maxNodes) return false
+        if (gc.requiredOps != null && gc.requiredOps.none { it in seenOps }) return false
+        return true
+    }
+
+    /**
+     * 检查数据流约束（O(K)）。
+     * 验证 pattern 中某个节点的输出值是否流入另一个节点的输入。
+     */
+    private fun checkFlowConstraints(pattern: PatternDef, nodes: List<UirNode>): Boolean {
+        val fc = pattern.flowConstraints ?: return true
+        // 构建 nodeId -> actual node 的映射
+        val nodeMap = mutableMapOf<String, UirNode>()
+        for ((i, pNode) in pattern.nodes.withIndex()) {
+            if (i < nodes.size) {
+                nodeMap[pNode.id] = nodes[i]
+            }
+        }
+        for (constraint in fc) {
+            val fromNode = nodeMap[constraint.fromNode] ?: return false
+            val toNode = nodeMap[constraint.toNode] ?: return false
+            if (constraint.fromOutput >= fromNode.outputs.size) return false
+            if (constraint.toInput >= toNode.inputs.size) return false
+            val fromValueId = fromNode.outputs[constraint.fromOutput].valueId
+            val toValueId = toNode.inputs[constraint.toInput].valueId
+            if (fromValueId != toValueId) return false
+        }
+        return true
     }
 }

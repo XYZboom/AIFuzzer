@@ -4,6 +4,7 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.context
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.output.MordantHelpFormatter
+import io.github.xyzboom.aiFuzzer.cli.DedupEvalCommand
 import io.github.xyzboom.aiFuzzer.cli.FuzzCommand
 import io.github.xyzboom.aiFuzzer.cli.ReproduceCommand
 import io.github.xyzboom.aiFuzzer.cli.ReduceCommand
@@ -24,7 +25,7 @@ class AiFuzzerCommand : CliktCommand(
 ) {
     init {
         context { helpFormatter = { MordantHelpFormatter(it, showDefaultValues = true) } }
-        subcommands(FuzzCommand(), ReproduceCommand(), ReduceCommand())
+        subcommands(FuzzCommand(), ReproduceCommand(), ReduceCommand(), DedupEvalCommand())
     }
 
     override fun run() {

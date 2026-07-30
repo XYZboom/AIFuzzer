@@ -155,6 +155,18 @@ class FuzzingPipeline(
                 pm.matchCountByPattern.forEach { (pid, cnt) ->
                     patternMatchCount.merge(pid, cnt) { a, b -> a + b }
                 }
+                // 生成 pattern 匹配摘要，用于写入 bug 报告
+                val detail = buildString {
+                    appendLine("# Pattern matches during generation (seed=$seed)")
+                    appendLine("Total matches: ${pm.matchCount}")
+                    appendLine("Per-pattern:")
+                    pm.matchCountByPattern.forEach { (pid, cnt) ->
+                        appendLine("  $pid: $cnt")
+                    }
+                }
+                BugCollector.lastPatternMatches = detail
+            } else {
+                BugCollector.lastPatternMatches = null
             }
         }
 
@@ -460,6 +472,153 @@ class FuzzingPipeline(
         return FuzzingSummary.fromResults(allResults, System.currentTimeMillis() - startTime)
     }
 
+    /**
+     * Dedup 效率评估：对每个种子同时用 no-dedup 和 with-dedup 生成，
+     * 只执行 A≠B 的种子，比较两组结果。
+     * 使用 runOnBackend 以确保 bug 收集和对齐正常 fuzz 逻辑。
+     * 每个 seed 独立 try-catch，单次超时不崩全局。
+     * 多线程并行，每个 worker 有独立的 backend 副本。
+     */
+    fun runDedupEval(count: Int, startSeed: Long = 1): DedupEvalSummary {
+        BugCollector.reset()
+        val startTime = System.currentTimeMillis()
+
+        val skipped = AtomicInteger(0)
+        val bugPrevented = AtomicInteger(0)
+        val falsePositive = AtomicInteger(0)
+        val bothFailed = AtomicInteger(0)
+        val bothSuccess = AtomicInteger(0)
+        val failedSeeds = AtomicInteger(0)
+        val bugPreventedSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val falsePositiveSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val bothFailedSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val completed = AtomicInteger(0)
+
+        val dedupTarget = resolveDedupTarget()
+        val workerCount = config.workers.coerceAtLeast(1)
+
+        // 为每个 worker 创建独立的 backend 副本
+        val backendPool: Array<List<Backend<*>>> = if (workerCount > 1) {
+            Array(workerCount) { backends.map { it.createCopy() } }
+        } else {
+            arrayOf(backends)
+        }
+        backendPool.forEachIndexed { idx, bl ->
+            bl.forEach { if (!it.checkEnvironment()) log.error { "Backend 副本 #$idx 初始化失败: ${it.name}" } }
+        }
+
+        val nextWorkerId = AtomicLong(0)
+
+        // 进度报告线程
+        val progressReporter = thread(name = "dedup-progress") {
+            var last = 0
+            while (completed.get() < count) {
+                Thread.sleep(10000)
+                val now = completed.get()
+                val elapsed = (System.currentTimeMillis() - startTime) / 1000
+                val rate = if (now - last > 0) "${((now - last).toDouble() / 10.0).toInt()}/s" else "0/s"
+                last = now
+                log.info { "进度: $now/$count  耗时=${elapsed}s  速率=$rate" }
+            }
+        }
+
+        // 线程池
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(workerCount) {
+            Thread(it, "dedup-worker").also { it.isDaemon = true }
+        }
+
+        val workers = mutableListOf<java.util.concurrent.Future<*>>()
+        for (i in 0 until count) {
+            val seed = startSeed + i
+            workers.add(executor.submit {
+                try {
+                    val workerId = (nextWorkerId.getAndIncrement() % workerCount).toInt()
+                    val threadBackends = backendPool[workerId]
+
+                    // 1. no-dedup 生成程序 A
+                    val genA = io.github.xyzboom.aiFuzzer.generator.UirGenerator(
+                        generatorConfig.copy(seed = seed)
+                    ).generate()
+                    val serialA = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genA)
+
+                    // 2. with-dedup 生成程序 B
+                    val genConfigB = if (patternDatabase != null) {
+                        generatorConfig.copy(
+                            seed = seed,
+                            dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
+                                enabled = true,
+                                patternDatabase = patternDatabase,
+                                compiler = config.dedup.compiler,
+                                target = dedupTarget,
+                                maxRetries = 10,
+                            )
+                        )
+                    } else generatorConfig.copy(seed = seed)
+                    val genB = io.github.xyzboom.aiFuzzer.generator.UirGenerator(genConfigB).generate()
+                    val serialB = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genB)
+
+                    // 3. 比较
+                    if (serialA == serialB) {
+                        skipped.incrementAndGet()
+                        completed.incrementAndGet()
+                        return@submit
+                    }
+
+                    // 记录 A 程序的 pool/silu 信息用于分析
+                    val aPoolSiluInfo = extractPoolSiluInfo(genA)
+                    if (aPoolSiluInfo.isNotEmpty()) {
+                        log.info { "A seed=$seed pool/silu: $aPoolSiluInfo" }
+                    }
+
+                    // 4. A≠B，执行
+                    val resultsA = threadBackends.map { runOnBackend(genA, it, seed) }
+                    val resultsB = threadBackends.map { runOnBackend(genB, it, seed) }
+
+                    val aFailed = resultsA.any { !it.backendResult.success }
+                    val bFailed = resultsB.any { !it.backendResult.success }
+
+                    when {
+                        aFailed && !bFailed -> { bugPrevented.incrementAndGet(); bugPreventedSeeds.add(seed) }
+                        !aFailed && bFailed -> { falsePositive.incrementAndGet(); falsePositiveSeeds.add(seed) }
+                        aFailed && bFailed -> { bothFailed.incrementAndGet(); bothFailedSeeds.add(seed) }
+                        else -> bothSuccess.incrementAndGet()
+                    }
+                    completed.incrementAndGet()
+                } catch (e: Exception) {
+                    log.warn(e) { "seed=$seed 执行异常，跳过" }
+                    failedSeeds.incrementAndGet()
+                    completed.incrementAndGet()
+                }
+            })
+        }
+
+        // 等待所有任务完成
+        for (w in workers) {
+            try { w.get() } catch (_: Exception) { }
+        }
+        executor.shutdownNow()
+        progressReporter.join()
+
+        // 关闭所有 backend 副本
+        backendPool.forEach { it.forEach { b -> b.close() } }
+
+        val collected = bugPrevented.get() + falsePositive.get() + bothFailed.get() + bothSuccess.get()
+        return DedupEvalSummary(
+            totalSeeds = count,
+            skipped = skipped.get(),
+            collected = collected,
+            bugPrevented = bugPrevented.get(),
+            falsePositive = falsePositive.get(),
+            bothFailed = bothFailed.get(),
+            bothSuccess = bothSuccess.get(),
+            failedSeeds = failedSeeds.get(),
+            bugPreventedSeeds = bugPreventedSeeds.toList(),
+            falsePositiveSeeds = falsePositiveSeeds.toList(),
+            bothFailedSeeds = bothFailedSeeds.toList(),
+            totalTimeMs = System.currentTimeMillis() - startTime,
+        )
+    }
+
     private fun runOnBackend(program: UirProgram, backend: Backend<*>, seed: Long): FuzzingResult {
         val startTime = System.currentTimeMillis()
         val result = backend.execute(program)
@@ -681,5 +840,27 @@ class FuzzingPipeline(
             ).translate(program)
             else -> "// re-translation not supported for ${backend.name}"
         }
+    }
+
+    /**
+     * 提取程序 A 中 pool/silu 的详细信息用于分析 pattern 过宽问题。
+     */
+    private fun extractPoolSiluInfo(program: io.github.xyzboom.aiFuzzer.ir.UirProgram): String {
+        val parts = mutableListOf<String>()
+        for (graph in program.graphs) {
+            for (node in graph.nodes) {
+                val op = node.op.name
+                if (op !in setOf("AVG_POOL2D", "MAX_POOL2D", "SILU")) continue
+                val inputShapes = node.inputs.map { ref ->
+                    val dims = ref.type.shape.dims.joinToString(",") { it.value.toString() }
+                    "[$dims]"
+                }
+                val attrs = node.attributes.entries.joinToString(",") { (k, v) ->
+                    "$k=$v"
+                }
+                parts.add("$op($attrs)${inputShapes}")
+            }
+        }
+        return parts.joinToString(" | ")
     }
 }

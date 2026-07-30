@@ -48,6 +48,8 @@ object PatternParser {
 
         val nodes = parseNodes(obj["nodes"]?.jsonArray ?: error("Missing nodes array"))
         val values = parseValues(obj["values"]?.jsonArray ?: JsonArray(emptyList()))
+        val graphConstraints = parseGraphConstraints(obj["graphConstraints"]?.jsonObject)
+        val flowConstraints = parseFlowConstraints(obj["flowConstraints"]?.jsonArray)
 
         return PatternDef(
             id = id,
@@ -57,6 +59,8 @@ object PatternParser {
             severity = severity,
             nodes = nodes,
             values = values,
+            graphConstraints = graphConstraints,
+            flowConstraints = flowConstraints,
         )
     }
 
@@ -109,5 +113,34 @@ object PatternParser {
     private fun parseShape(shapeArray: JsonArray?): List<DimMatcher> {
         if (shapeArray == null) return emptyList()
         return shapeArray.map { DimMatcher.fromJson(it) }
+    }
+
+    private fun parseGraphConstraints(obj: JsonObject?): GraphConstraints? {
+        if (obj == null) return null
+        val minNodes = obj["minNodes"]?.jsonPrimitive?.intOrNull
+        val maxNodes = obj["maxNodes"]?.jsonPrimitive?.intOrNull
+        val requiredOps = obj["requiredOps"]?.jsonArray?.map { it.jsonPrimitive.content }
+        if (minNodes == null && maxNodes == null && requiredOps == null) return null
+        return GraphConstraints(
+            minNodes = minNodes,
+            maxNodes = maxNodes,
+            requiredOps = requiredOps,
+        )
+    }
+
+    private fun parseFlowConstraints(arr: JsonArray?): List<FlowConstraint>? {
+        if (arr == null) return null
+        val result = arr.map { parseFlowConstraint(it.jsonObject) }
+        if (result.isEmpty()) return null
+        return result
+    }
+
+    private fun parseFlowConstraint(obj: JsonObject): FlowConstraint {
+        return FlowConstraint(
+            fromNode = obj["fromNode"]?.jsonPrimitive?.content ?: error("Missing flowConstraint.fromNode"),
+            fromOutput = obj["fromOutput"]?.jsonPrimitive?.intOrNull ?: 0,
+            toNode = obj["toNode"]?.jsonPrimitive?.content ?: error("Missing flowConstraint.toNode"),
+            toInput = obj["toInput"]?.jsonPrimitive?.intOrNull ?: 0,
+        )
     }
 }

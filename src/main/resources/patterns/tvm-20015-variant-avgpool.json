@@ -5,7 +5,7 @@
       "id": "tvm-20015-variant-avgpool",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "avg_pool2d LLVM shufflevector dominance crash: N=4, kernel=2, stride=2",
+      "description": "avg_pool2d LLVM shufflevector dominance crash: C=4, kernel=2, stride=2",
       "severity": "crash",
       "nodes": [
         {
@@ -25,13 +25,16 @@
           "ndim": 4,
           "shape": [
             {"$any": true},
-            {"$any": true},
+            {"$eq": 4},
             {"$any": true},
             {"$any": true}
           ],
           "dtype": "float32"
         }
-      ]
+      ],
+      "graphConstraints": {
+        "minNodes": 3
+      }
     }
   ]
 }
