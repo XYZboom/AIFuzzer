@@ -32,6 +32,8 @@ class PatternMatcher(
 
     var matchCount = 0; private set
     var totalNodesChecked = 0; private set
+    /** Per-pattern match count: pattern ID -> count */
+    val matchCountByPattern = mutableMapOf<String, Int>()
 
     private data class ActivePattern(
         val matchedIndex: Int,
@@ -60,6 +62,7 @@ class PatternMatcher(
                 if (nextIdx == pattern.nodes.size - 1) {
                     if (checkAllValueConstraints(pattern, allNodes, valueResolver)) {
                         matchCount++
+                        matchCountByPattern[pattern.id] = matchCountByPattern.getOrDefault(pattern.id, 0) + 1
                         return pattern
                     }
                 } else {
@@ -82,6 +85,7 @@ class PatternMatcher(
             for (pattern in singlePatterns) {
                 if (checkAllValueConstraints(pattern, listOf(node), valueResolver)) {
                     matchCount++
+                    matchCountByPattern[pattern.id] = matchCountByPattern.getOrDefault(pattern.id, 0) + 1
                     return pattern
                 }
             }

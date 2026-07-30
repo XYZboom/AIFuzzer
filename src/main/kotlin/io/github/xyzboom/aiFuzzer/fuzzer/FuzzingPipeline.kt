@@ -51,7 +51,6 @@ class FuzzingPipeline(
 
     /** 缓存的 pattern 数据库 */
     private val patternDatabase: io.github.xyzboom.aiFuzzer.pattern.PatternDatabase? by lazy {
-        if (!config.dedup.enabled) return@lazy null
         loadPatternDatabase(config.dedup)
     }
 
@@ -120,6 +119,10 @@ class FuzzingPipeline(
         return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = allPatterns)
     }
 
+    /** 累积的 pattern 匹配统计 */
+    private val patternMatchCount = java.util.concurrent.ConcurrentSkipListMap<String, Int>()
+    private val totalNodesChecked = java.util.concurrent.atomic.AtomicLong(0)
+
     /**
      * 单次 Fuzzing 运行（单线程，调用方负责上下文）。
      * 每次调用创建新的 [UirGenerator] 实例，确保线程安全。
@@ -128,21 +131,32 @@ class FuzzingPipeline(
         log.debug { "运行单次测试: seed=$seed" }
         // 每次创建新的 generator，避免共享可变状态
         var genConfig = generatorConfig.copy(seed = seed)
-        if (config.dedup.enabled && patternDatabase != null) {
+        if (patternDatabase != null) {
             // 自动推断去重 target：跨目标差分时不过滤 target
             val dedupTarget = resolveDedupTarget()
             genConfig = genConfig.copy(
                 dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
-                    enabled = true,
+                    enabled = config.dedup.enabled,
                     patternDatabase = patternDatabase,
                     compiler = config.dedup.compiler,
                     target = dedupTarget,
-                    maxRetries = 5,
+                    maxRetries = 10,
                 )
             )
         }
         val generator = UirGenerator(genConfig)
         val originalProgram = generator.generate()
+
+        // 收集 pattern 匹配统计
+        generator.patternMatcher?.let { pm ->
+            totalNodesChecked.addAndGet(pm.totalNodesChecked.toLong())
+            if (pm.matchCount > 0) {
+                patternMatchCount.merge("TOTAL_MATCHES", pm.matchCount) { a, b -> a + b }
+                pm.matchCountByPattern.forEach { (pid, cnt) ->
+                    patternMatchCount.merge(pid, cnt) { a, b -> a + b }
+                }
+            }
+        }
 
         // 尝试变异（如果变异器已启用且有种子）
         val program = mutator?.let { m ->
@@ -288,16 +302,40 @@ class FuzzingPipeline(
                 val seed = startSeed + i
                 // 为每个任务预创建 generator 配置（seed 已确定）
                 val taskGenConfig = generatorConfig.copy(seed = seed)
+                val finalTaskGenConfig = if (patternDatabase != null) {
+                    val dedupTarget = resolveDedupTarget()
+                    taskGenConfig.copy(
+                        dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
+                            enabled = config.dedup.enabled,
+                            patternDatabase = patternDatabase,
+                            compiler = config.dedup.compiler,
+                            target = dedupTarget,
+                            maxRetries = 10,
+                        )
+                    )
+                } else taskGenConfig
                 executor.submit<List<FuzzingResult>> {
                     // 获取当前线程的 workerId 和专属 backend
                     val workerId = (nextWorkerId.getAndIncrement() % config.workers).toInt()
                     val threadBackends = backendPool[workerId]
                     
                     // 每个任务创建独立的 generator 实例，完全避免共享状态
-                    val taskGenerator = UirGenerator(taskGenConfig)
+                    val taskGenerator = UirGenerator(finalTaskGenConfig)
                     try {
                         // 内联 runOnce 逻辑，使用任务专属的 generator 和 backend
                         val program = taskGenerator.generate()
+                        
+                        // 收集 pattern 匹配统计
+                        taskGenerator.patternMatcher?.let { pm ->
+                            totalNodesChecked.addAndGet(pm.totalNodesChecked.toLong())
+                            if (pm.matchCount > 0) {
+                                patternMatchCount.merge("TOTAL_MATCHES", pm.matchCount) { a, b -> a + b }
+                                pm.matchCountByPattern.forEach { (pid, cnt) ->
+                                    patternMatchCount.merge(pid, cnt) { a, b -> a + b }
+                                }
+                            }
+                        }
+                        
                         val results = threadBackends.map { backend ->
                             runOnBackend(program, backend, seed)
                         }
@@ -398,6 +436,25 @@ class FuzzingPipeline(
         backends.forEach { it.close() }
         backendPool.forEach { backendList ->
             backendList.forEach { it.close() }
+        }
+
+        // 输出 pattern 匹配统计
+        val totalMatches = patternMatchCount["TOTAL_MATCHES"] ?: 0
+        val checked = totalNodesChecked.get()
+        if (totalMatches > 0 || checked > 0) {
+            log.info { "Pattern match stats (recorded): matched=$totalMatches times, checked=$checked nodes" }
+            if (totalMatches > 0) {
+                println("  Pattern matched (recorded): $totalMatches matches (${checked} nodes checked)")
+                // Per-pattern distribution (sorted by count, descending)
+                val perPattern = patternMatchCount.filterKeys { it != "TOTAL_MATCHES" }
+                    .entries.sortedByDescending { it.value }
+                if (perPattern.isNotEmpty()) {
+                    println("  Per-pattern breakdown:")
+                    for ((pid, cnt) in perPattern) {
+                        println("    $pid: $cnt")
+                    }
+                }
+            }
         }
 
         return FuzzingSummary.fromResults(allResults, System.currentTimeMillis() - startTime)

@@ -121,7 +121,7 @@ data class FuzzerGenConfig(
                 patternDatabase = patternDb,
                 compiler = dedup.compiler,
                 target = dedup.target,
-                maxRetries = 5,
+                maxRetries = 10,
             ),
             mutationConfig = mutation,
         )

@@ -84,7 +84,7 @@ data class DedupConfig(
     val patternDatabase: io.github.xyzboom.aiFuzzer.pattern.PatternDatabase? = null,
     val compiler: String = "tvm",
     val target: String? = "llvm",
-    val maxRetries: Int = 5,
+    val maxRetries: Int = 10,
 )
 
 /**
@@ -110,8 +110,8 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
     }
 
     /** 去重匹配器（如果启用） */
-    private val patternMatcher: io.github.xyzboom.aiFuzzer.pattern.PatternMatcher? =
-        if (config.dedup.enabled && config.dedup.patternDatabase != null) {
+    val patternMatcher: io.github.xyzboom.aiFuzzer.pattern.PatternMatcher? =
+        if (config.dedup.patternDatabase != null) {
             io.github.xyzboom.aiFuzzer.pattern.PatternMatcher(
                 config.dedup.patternDatabase!!,
                 config.dedup.compiler,
