@@ -19,6 +19,58 @@
       }]
     },
     {
+      "id": "tvm-20015-variant-silu-1d",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector: 1D input, size∈{10,14}",
+      "severity": "crash",
+      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 1,
+        "shape": [],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [0], "op": "mul", "allowedValues": [10, 14]}
+        ]
+      }]
+    },
+    {
+      "id": "tvm-20015-variant-silu-2d",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector: 2D input, N*C∈{10,14}",
+      "severity": "crash",
+      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 2,
+        "shape": [],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [10, 14]}
+        ]
+      }]
+    },
+    {
+      "id": "tvm-20015-variant-silu-4d",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector 4d: N∈{1,4}, N*C*H*W∈{40,56}",
+      "severity": "crash",
+      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 4,
+        "shape": [{"$in": [1, 4]}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [0, 1, 2, 3], "op": "mul", "allowedValues": [40, 56]},
+          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [4, 8, 20, 28]}
+        ]
+      }]
+    },
+    {
       "id": "tvm-20015-variant-silu-4d-n14",
       "compiler": "tvm",
       "target": "llvm",
@@ -51,25 +103,6 @@
         "expressionConstraints": [
           {"dimIndices": [0, 1, 2, 3], "op": "mul", "allowedValues": [112]},
           {"dimIndices": [1], "op": "mul", "allowedValues": [4]}
-        ]
-      }]
-    },
-    {
-      "id": "tvm-20015-variant-avgpool",
-      "compiler": "tvm",
-      "target": "llvm",
-      "description": "avg_pool2d(k=2,s=2): N*C∈{4,8,20,24,28}, (H//2)*(W//2)∈{2,3,5,10}",
-      "severity": "crash",
-      "nodes": [{"match": "node", "id": "n0", "op": "AVG_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 2, "padding": 0}}],
-      "values": [{
-        "match": "value", "id": "v_in",
-        "ndim": 4,
-        "shape": [{"$in": [1, 4]}],
-        "dtype": "float32",
-        "expressionConstraints": [
-          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [4, 8, 20, 24, 28]},
-          {"dimIndices": [2, 3], "op": "mul", "divisors": [2, 2], "allowedValues": [2, 3, 5, 10]},
-          {"dimIndices": [1, 2, 3], "op": "mul", "divisors": [1, 2, 2], "allowedValues": [10, 14, 18, 40]}
         ]
       }]
     }

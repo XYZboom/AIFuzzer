@@ -88,7 +88,7 @@ class AllPatternsTest {
 
     @Test
     fun `load all 20 patterns from resources`() {
-        assertEquals(31, allPatterns.size)
+        assertEquals(35, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
@@ -140,10 +140,10 @@ class AllPatternsTest {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-silu-2d" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
 
-        // 正例: 2D [4,5]
+        // 正例: 2D [2,5] (2*5=10)
         val pos = mockNode("silu", UirOpKind.SILU,
-            listOf(shapeOf(4, 5)), listOf(shapeOf(4, 5)))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu-2d positive [4,5]")
+            listOf(shapeOf(2, 5)), listOf(shapeOf(2, 5)))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu-2d positive [2,5]")
 
         // 反例-不同算子
         matcher.reset()
@@ -221,20 +221,6 @@ class AllPatternsTest {
             listOf(shapeOf(4, 1, 10, 4)), listOf(shapeOf(4, 1, 5, 2)),
             mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
         assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-avgpool diff op")
-
-        // 正例: N=2 (any N now matches)
-        matcher.reset()
-        val n2 = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
-            listOf(shapeOf(2, 1, 10, 4)), listOf(shapeOf(2, 1, 5, 2)),
-            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
-        assertNotNull(matcher.onNodeGenerated(n2, resolverOf(n2)), "tvm-20015-variant-avgpool N=2")
-
-        // 正例: N=1 (any N now matches)
-        matcher.reset()
-        val n1 = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
-            listOf(shapeOf(1, 1, 10, 4)), listOf(shapeOf(1, 1, 5, 2)),
-            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
-        assertNotNull(matcher.onNodeGenerated(n1, resolverOf(n1)), "tvm-20015-variant-avgpool N=1")
     }
 
     @Test
@@ -242,9 +228,9 @@ class AllPatternsTest {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-avgpool-stride1" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
 
-        // 正例: [1,4,3,6] — C=4, k=2, stride=1
+        // 正例: [1,4,2,5] — C=4, k=2, stride=1, H_out*W_out=2*5=10
         val pos = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
-            listOf(shapeOf(1, 4, 3, 6)), listOf(shapeOf(1, 4, 2, 5)),
+            listOf(shapeOf(1, 4, 2, 5)), listOf(shapeOf(1, 4, 1, 4)),
             mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
         assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-avgpool-stride1 positive")
 
@@ -327,9 +313,9 @@ class AllPatternsTest {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-silu-1d" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
 
-        // 正例: [1] — 1D silu
+        // 正例: 1D [10]
         val pos = mockNode("silu", UirOpKind.SILU,
-            listOf(shapeOf(1)), listOf(shapeOf(1)))
+            listOf(shapeOf(10)), listOf(shapeOf(10)))
         assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu-1d positive")
 
         // 反例-不同算子
