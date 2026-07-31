@@ -537,18 +537,18 @@ class FuzzingPipeline(
 
                     // 1. 生成 no-dedup 程序（不启用 pattern 去重）
                     val generatorNoDedup = io.github.xyzboom.aiFuzzer.generator.UirGenerator(
-                        generatorConfig.copy(seed = seed)
+                        generatorConfig.copy(seed = seed, dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig())
                     )
                     val genNoDedup = generatorNoDedup.generate()
                     val serialNoDedup = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genNoDedup)
 
                     // 2. 生成 dedup 程序（启用 pattern 去重）
-                    val genConfigDedup = if (patternDatabase != null) {
+                    val genConfigDedup = if (generatorConfig.dedup.patternDatabase != null) {
                         generatorConfig.copy(
                             seed = seed,
                             dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
                                 enabled = true,
-                                patternDatabase = patternDatabase,
+                                patternDatabase = generatorConfig.dedup.patternDatabase,
                                 compiler = config.dedup.compiler,
                                 target = dedupTarget,
                                 maxRetries = 10,

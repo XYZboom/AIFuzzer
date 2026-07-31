@@ -122,6 +122,9 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
     /** 去重成功阻止生成的次数（pattern 匹配导致重试的计数） */
     var dedupPreventedCount: Int = 0
 
+    /** 当前节点去重重试中禁止使用的算子（节点结束后会清空） */
+    private val dedupBlockedOps = mutableSetOf<UirOpKind>()
+
     private var valueCounter = 0
     private var nodeCounter = 0
     
@@ -299,6 +302,8 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     if (matched != null) {
                         println("[seed=${config.seed}] 节点 $nodeIndex (${mainNode.op}): 匹配 pattern ${matched.id}")
                         log.trace { "节点 $nodeIndex: 与已知 pattern ${matched.id} 匹配！重试第 ${retry + 1} 次" }
+                        // 把当前算子加入黑名单，下次重试避开它
+                        dedupBlockedOps.add(mainNode.op)
                         if (retry < maxRetries - 1) {
                             dedupPreventedCount++
                             // 先保存为 finalNodes 再清理，确保下一轮能正确清理
@@ -337,6 +342,9 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 currentBranch++
                 liveTips[currentBranch] = availableValues[availableValues.size - 2]
             }
+            
+            // 节点级黑名单在此节点结束后清空，不影响后续节点
+            dedupBlockedOps.clear()
         }
         
         // 3. 选择图输出：选择所有未被使用的值
@@ -390,10 +398,15 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
     open fun selectOpWithConstraints(availableValues: MutableList<String>): UirOpKind {
         val maxRetries = 10
         for (retry in 0 until maxRetries) {
+            val available = opsEnum.filter { it !in dedupBlockedOps }
+            // 如果所有 op 都被拉了黑名单，忽略黑名单继续
+            val candidates = if (available.isEmpty()) opsEnum else available
+            
             val candidate = when {
-                availableValues.isEmpty() -> opsEnum.filter { it in UirOpKind.constantOps }.random(rand)
-                availableValues.size == 1 -> opsEnum.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.random(rand)
-                else -> opsEnum.random(rand)
+                candidates.isEmpty() -> return UirOpKind.RELU
+                availableValues.isEmpty() -> candidates.filter { it in UirOpKind.constantOps }.randomOrNull(rand) ?: UirOpKind.RELU
+                availableValues.size == 1 -> candidates.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.randomOrNull(rand) ?: UirOpKind.RELU
+                else -> candidates.random(rand)
             }
             
             // Check constraint: get the input shape(s) this op would receive
