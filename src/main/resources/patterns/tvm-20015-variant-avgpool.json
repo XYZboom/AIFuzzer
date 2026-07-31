@@ -2,39 +2,38 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20015-variant-avgpool",
+      "id": "tvm-20015-variant-avgpool-n4",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "avg_pool2d LLVM shufflevector dominance crash: C=4, kernel=2, stride=2",
+      "description": "avg_pool2d(k=2,s=2) LLVM shufflevector: N=4, C*(H//2)*(W//2) ∈ {10,14,18}",
       "severity": "crash",
-      "nodes": [
-        {
-          "match": "node", "id": "n0", "op": "AVG_POOL2D",
-          "inputs": ["v_in"],
-          "outputs": ["v_out"],
-          "attrs": {
-            "kernel_size": 2,
-            "stride": 2,
-            "padding": 0
-          }
-        }
-      ],
-      "values": [
-        {
-          "match": "value", "id": "v_in",
-          "ndim": 4,
-          "shape": [
-            {"$any": true},
-            {"$eq": 4},
-            {"$any": true},
-            {"$any": true}
-          ],
-          "dtype": "float32"
-        }
-      ],
-      "graphConstraints": {
-        "minNodes": 3
-      }
+      "nodes": [{"match": "node", "id": "n0", "op": "AVG_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 2, "padding": 0}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 4,
+        "shape": [{"$eq": 4}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [1, 2, 3], "op": "mul", "divisors": [1, 2, 2], "allowedValues": [10, 14, 18]}
+        ]
+      }]
+    },
+    {
+      "id": "tvm-20015-variant-avgpool-n1c4",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "avg_pool2d(k=2,s=2) LLVM shufflevector: N=1,C=4, (H//2)*(W//2) ∈ {10,18}",
+      "severity": "crash",
+      "nodes": [{"match": "node", "id": "n0", "op": "AVG_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 2, "padding": 0}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 4,
+        "shape": [{"$eq": 1}, {"$eq": 4}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [1, 2, 3], "op": "mul", "divisors": [1, 2, 2], "allowedValues": [40, 72]}
+        ]
+      }]
     }
   ]
 }

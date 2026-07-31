@@ -94,7 +94,8 @@ class PatternMatcher(
         val singlePatterns = singleOpPatterns[node.op.name]
         if (singlePatterns != null) {
             for (pattern in singlePatterns) {
-                if (checkAllValueConstraints(pattern, listOf(node), valueResolver) &&
+                if (matchNode(node, pattern.nodes[0]) &&
+                    checkAllValueConstraints(pattern, listOf(node), valueResolver) &&
                     checkGraphConstraints(pattern) &&
                     checkFlowConstraints(pattern, listOf(node))) {
                     matchCount++
@@ -177,6 +178,17 @@ class PatternMatcher(
             if (patternValue.dtype !is DtypeMatcher.AnyDtype) {
                 val actualDtype = actualRef.type.dtype
                 if (!patternValue.dtype.matches(actualDtype.name, actualDtype.bits)) return false
+            }
+
+            // 检查跨维度表达式约束
+            for (ec in patternValue.expressionConstraints) {
+                val dimValues = actualDims.map { it.value }
+                if (!ec.matches(dimValues)) {
+                    if (patternValue.expressionConstraints.isNotEmpty() && System.getProperty("pattern.debug") == "true") {
+                        println("[PatternMatcher] 表达式约束未通过: ${ec.op} dimIndices=${ec.dimIndices} result=${ec.evaluate(dimValues)} allowed=${ec.allowedValues} dims=${dimValues}")
+                    }
+                    return false
+                }
             }
         }
         return true

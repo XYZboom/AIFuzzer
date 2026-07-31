@@ -5,62 +5,73 @@
       "id": "tvm-20015-variant-silu-3d",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "silu LLVM shufflevector dominance crash: ndim=3",
+      "description": "silu LLVM shufflevector: N=4, C*W ∈ {10,14}",
       "severity": "crash",
-      "nodes": [
-        {
-          "match": "node", "id": "n0", "op": "SILU",
-          "inputs": ["v_in"],
-          "outputs": ["v_out"],
-          "attrs": {}
-        }
-      ],
-      "values": [
-        {
-          "match": "value", "id": "v_in",
-          "ndim": 3,
-          "shape": [
-            {"$any": true},
-            {"$any": true},
-            {"$any": true}
-          ],
-          "dtype": "float32"
-        }
-      ],
-      "graphConstraints": {
-        "minNodes": 3
-      }
+      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 3,
+        "shape": [{"$eq": 4}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [1, 2], "op": "mul", "allowedValues": [10, 14]}
+        ]
+      }]
     },
     {
-      "id": "tvm-20015-variant-silu-4d",
+      "id": "tvm-20015-variant-silu-4d-n14",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "silu LLVM shufflevector dominance crash: ndim=4",
+      "description": "silu LLVM shufflevector 4d: N∈{1,4}, N*C*H*W∈{40,56}",
       "severity": "crash",
-      "nodes": [
-        {
-          "match": "node", "id": "n0", "op": "SILU",
-          "inputs": ["v_in"],
-          "outputs": ["v_out"],
-          "attrs": {}
-        }
-      ],
-      "values": [
-        {
-          "match": "value", "id": "v_in",
-          "ndim": 4,
-          "shape": [
-            {"$any": true},
-            {"$any": true},
-            {"$any": true},
-            {"$any": true}
-          ],
-          "dtype": "float32"
-        }
-      ],
-      "graphConstraints": {
-        "minNodes": 3
-      }
+      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 4,
+        "shape": [{"$in": [1, 4]}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [0, 1, 2, 3], "op": "mul", "allowedValues": [40, 56]},
+          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [4, 8, 20, 28]}
+        ]
+      }]
+    },
+    {
+      "id": "tvm-20015-variant-silu-4d-n2",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "silu LLVM shufflevector 4d: N=2, C=4, N*C*H*W=112",
+      "severity": "crash",
+      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 4,
+        "shape": [{"$eq": 2}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [0, 1, 2, 3], "op": "mul", "allowedValues": [112]},
+          {"dimIndices": [1], "op": "mul", "allowedValues": [4]}
+        ]
+      }]
+    },
+    {
+      "id": "tvm-20015-variant-avgpool",
+      "compiler": "tvm",
+      "target": "llvm",
+      "description": "avg_pool2d(k=2,s=2): N*C∈{4,8,20,24,28}, (H//2)*(W//2)∈{2,3,5,10}",
+      "severity": "crash",
+      "nodes": [{"match": "node", "id": "n0", "op": "AVG_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 2, "padding": 0}}],
+      "values": [{
+        "match": "value", "id": "v_in",
+        "ndim": 4,
+        "shape": [{"$in": [1, 4]}],
+        "dtype": "float32",
+        "expressionConstraints": [
+          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [4, 8, 20, 24, 28]},
+          {"dimIndices": [2, 3], "op": "mul", "divisors": [2, 2], "allowedValues": [2, 3, 5, 10]},
+          {"dimIndices": [1, 2, 3], "op": "mul", "divisors": [1, 2, 2], "allowedValues": [10, 14, 18, 40]}
+        ]
+      }]
     }
   ]
 }

@@ -283,13 +283,68 @@ data class FlowConstraint(
 )
 
 /**
- * Pattern 中的值定义——匹配一个 UirValueRef 的 shape/dtype。
+ * 跨维度表达式约束：对 shape 的多个维度进行运算后检查结果。
+ * 支持运算：mul（乘积）、add（求和）、sub（差值）、mod（取模）。
+ * 可选 divisors：每个维度先取整除以对应值再运算（list 与 dimIndices 一一对应）。
+ * 兼容旧格式 divisor（单个 int，作用于所有维度）。
+ * 可选 excludeWhen：子约束列表，如果任一子约束匹配，则父约束不匹配。
+ * 如 dimIndices=[0,1,2,3], op="mul", allowedValues=[40,56,112],
+ *    excludeWhen=[{dimIndices=[0], op="mul", allowedValues=[2]}]
+ * 表示 N*C*H*W ∈ {40,56,112}，但排除 N=2 的情况
+ */
+data class ExpressionConstraint(
+    val dimIndices: List<Int>,
+    val op: String,  // "mul", "add", "sub", "mod"
+    val allowedValues: Set<Int>,
+    /** 每个维度的除数，与 dimIndices 一一对应；若为 null 表示不除 */
+    val divisors: List<Int>? = null,
+    /** 排除条件：如果任一子约束的 evaluate 结果在 allowedValues 中，则父约束不匹配 */
+    val excludeWhen: List<ExpressionConstraint>? = null,
+) {
+    fun evaluate(dims: List<Int?>): Int? {
+        val values = dimIndices.mapIndexed { i, idx ->
+            if (idx >= dims.size) return null
+            val raw = dims[idx] ?: return null
+            val dv = divisors?.getOrElse(i) { 1 } ?: 1
+            raw / dv
+        }
+        return when (op) {
+            "mul" -> values.fold(1) { a, b -> a * b }
+            "add" -> values.fold(0) { a, b -> a + b }
+            "sub" -> if (values.size == 2) values[0] - values[1] else null
+            "mod" -> if (values.size == 2 && values[1] != 0) values[0] % values[1] else null
+            else -> null
+        }
+    }
+
+    /**
+     * 检查主约束是否匹配，同时考虑排除条件。
+     * 返回 true 表示匹配（主约束通过且无排除条件触发）。
+     */
+    fun matches(dims: List<Int?>): Boolean {
+        val result = evaluate(dims) ?: return false
+        if (result !in allowedValues) return false
+        
+        // 检查排除条件
+        excludeWhen?.forEach { exclude ->
+            val excludeResult = exclude.evaluate(dims)
+            if (excludeResult != null && excludeResult in exclude.allowedValues) {
+                return false  // 被排除条件阻止
+            }
+        }
+        
+        return true
+    }
+}
+/**
+ * 值定义：描述一个值的维度、形状、dtype 和跨维度约束。
  */
 data class PatternValueDef(
     val id: String,
-    val ndim: DimMatcher?,
-    val shape: List<DimMatcher>,
-    val dtype: DtypeMatcher,
+    val ndim: DimMatcher? = null,
+    val shape: List<DimMatcher> = emptyList(),
+    val dtype: DtypeMatcher = DtypeMatcher.AnyDtype(),
+    val expressionConstraints: List<ExpressionConstraint> = emptyList(),
 )
 
 /**

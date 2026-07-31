@@ -479,7 +479,7 @@ class FuzzingPipeline(
      * 每个 seed 独立 try-catch，单次超时不崩全局。
      * 多线程并行，每个 worker 有独立的 backend 副本。
      */
-    fun runDedupEval(count: Int, startSeed: Long = 1): DedupEvalSummary {
+    fun runDedupEval(count: Int, startSeed: Long = 1, verbose: Boolean = false): DedupEvalSummary {
         BugCollector.reset()
         val startTime = System.currentTimeMillis()
 
@@ -535,14 +535,15 @@ class FuzzingPipeline(
                     val workerId = (nextWorkerId.getAndIncrement() % workerCount).toInt()
                     val threadBackends = backendPool[workerId]
 
-                    // 1. no-dedup 生成程序 A
-                    val genA = io.github.xyzboom.aiFuzzer.generator.UirGenerator(
+                    // 1. 生成 no-dedup 程序（不启用 pattern 去重）
+                    val generatorNoDedup = io.github.xyzboom.aiFuzzer.generator.UirGenerator(
                         generatorConfig.copy(seed = seed)
-                    ).generate()
-                    val serialA = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genA)
+                    )
+                    val genNoDedup = generatorNoDedup.generate()
+                    val serialNoDedup = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genNoDedup)
 
-                    // 2. with-dedup 生成程序 B
-                    val genConfigB = if (patternDatabase != null) {
+                    // 2. 生成 dedup 程序（启用 pattern 去重）
+                    val genConfigDedup = if (patternDatabase != null) {
                         generatorConfig.copy(
                             seed = seed,
                             dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
@@ -554,33 +555,44 @@ class FuzzingPipeline(
                             )
                         )
                     } else generatorConfig.copy(seed = seed)
-                    val genB = io.github.xyzboom.aiFuzzer.generator.UirGenerator(genConfigB).generate()
-                    val serialB = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genB)
+                    val generatorDedup = io.github.xyzboom.aiFuzzer.generator.UirGenerator(genConfigDedup)
+                    val genDedup = generatorDedup.generate()
 
-                    // 3. 比较
-                    if (serialA == serialB) {
+                    // 3. 检查 dedup 是否阻止了生成（pattern 匹配导致重试）
+                    val dedupTriggered = generatorDedup.dedupPreventedCount > 0
+                    if (!dedupTriggered) {
                         skipped.incrementAndGet()
                         completed.incrementAndGet()
                         return@submit
                     }
 
-                    // 记录 A 程序的 pool/silu 信息用于分析
-                    val aPoolSiluInfo = extractPoolSiluInfo(genA)
-                    if (aPoolSiluInfo.isNotEmpty()) {
-                        log.info { "A seed=$seed pool/silu: $aPoolSiluInfo" }
+                    // verbose: 打印 no-dedup vs dedup 程序的 pool/silu 差异（默认开启）
+                    val noDedupInfo = extractPoolSiluInfo(genNoDedup)
+                    val dedupInfo = extractPoolSiluInfo(genDedup)
+                    println("[seed=$seed] no-dedup: $noDedupInfo")
+                    println("[seed=$seed] dedup:    $dedupInfo")
+
+                    // 4. 去重触发了，两个程序不同，分别执行
+                    val resultsNoDedup = threadBackends.map { runOnBackend(genNoDedup, it, seed) }
+                    val resultsDedup = threadBackends.map { runOnBackend(genDedup, it, seed) }
+
+                    val noDedupFailed = resultsNoDedup.any { !it.backendResult.success }
+                    val dedupFailed = resultsDedup.any { !it.backendResult.success }
+
+                    // 保存 no-dedup 程序完整 IR（保存用于 FP 分析）
+                    if (!noDedupFailed && !dedupFailed) {
+                        if (noDedupInfo.isNotEmpty()) {
+                            val fpDir = java.io.File("reports/fp-analysis")
+                            fpDir.mkdirs()
+                            val fpFile = java.io.File(fpDir, "fp_seed${seed}.jsonl")
+                            fpFile.writeText(serialNoDedup)
+                        }
                     }
 
-                    // 4. A≠B，执行
-                    val resultsA = threadBackends.map { runOnBackend(genA, it, seed) }
-                    val resultsB = threadBackends.map { runOnBackend(genB, it, seed) }
-
-                    val aFailed = resultsA.any { !it.backendResult.success }
-                    val bFailed = resultsB.any { !it.backendResult.success }
-
                     when {
-                        aFailed && !bFailed -> { bugPrevented.incrementAndGet(); bugPreventedSeeds.add(seed) }
-                        !aFailed && bFailed -> { falsePositive.incrementAndGet(); falsePositiveSeeds.add(seed) }
-                        aFailed && bFailed -> { bothFailed.incrementAndGet(); bothFailedSeeds.add(seed) }
+                        noDedupFailed && !dedupFailed -> { bugPrevented.incrementAndGet(); bugPreventedSeeds.add(seed) }
+                        !noDedupFailed && dedupFailed -> { falsePositive.incrementAndGet(); falsePositiveSeeds.add(seed) }
+                        noDedupFailed && dedupFailed -> { bothFailed.incrementAndGet(); bothFailedSeeds.add(seed) }
                         else -> bothSuccess.incrementAndGet()
                     }
                     completed.incrementAndGet()
@@ -844,9 +856,19 @@ class FuzzingPipeline(
 
     /**
      * 提取程序 A 中 pool/silu 的详细信息用于分析 pattern 过宽问题。
+     * 保存完整程序到文件，便于后续分析。
      */
     private fun extractPoolSiluInfo(program: io.github.xyzboom.aiFuzzer.ir.UirProgram): String {
         val parts = mutableListOf<String>()
+        // 收集所有节点 output -> 上游节点名
+        val outputToNode = mutableMapOf<String, String>()
+        for (graph in program.graphs) {
+            for (node in graph.nodes) {
+                for (outRef in node.outputs) {
+                    outputToNode[outRef.valueId] = node.op.name
+                }
+            }
+        }
         for (graph in program.graphs) {
             for (node in graph.nodes) {
                 val op = node.op.name
@@ -856,9 +878,19 @@ class FuzzingPipeline(
                     "[$dims]"
                 }
                 val attrs = node.attributes.entries.joinToString(",") { (k, v) ->
-                    "$k=$v"
+                    val vStr = when (v) {
+                        is io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr -> v.value.toString()
+                        is io.github.xyzboom.aiFuzzer.ir.types.UirStringAttr -> v.value
+                        else -> v.toString()
+                    }
+                    "$k=$vStr"
                 }
-                parts.add("$op($attrs)${inputShapes}")
+                // 上游算子
+                val upstreamOps = node.inputs.mapNotNull { ref ->
+                    outputToNode[ref.valueId]
+                }.distinct()
+                val upstreamStr = if (upstreamOps.isNotEmpty()) upstreamOps.joinToString(",") else "none"
+                parts.add("$op($attrs)${inputShapes}<-[$upstreamStr]")
             }
         }
         return parts.joinToString(" | ")

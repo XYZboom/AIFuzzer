@@ -99,15 +99,58 @@ object PatternParser {
             val ndim = obj["ndim"]?.let { DimMatcher.fromJson(it) }
             val shape = parseShape(obj["shape"]?.jsonArray)
             val dtype = DtypeMatcher.fromJson(obj["dtype"])
-            
+            val expressionConstraints = parseExpressionConstraints(obj["expressionConstraints"]?.jsonArray)
+            if (expressionConstraints.isNotEmpty() && System.getProperty("pattern.debug") == "true") {
+                println("[PatternParser] 值 '$id' 解析到 ${expressionConstraints.size} 个表达式约束: ${expressionConstraints}")
+            }
             result[id] = PatternValueDef(
                 id = id,
                 ndim = ndim,
                 shape = shape,
                 dtype = dtype,
+                expressionConstraints = expressionConstraints,
             )
         }
         return result
+    }
+
+    private fun parseExpressionConstraints(arr: JsonArray?): List<ExpressionConstraint> {
+        if (arr == null) return emptyList()
+        return arr.map { elem ->
+            val obj = elem.jsonObject
+            val dimIndices = obj["dimIndices"]!!.jsonArray.map { it.jsonPrimitive.int }
+            val op = obj["op"]!!.jsonPrimitive.content
+            val allowedValues = obj["allowedValues"]!!.jsonArray.map { it.jsonPrimitive.int }.toSet()
+            // 兼容新旧格式：优先使用 divisors 数组，回退到旧 divisor（作用于所有维度）
+            val divisors = obj["divisors"]?.jsonArray?.map { it.jsonPrimitive.int }
+                ?: obj["divisor"]?.jsonPrimitive?.intOrNull?.let { d ->
+                    dimIndices.map { d }  // 旧格式：单个 divisor 作用于所有维度
+                }
+            val excludeWhen = obj["excludeWhen"]?.jsonArray?.map { parseExcludeConstraint(it.jsonObject) }
+            ExpressionConstraint(
+                dimIndices = dimIndices,
+                op = op,
+                allowedValues = allowedValues,
+                divisors = divisors,
+                excludeWhen = excludeWhen,
+            )
+        }
+    }
+
+    private fun parseExcludeConstraint(obj: JsonObject): ExpressionConstraint {
+        val dimIndices = obj["dimIndices"]!!.jsonArray.map { it.jsonPrimitive.int }
+        val op = obj["op"]!!.jsonPrimitive.content
+        val allowedValues = obj["allowedValues"]!!.jsonArray.map { it.jsonPrimitive.int }.toSet()
+        val divisors = obj["divisors"]?.jsonArray?.map { it.jsonPrimitive.int }
+            ?: obj["divisor"]?.jsonPrimitive?.intOrNull?.let { d ->
+                dimIndices.map { d }
+            }
+        return ExpressionConstraint(
+            dimIndices = dimIndices,
+            op = op,
+            allowedValues = allowedValues,
+            divisors = divisors,
+        )
     }
 
     private fun parseShape(shapeArray: JsonArray?): List<DimMatcher> {
