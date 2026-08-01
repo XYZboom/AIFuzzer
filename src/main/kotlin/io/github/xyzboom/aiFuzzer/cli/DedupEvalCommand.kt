@@ -32,24 +32,20 @@ class DedupEvalCommand : CliktCommand(
     private val seedStr by option("--seed", "-s")
         .help("Start seed (overrides config)")
 
+    private val seedFile by option("--seed-file", "-S")
+        .file(mustExist = true, canBeFile = true, canBeDir = false, mustBeReadable = true)
+        .help("Seed sequence file (one seed per line, overrides --seed and --runs)")
+
     private val verbose by option("--verbose", "-v").flag()
         .help("Print no-dedup vs dedup program details when they differ")
 
     override fun run() = LogUtils.withTrace {
-        val config = if (configPath != null) {
-            log.info { "加载配置: ${configPath!!.absolutePath}" }
-            echo("Loading config from: ${configPath!!.absolutePath}")
-            ConfigLoader.load(configPath!!.absolutePath)
-        } else {
-            echo("Using default config")
-            ConfigLoader.default()
-        }
+        val config = loadConfig()
         echo("Description: ${config.run.description}")
         echo("Backends: ${config.backends.enabled}")
 
         val startSeed = seedStr?.toLongOrNull() ?: config.run.seed?.toLongOrNull() ?: 1L
         echo("Start seed: $startSeed")
-        echo("Seeds to evaluate: $runs")
 
         val backends = initBackends(config)
         echo("Initializing backends...")
@@ -65,8 +61,32 @@ class DedupEvalCommand : CliktCommand(
             config.generator.toGeneratorConfig(startSeed),
             backends,
             config.pipeline.toFuzzingConfig(),
-        ).runDedupEval(count = runs, startSeed = startSeed, verbose = verbose)
+        ).let { pipeline ->
+            val seeds = if (config.run.seedFile != null) {
+                SeedSequence.fromFile(java.io.File(config.run.seedFile!!))
+            } else {
+                SeedSequence.range(startSeed, runs)
+            }
+            echo("Seeds: $seeds")
+            pipeline.runDedupEval(seeds, verbose = verbose)
+        }
 
         summary.printReport()
+    }
+
+    private fun loadConfig(): io.github.xyzboom.aiFuzzer.config.FuzzerConfig {
+        if (configPath != null) {
+            val overrides = mutableMapOf<String, Any>()
+            seedStr?.let { overrides["seed"] = it }
+            seedFile?.let { overrides["seed_file"] = it.absolutePath }
+            log.info { "加载配置: ${configPath!!.absolutePath}" }
+            echo("Loading config from: ${configPath!!.absolutePath}")
+            return ConfigLoader.load(configPath!!.absolutePath, overrides)
+        }
+        val c = ConfigLoader.default()
+        seedStr?.let { c.run.seed = it }
+        seedFile?.let { c.run.seedFile = it.absolutePath }
+        echo("Using default config")
+        return c
     }
 }

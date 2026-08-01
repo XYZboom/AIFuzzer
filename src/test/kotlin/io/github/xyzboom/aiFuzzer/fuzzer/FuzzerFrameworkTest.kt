@@ -101,7 +101,7 @@ class FuzzerFrameworkTest {
                 keepArtifacts = false,
             )
         )
-        val summary = pipeline.runBatch(count = 3, startSeed = 1)
+        val summary = pipeline.runBatch(SeedSequence.range(startSeed = 1, count = 3))
         assertEquals(3, summary.total)
         assertTrue(summary.totalTimeMs >= 0)
         summary.printReport()

@@ -39,6 +39,10 @@ class FuzzCommand : CliktCommand(
     private val seedStr by option("--seed", "-s")
         .help("Random seed (overrides config)")
 
+    private val seedFile by option("--seed-file", "-S")
+        .file(mustExist = true, canBeFile = true, canBeDir = false, mustBeReadable = true)
+        .help("Seed sequence file (one seed per line, overrides --seed and --runs)")
+
     private val opsStr by option("--ops", "-o")
         .help("Comma-separated op names (overrides config)")
 
@@ -68,7 +72,15 @@ class FuzzCommand : CliktCommand(
             config.generator.toGeneratorConfig(seed),
             backends,
             config.pipeline.toFuzzingConfig(),
-        ).runBatch(count = config.pipeline.batchSize, startSeed = seed)
+        ).let { pipeline ->
+            val seeds = if (config.run.seedFile != null) {
+                SeedSequence.fromFile(File(config.run.seedFile!!))
+            } else {
+                SeedSequence.range(seed, config.pipeline.batchSize)
+            }
+            echo("Seeds: $seeds")
+            pipeline.runBatch(seeds)
+        }
 
         echo(); summary.printReport()
         saveReport(config, seed, summary)
@@ -80,6 +92,7 @@ class FuzzCommand : CliktCommand(
             if (runs > 0) overrides["runs"] = runs
             if (workers > 0) overrides["workers"] = workers
             seedStr?.let { overrides["seed"] = it }
+            seedFile?.let { overrides["seed_file"] = it.absolutePath }
             opsStr?.let { overrides["ops"] = it }
             outputDir?.let { overrides["report"] = it }
             log.info { "加载配置: ${configPath!!.absolutePath}" }
@@ -90,6 +103,7 @@ class FuzzCommand : CliktCommand(
         if (runs > 0) c.pipeline.batchSize = runs
         if (workers > 0) c.pipeline.workers = workers
         seedStr?.let { c.run.seed = it }
+        seedFile?.let { c.run.seedFile = it.absolutePath }
         opsStr?.let { c.generator.ops.includeAll = false; c.generator.ops.include = it.split(",").map(String::trim) }
         outputDir?.let { c.run.outputDir = it }
         echo("Using default config")

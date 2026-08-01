@@ -2,6 +2,7 @@ package io.github.xyzboom.aiFuzzer.bench
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.fuzzer.FuzzingPipeline
+import io.github.xyzboom.aiFuzzer.fuzzer.SeedSequence
 import io.github.xyzboom.aiFuzzer.fuzzer.TvmBackend
 import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
@@ -39,7 +40,7 @@ class TvmBench {
                 workers = 16
             )
         )
-        val summary = pipeline.runBatch(count = count, startSeed = startSeed)
+        val summary = pipeline.runBatch(SeedSequence.range(startSeed, count))
         summary.printReport()
     }
 }

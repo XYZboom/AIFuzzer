@@ -66,6 +66,7 @@ object ConfigLoader {
         (rawMap["run"] as? Map<String, Any>)?.let { runMap ->
             config.run.description = runMap["description"] as? String ?: config.run.description
             config.run.seed = runMap["seed"]?.toString() ?: config.run.seed
+            config.run.seedFile = runMap["seed_file"] as? String ?: config.run.seedFile
             config.run.outputDir = runMap["output_dir"] as? String ?: config.run.outputDir
             config.run.logLevel = runMap["log_level"] as? String ?: config.run.logLevel
         }
@@ -276,6 +277,7 @@ object ConfigLoader {
         if (overrides.isEmpty()) return config
 
         overrides["seed"]?.let { config.run.seed = it.toString() }
+        overrides["seed_file"]?.let { config.run.seedFile = it.toString() }
         overrides["runs"]?.let { config.pipeline.batchSize = (it as Number).toInt() }
         overrides["workers"]?.let { config.pipeline.workers = (it as Number).toInt() }
         overrides["ops"]?.let {

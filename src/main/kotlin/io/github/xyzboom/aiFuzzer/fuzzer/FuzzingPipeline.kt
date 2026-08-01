@@ -208,8 +208,10 @@ class FuzzingPipeline(
      * - 客户端侧：DaemonClient 层有 requestTimeoutMs 超时，超时后杀 daemon
      * - 服务端侧：daemon/tvm_daemon.py 有 signal.alarm 超时保护
      * - 并行模式：改用 Thread + Future 确保超时可中断
+     *
+     * @param seeds 种子序列，可以是 [SeedSequence.Range]（连续范围）或 [SeedSequence.Explicit]（指定列表）
      */
-    fun runBatch(count: Int, startSeed: Long = 1): FuzzingSummary {
+    fun runBatch(seeds: SeedSequence): FuzzingSummary {
         BugCollector.reset()
         val allResults = java.util.Collections.synchronizedList(mutableListOf<FuzzingResult>())
         val startTime = System.currentTimeMillis()
@@ -218,6 +220,7 @@ class FuzzingPipeline(
         val completed = AtomicInteger(0)
         val successCount = AtomicInteger(0)
         val failureCount = AtomicInteger(0)
+        val count = seeds.size
         
         // 并行模式下，为每个 worker 创建独立的 backend 副本
         // 这样每个线程有自己的 daemon，避免竞争
@@ -247,7 +250,7 @@ class FuzzingPipeline(
         if (config.workers <= 1) {
             // 串行模式：使用原始 backend
             for (i in 0 until count) {
-                val seed = startSeed + i
+                val seed = seeds[i]
                 var shouldBreak = false
                 try {
                     val results = runOnce(seed)
@@ -256,7 +259,6 @@ class FuzzingPipeline(
                         if (it.backendResult.success) successCount.incrementAndGet()
                         else {
                             failureCount.incrementAndGet()
-                            // failFast: 遇到失败立即终止
                             if (config.failFast) {
                                 log.error { "failFast=true: 检测到失败，终止测试" }
                                 shouldBreak = true
@@ -265,7 +267,7 @@ class FuzzingPipeline(
                     }
                 } catch (e: Exception) {
                     failureCount.addAndGet(backends.size)
-                    log.error(e) { "测试 seed=$seed 失败" }
+                    log.error(e) { "测试 seed=${seed} 失败" }
                     allResults.addAll(
                         backends.map { backend ->
                             FuzzingResult(
@@ -277,7 +279,6 @@ class FuzzingPipeline(
                             )
                         }
                     )
-                    // failFast: 异常也终止
                     if (config.failFast) {
                         log.error { "failFast=true: 检测到异常，终止测试" }
                         shouldBreak = true
@@ -288,31 +289,23 @@ class FuzzingPipeline(
             }
         } else {
             // 并行模式：每个 worker 线程使用独立的 backend 副本
-            // 启动所有 backend 副本（启动 daemon）
             log.info { "并行模式: 启动 ${backendPool.size} 个 backend 实例" }
-            backendPool.forEachIndexed { idx, backends ->
-                backends.forEach { backend ->
+            backendPool.forEachIndexed { idx, backs ->
+                backs.forEach { backend ->
                     if (!backend.checkEnvironment()) {
                         log.error { "Backend 副本 #$idx 初始化失败: ${backend.name}" }
-                    } else {
-                        log.debug { "Backend 副本 #$idx 就绪: ${backend.name}" }
                     }
                 }
             }
-            
+
             val executor = java.util.concurrent.Executors.newFixedThreadPool(config.workers) { r ->
                 Thread(r, "fuzzer-worker").also { it.isDaemon = true }
             }
-            
-            // failFast 标志：使用 AtomicBoolean 确保线程安全
             val failFastTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
-            
-            // 用 AtomicLong 分配 workerId
             val nextWorkerId = AtomicLong(0)
 
             val futures = (0 until count).map { i ->
-                val seed = startSeed + i
-                // 为每个任务预创建 generator 配置（seed 已确定）
+                val seed = seeds[i]
                 val taskGenConfig = generatorConfig.copy(seed = seed)
                 val finalTaskGenConfig = if (patternDatabase != null) {
                     val dedupTarget = resolveDedupTarget()
@@ -327,17 +320,11 @@ class FuzzingPipeline(
                     )
                 } else taskGenConfig
                 executor.submit<List<FuzzingResult>> {
-                    // 获取当前线程的 workerId 和专属 backend
                     val workerId = (nextWorkerId.getAndIncrement() % config.workers).toInt()
                     val threadBackends = backendPool[workerId]
-                    
-                    // 每个任务创建独立的 generator 实例，完全避免共享状态
                     val taskGenerator = UirGenerator(finalTaskGenConfig)
                     try {
-                        // 内联 runOnce 逻辑，使用任务专属的 generator 和 backend
                         val program = taskGenerator.generate()
-                        
-                        // 收集 pattern 匹配统计
                         taskGenerator.patternMatcher?.let { pm ->
                             totalNodesChecked.addAndGet(pm.totalNodesChecked.toLong())
                             if (pm.matchCount > 0) {
@@ -347,18 +334,15 @@ class FuzzingPipeline(
                                 }
                             }
                         }
-                        
                         val results = threadBackends.map { backend ->
                             runOnBackend(program, backend, seed)
                         }
                         results.forEach {
                             if (it.backendResult.success) successCount.incrementAndGet()
-                            else {
+                            else if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
+                                log.error { "failFast=true: 检测到失败，终止测试" }
+                            } else {
                                 failureCount.incrementAndGet()
-                                // failFast: 遇到失败立即终止
-                                if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
-                                    log.error { "failFast=true: 检测到失败，终止测试" }
-                                }
                             }
                         }
                         completed.incrementAndGet()
@@ -366,7 +350,6 @@ class FuzzingPipeline(
                     } catch (e: Exception) {
                         failureCount.addAndGet(threadBackends.size)
                         completed.incrementAndGet()
-                        // failFast: 异常也终止
                         if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
                             log.error(e) { "failFast=true: 检测到异常，终止测试" }
                         }
@@ -384,12 +367,11 @@ class FuzzingPipeline(
             }
 
             for ((i, future) in futures.withIndex()) {
-                // 如果 failFast 已触发，立即终止
                 if (failFastTriggered.get()) {
                     executor.shutdownNow()
                     break
                 }
-                val seed = startSeed + i
+                val seed = seeds[i]
                 try {
                     val results = future.get(
                         if (config.runTimeoutSeconds > 0) config.runTimeoutSeconds.toLong() else Long.MAX_VALUE,
@@ -429,7 +411,6 @@ class FuzzingPipeline(
                     )
                 }
             }
-
             executor.shutdownNow()
         }
 
@@ -479,7 +460,7 @@ class FuzzingPipeline(
      * 每个 seed 独立 try-catch，单次超时不崩全局。
      * 多线程并行，每个 worker 有独立的 backend 副本。
      */
-    fun runDedupEval(count: Int, startSeed: Long = 1, verbose: Boolean = false): DedupEvalSummary {
+    fun runDedupEval(seeds: SeedSequence, verbose: Boolean = false): DedupEvalSummary {
         BugCollector.reset()
         val startTime = System.currentTimeMillis()
 
@@ -493,6 +474,7 @@ class FuzzingPipeline(
         val falsePositiveSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val bothFailedSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val completed = AtomicInteger(0)
+        val count = seeds.size
 
         val dedupTarget = resolveDedupTarget()
         val workerCount = config.workers.coerceAtLeast(1)
@@ -529,7 +511,7 @@ class FuzzingPipeline(
 
         val workers = mutableListOf<java.util.concurrent.Future<*>>()
         for (i in 0 until count) {
-            val seed = startSeed + i
+            val seed = seeds[i]
             workers.add(executor.submit {
                 try {
                     val workerId = (nextWorkerId.getAndIncrement() % workerCount).toInt()

@@ -20,6 +20,7 @@ data class FuzzerConfig(
 data class RunConfig(
     var description: String = "AiFuzzer default run",
     var seed: String? = null, // null = 系统时间; "42" = 指定值
+    var seedFile: String? = null, // null = 连续模式; "path/to/seeds.txt" = 指定种子序列文件
     var outputDir: String = "./reports",
     var logLevel: String = "info",
 )
