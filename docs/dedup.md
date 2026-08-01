@@ -39,14 +39,21 @@
 }
 ```
 
-Shape 约束支持的操作符：
+Shape 约束支持的操作符（DimMatcher）：
 
 | 操作符 | 含义 |
 |--------|------|
 | `$eq` | 等于 |
+| `$ne` | 不等于 |
 | `$gte` | 大于等于 |
+| `$gt` | 大于 |
+| `$lt` | 小于 |
+| `$lte` | 小于等于 |
 | `$in` | 枚举值列表 |
+| `$mod` | 模数匹配（如 `{"$mod": 2}` 偶数，`{"$mod": {"d": 2, "r": 1}}` 奇数） |
 | `$any` | 任意值 |
+
+**复合约束**：可以用 `And` 组合多个操作符，如 `{"$gte": 5, "$ne": 6}` 表示 ≥5 且 ≠6。
 
 ### 生成时去重流程
 
@@ -108,7 +115,7 @@ aifuzzer dedup-eval --config configs/tvm-cuda-dedup-eval.yaml [-n 200] [--seed 1
 | **Bug prevented** ✅ | 触发 bug | **不触发 bug** | Dedup 成功阻止了已知 bug |
 | **Dedup-only fail** ⚠️ | 不触发 bug | **触发 bug** | 仅 dedup 程序触发了 bug，需进一步分析：<br>• 新 bug → dedup 附带发现了新 bug<br>• 已知变体 → pattern 需调整<br>• 生成不合理 → 真正 pattern 过宽 |
 | **Both failed** | 触发 bug | 触发 bug | 两者均触发 bug（可能不同 bug） |
-| **Both succeeded** | 不触发 bug | 不触发 bug | 两者均无 bug。需检查 no-dedup 程序是否真的匹配了 pattern，还是生成噪声。 |
+| **Both succeeded** | 不触发 bug | 不触发 bug | **pattern 过宽**。no-dedup 和 dedup 都不触发 bug，说明 pattern 匹配了不会触发的合法节点。需检查 no-dedup IR 找出匹配节点，收紧 pattern 约束。 |
 
 ### 核心指标
 
