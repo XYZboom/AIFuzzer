@@ -5,7 +5,7 @@
       "id": "tvm-20048",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU reduction bind compact dataflow violation",
+      "description": "conv2d dlight GPU reduction bind compact dataflow violation — [N>=2,1,H>=4,W>=18], kernel=[1,1,KH>=2,1]",
       "severity": "crash",
       "nodes": [
         {
@@ -25,10 +25,10 @@
           "match": "value", "id": "v_input",
           "ndim": 4,
           "shape": [
-            {"$any": true},
-            {"$any": true},
             {"$gte": 2},
-            {"$gte": 2}
+            {"$eq": 1},
+            {"$gte": 4},
+            {"$gte": 18}
           ],
           "dtype": "float32"
         },
@@ -37,8 +37,8 @@
           "ndim": 4,
           "shape": [
             {"$eq": 1},
-            {"$any": true},
-            {"$any": true},
+            {"$eq": 1},
+            {"$gte": 2},
             {"$eq": 1}
           ],
           "dtype": "float32"
