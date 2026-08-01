@@ -11,8 +11,7 @@
         {
           "match": "node", "id": "n0", "op": "BATCH_NORM",
           "inputs": ["v_in", "v_gamma", "v_beta", "v_moving_mean", "v_moving_var"],
-          "outputs": ["v_out"],
-          "attrs": {"axis": 1}
+          "outputs": ["v_out"]
         }
       ],
       "values": [
