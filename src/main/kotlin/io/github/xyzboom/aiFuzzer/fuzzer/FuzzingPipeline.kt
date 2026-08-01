@@ -2,6 +2,7 @@ package io.github.xyzboom.aiFuzzer.fuzzer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.config.MutationConfig
+import io.github.xyzboom.aiFuzzer.config.PipelineConfig
 import io.github.xyzboom.aiFuzzer.generator.GeneratorConfig
 import io.github.xyzboom.aiFuzzer.generator.UirGenerator
 import io.github.xyzboom.aiFuzzer.generator.UirMutator
@@ -46,6 +47,7 @@ class FuzzingPipeline(
             val compiler: String = "tvm",
             val target: String = "llvm",
             val patternDir: String = "",
+            val patternMode: PipelineConfig.PatternMode = PipelineConfig.PatternMode.BUILTIN,
         )
     }
 
@@ -88,38 +90,59 @@ class FuzzingPipeline(
     }
 
     private fun loadPatternDatabase(dedup: FuzzingConfig.DedupConfig): io.github.xyzboom.aiFuzzer.pattern.PatternDatabase {
-        // 先尝试从指定目录加载
-        val dir = if (dedup.patternDir.isNotBlank()) {
-            java.io.File(dedup.patternDir)
-        } else {
-            // 从默认资源目录加载
-            val resource = this::class.java.classLoader.getResource("patterns")
-            if (resource == null) {
-                log.warn { "resources/patterns 目录未找到，去重已禁用" }
-                return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = emptyList())
-            }
-            java.io.File(resource.toURI())
-        }
-        if (!dir.exists()) {
-            log.warn { "Pattern 目录 $dir 不存在，去重已禁用" }
-            return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = emptyList())
-        }
         val allPatterns = mutableListOf<io.github.xyzboom.aiFuzzer.pattern.PatternDef>()
-        val files = if (dir.isDirectory) {
-            dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
-        } else {
-            arrayOf(dir)
-        }
-        for (file in files) {
+
+        // 1. 从内置 resources/patterns/ 加载（BUILTIN 或 BOTH 模式）
+        if (dedup.patternMode != PipelineConfig.PatternMode.CUSTOM) {
             try {
-                val json = file.readText()
-                val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(json)
-                allPatterns.addAll(db.patterns)
+                val resource = this::class.java.classLoader.getResource("patterns")
+                if (resource != null) {
+                    val dir = java.io.File(resource.toURI())
+                    if (dir.isDirectory) {
+                        val files = dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
+                        for (file in files) {
+                            try {
+                                val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(file.readText())
+                                allPatterns.addAll(db.patterns)
+                            } catch (e: Exception) {
+                                log.warn(e) { "加载内置 pattern 文件 ${file.name} 失败" }
+                            }
+                        }
+                        log.info { "从内置资源加载了 ${allPatterns.size} 个 pattern (${files.size} 个文件)" }
+                    }
+                } else {
+                    log.warn { "resources/patterns 目录未找到" }
+                }
             } catch (e: Exception) {
-                log.warn(e) { "加载 pattern 文件 ${file.name} 失败" }
+                log.warn(e) { "从 classpath 加载 pattern 失败" }
             }
         }
-        log.info { "加载了 ${allPatterns.size} 个 pattern (${files.size} 个文件)" }
+
+        // 2. 从外部 pattern_dir 加载（CUSTOM 或 BOTH 模式）
+        if (dedup.patternMode != PipelineConfig.PatternMode.BUILTIN && dedup.patternDir.isNotBlank()) {
+            val dir = java.io.File(dedup.patternDir)
+            if (dir.exists()) {
+                val files = if (dir.isDirectory) {
+                    dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
+                } else {
+                    arrayOf(dir)
+                }
+                val externalCount = allPatterns.size
+                for (file in files) {
+                    try {
+                        val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(file.readText())
+                        allPatterns.addAll(db.patterns)
+                    } catch (e: Exception) {
+                        log.warn(e) { "加载外部 pattern 文件 ${file.name} 失败" }
+                    }
+                }
+                log.info { "从外部加载了 ${allPatterns.size - externalCount} 个 pattern (${files.size} 个文件, $dedup.patternMode 模式)" }
+            } else {
+                log.warn { "外部 pattern 目录 $dedup.patternDir 不存在，跳过" }
+            }
+        }
+
+        log.info { "共计 ${allPatterns.size} 个 pattern (模式=${dedup.patternMode})" }
         return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = allPatterns)
     }
 

@@ -246,6 +246,19 @@ object ConfigLoader {
                 config.pipeline.dedup.patternDir = dedupMap["pattern_dir"] as? String ?: config.pipeline.dedup.patternDir
                 config.pipeline.dedup.compiler = dedupMap["compiler"] as? String ?: config.pipeline.dedup.compiler
                 config.pipeline.dedup.target = dedupMap["target"] as? String ?: config.pipeline.dedup.target
+                // 解析 pattern_mode: "builtin" / "custom" / "both"，不区分大小写
+                val modeStr = (dedupMap["pattern_mode"] as? String)?.lowercase()
+                if (modeStr != null) {
+                    config.pipeline.dedup.patternMode = when (modeStr) {
+                        "builtin" -> io.github.xyzboom.aiFuzzer.config.PipelineConfig.PatternMode.BUILTIN
+                        "custom" -> io.github.xyzboom.aiFuzzer.config.PipelineConfig.PatternMode.CUSTOM
+                        "both" -> io.github.xyzboom.aiFuzzer.config.PipelineConfig.PatternMode.BOTH
+                        else -> {
+                            System.err.println("[WARN] 不识别的 pattern_mode: $modeStr，使用默认 BUILTIN")
+                            io.github.xyzboom.aiFuzzer.config.PipelineConfig.PatternMode.BUILTIN
+                        }
+                    }
+                }
             }
             // 同步到 generator 的 dedup 配置
             config.generator.dedup = config.pipeline.dedup

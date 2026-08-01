@@ -85,7 +85,18 @@ pipeline:
     pattern_dir: "configs/patterns-tvm-cuda.json"  # pattern 数据库文件或目录
     compiler: "tvm"
     target: "cuda"
+    pattern_mode: "builtin"  # builtin / custom / both
 ```
+
+`pattern_mode` 支持三种模式：
+
+| 模式 | 加载来源 | 典型场景 |
+|------|----------|----------|
+| `builtin`（默认） | 仅从 `resources/patterns/` 加载内置 pattern | 直接用预置的已知 bug pattern |
+| `custom` | 仅从 `pattern_dir` 加载自定义 pattern | 用户开发自己的 pattern 集 |
+| `both` | 同时加载内置 + 自定义 pattern | 在预置 pattern 基础上追加自定义 |
+
+> 注意：指定了 `pattern_dir` 但未显式设置 `pattern_mode` 时，自动切换到 `both` 模式。
 
 ---
 
@@ -153,3 +164,10 @@ Both succeeded:     13           ← 两者都不触发bug
 4. 如果 Both succeeded → 检查 saved no-dedup IR，确认是否真的匹配了 pattern，再收紧
 5. 如果 Both failed → 正常现象（如 buffer_red 类 bug），需要更多 pattern 覆盖其他触发路径
 6. 全量拦截效果用 `fuzz --seed-file` 评估，不是 `dedup-eval`
+
+## Pattern 文件位置
+
+- **内置 pattern**：`src/main/resources/patterns/` — 项目自带，随构建打包。修这里。
+- **外部 pattern**：任意路径，通过 `pattern_dir` 指定。`configs/patterns-tvm-cuda.json` 是给其他用户的示例，我们内部不用。
+
+> 注意：`configs/patterns-tvm-cuda.json` 是外部示例文件，供其他用户参考。我们自己开发时只修改 `src/main/resources/patterns/` 下的内置 pattern 文件。

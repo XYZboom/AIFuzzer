@@ -339,7 +339,8 @@ class AllPatternsTest {
         // 正例: [1, N, 1]
         val pos = mockNode("batch_norm", UirOpKind.BATCH_NORM,
             listOf(shapeOf(1, 2, 1), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
-            listOf(shapeOf(1, 2, 1)))
+            listOf(shapeOf(1, 2, 1)),
+            mapOf("axis" to 1))
         val resolver: (String) -> UirValueRef? = { if (it == "v_in") pos.inputs[0] else null }
         assertNotNull(matcher.onNodeGenerated(pos, resolver), "tvm-20036 positive")
 
@@ -353,7 +354,8 @@ class AllPatternsTest {
         matcher.reset()
         val ndim2 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
             listOf(shapeOf(2, 2), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
-            listOf(shapeOf(2, 2)))
+            listOf(shapeOf(2, 2)),
+            mapOf("axis" to 1))
         val r2: (String) -> UirValueRef? = { if (it == "v_in") ndim2.inputs[0] else null }
         assertNull(matcher.onNodeGenerated(ndim2, r2), "tvm-20036 ndim=2")
 
@@ -361,7 +363,8 @@ class AllPatternsTest {
         matcher.reset()
         val ndim2b = mockNode("batch_norm", UirOpKind.BATCH_NORM,
             listOf(shapeOf(1, 2), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
-            listOf(shapeOf(1, 2)))
+            listOf(shapeOf(1, 2)),
+            mapOf("axis" to 1))
         val r3: (String) -> UirValueRef? = { if (it == "v_in") ndim2b.inputs[0] else null }
         assertNull(matcher.onNodeGenerated(ndim2b, r3), "tvm-20036 ndim=2b")
     }
@@ -373,16 +376,18 @@ class AllPatternsTest {
 
         // 正例: [1, 2, 1, 1] — ndim=4, shape[0]=1, shape[2]=1, shape[3]=1
         val pos = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 2, 1, 1), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
             listOf(shapeOf(1, 2, 1, 1)),
-            listOf(shapeOf(1, 2, 1, 1)))
+            mapOf("axis" to 1))
         val resolver: (String) -> UirValueRef? = { if (it == "v_in") pos.inputs[0] else null }
         assertNotNull(matcher.onNodeGenerated(pos, resolver), "tvm-20036-ndim4 positive [1,2,1,1]")
 
         // 正例: [1, 5, 1, 1] — C=5
         matcher.reset()
         val pos2 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 5, 1, 1), shapeOf(5), shapeOf(5), shapeOf(5), shapeOf(5)),
             listOf(shapeOf(1, 5, 1, 1)),
-            listOf(shapeOf(1, 5, 1, 1)))
+            mapOf("axis" to 1))
         val resolver2: (String) -> UirValueRef? = { if (it == "v_in") pos2.inputs[0] else null }
         assertNotNull(matcher.onNodeGenerated(pos2, resolver2), "tvm-20036-ndim4 positive [1,5,1,1]")
 
@@ -395,24 +400,27 @@ class AllPatternsTest {
         // 反例-不同形状: ndim=3 (should match tvm-20036, not ndim4)
         matcher.reset()
         val ndim3 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 2, 1), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
             listOf(shapeOf(1, 2, 1)),
-            listOf(shapeOf(1, 2, 1)))
+            mapOf("axis" to 1))
         val resolver3: (String) -> UirValueRef? = { if (it == "v_in") ndim3.inputs[0] else null }
         assertNull(matcher.onNodeGenerated(ndim3, resolver3), "tvm-20036-ndim4 ndim=3")
 
         // 反例-不同形状: shape[3]=8 (not 1) — FP guard
         matcher.reset()
         val w8 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 2, 1, 8), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
             listOf(shapeOf(1, 2, 1, 8)),
-            listOf(shapeOf(1, 2, 1, 8)))
+            mapOf("axis" to 1))
         val resolver4: (String) -> UirValueRef? = { if (it == "v_in") w8.inputs[0] else null }
         assertNull(matcher.onNodeGenerated(w8, resolver4), "tvm-20036-ndim4 W=8")
 
         // 反例-不同形状: N=2 not 1
         matcher.reset()
         val n2 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(2, 2, 1, 1), shapeOf(2), shapeOf(2), shapeOf(2), shapeOf(2)),
             listOf(shapeOf(2, 2, 1, 1)),
-            listOf(shapeOf(2, 2, 1, 1)))
+            mapOf("axis" to 1))
         val resolver5: (String) -> UirValueRef? = { if (it == "v_in") n2.inputs[0] else null }
         assertNull(matcher.onNodeGenerated(n2, resolver5), "tvm-20036-ndim4 N=2")
     }
