@@ -1,0 +1,27 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-20036-ndim4",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "batch_norm buffer_red: ndim=4, shape[0]=1, shape[2]=1, shape[3]=1",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "BATCH_NORM",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"]
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 4,
+          "shape": [{"$eq": 1}, {}, {"$eq": 1}, {"$eq": 1}],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

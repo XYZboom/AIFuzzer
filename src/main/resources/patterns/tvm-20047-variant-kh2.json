@@ -2,10 +2,10 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20047-variant-assert",
+      "id": "tvm-20047-variant-kh2",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU gemv AssertionError — kernel=[1,1,1,3], N=1, C=1, H≥2, W∈{14,16}",
+      "description": "conv2d dlight GPU gemv FloorDiv — kernel=[1,1,2,1], N≥4, C=1, H≥6, W=1",
       "severity": "crash",
       "nodes": [
         {
@@ -25,10 +25,10 @@
           "match": "value", "id": "v_input",
           "ndim": 4,
           "shape": [
+            {"$gte": 4},
             {"$eq": 1},
-            {"$eq": 1},
-            {"$gte": 2},
-            {"$in": [14, 16]}
+            {"$gte": 6},
+            {"$eq": 1}
           ],
           "dtype": "float32"
         },
@@ -38,8 +38,8 @@
           "shape": [
             {"$eq": 1},
             {"$eq": 1},
-            {"$eq": 1},
-            {"$eq": 3}
+            {"$eq": 2},
+            {"$eq": 1}
           ],
           "dtype": "float32"
         }

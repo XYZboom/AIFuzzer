@@ -2,10 +2,10 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20047-variant-assert",
+      "id": "tvm-20048-red",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU gemv AssertionError — kernel=[1,1,1,3], N=1, C=1, H≥2, W∈{14,16}",
+      "description": "conv2d dlight GPU reduction bind compact dataflow — kernel=[1,C,1,1], N≥2, C≥2, W≥20",
       "severity": "crash",
       "nodes": [
         {
@@ -25,10 +25,10 @@
           "match": "value", "id": "v_input",
           "ndim": 4,
           "shape": [
-            {"$eq": 1},
-            {"$eq": 1},
             {"$gte": 2},
-            {"$in": [14, 16]}
+            {"$gte": 2},
+            {"$gte": 2},
+            {"$gte": 20}
           ],
           "dtype": "float32"
         },
@@ -37,9 +37,9 @@
           "ndim": 4,
           "shape": [
             {"$eq": 1},
+            {"$gte": 2},
             {"$eq": 1},
-            {"$eq": 1},
-            {"$eq": 3}
+            {"$eq": 1}
           ],
           "dtype": "float32"
         }

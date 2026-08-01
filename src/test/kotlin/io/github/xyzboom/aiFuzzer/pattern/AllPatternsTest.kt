@@ -88,7 +88,7 @@ class AllPatternsTest {
 
     @Test
     fun `load all 20 patterns from resources`() {
-        assertEquals(35, allPatterns.size)
+        assertEquals(38, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
@@ -367,6 +367,57 @@ class AllPatternsTest {
     }
 
     @Test
+    fun `tvm-20036-ndim4 batch_norm CUDA buffer_red ndim4`() {
+        val pattern = allPatterns.first { it.id == "tvm-20036-ndim4" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
+
+        // 正例: [1, 2, 1, 1] — ndim=4, shape[0]=1, shape[2]=1, shape[3]=1
+        val pos = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 2, 1, 1)),
+            listOf(shapeOf(1, 2, 1, 1)))
+        val resolver: (String) -> UirValueRef? = { if (it == "v_in") pos.inputs[0] else null }
+        assertNotNull(matcher.onNodeGenerated(pos, resolver), "tvm-20036-ndim4 positive [1,2,1,1]")
+
+        // 正例: [1, 5, 1, 1] — C=5
+        matcher.reset()
+        val pos2 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 5, 1, 1)),
+            listOf(shapeOf(1, 5, 1, 1)))
+        val resolver2: (String) -> UirValueRef? = { if (it == "v_in") pos2.inputs[0] else null }
+        assertNotNull(matcher.onNodeGenerated(pos2, resolver2), "tvm-20036-ndim4 positive [1,5,1,1]")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("relu", UirOpKind.RELU,
+            listOf(shapeOf(1, 2, 1, 1)), listOf(shapeOf(1, 2, 1, 1)))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20036-ndim4 diff op")
+
+        // 反例-不同形状: ndim=3 (should match tvm-20036, not ndim4)
+        matcher.reset()
+        val ndim3 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 2, 1)),
+            listOf(shapeOf(1, 2, 1)))
+        val resolver3: (String) -> UirValueRef? = { if (it == "v_in") ndim3.inputs[0] else null }
+        assertNull(matcher.onNodeGenerated(ndim3, resolver3), "tvm-20036-ndim4 ndim=3")
+
+        // 反例-不同形状: shape[3]=8 (not 1) — FP guard
+        matcher.reset()
+        val w8 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(1, 2, 1, 8)),
+            listOf(shapeOf(1, 2, 1, 8)))
+        val resolver4: (String) -> UirValueRef? = { if (it == "v_in") w8.inputs[0] else null }
+        assertNull(matcher.onNodeGenerated(w8, resolver4), "tvm-20036-ndim4 W=8")
+
+        // 反例-不同形状: N=2 not 1
+        matcher.reset()
+        val n2 = mockNode("batch_norm", UirOpKind.BATCH_NORM,
+            listOf(shapeOf(2, 2, 1, 1)),
+            listOf(shapeOf(2, 2, 1, 1)))
+        val resolver5: (String) -> UirValueRef? = { if (it == "v_in") n2.inputs[0] else null }
+        assertNull(matcher.onNodeGenerated(n2, resolver5), "tvm-20036-ndim4 N=2")
+    }
+
+    @Test
     fun `tvm-20047 conv2d FloorDiv gemv`() {
         val pattern = allPatterns.first { it.id == "tvm-20047" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
@@ -406,50 +457,117 @@ class AllPatternsTest {
         val pattern = allPatterns.first { it.id == "tvm-20047-variant-assert" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
 
-        // 正例: [1,1,6,8] × [1,1,1,3] — N=1, C_in=1, C_out=1, H≥6, kW≥2
+        // 正例: [1,1,2,14] × [1,1,1,3] — N=1, C_in=1, H≥2, W∈{14,16}
         val pos = mockNode("conv2d", UirOpKind.CONV2D,
-            listOf(shapeOf(1, 1, 6, 8), shapeOf(1, 1, 1, 3)),
-            listOf(shapeOf(1, 1, 6, 6)),
+            listOf(shapeOf(1, 1, 2, 14), shapeOf(1, 1, 1, 3)),
+            listOf(shapeOf(1, 1, 2, 12)),
             mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20047-variant-assert positive")
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20047-variant-assert positive [1,1,2,14]")
+
+        // 正例: [1,1,2,16] × [1,1,1,3] — W=16也在范围内
+        matcher.reset()
+        val pos2 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(1, 1, 2, 16), shapeOf(1, 1, 1, 3)),
+            listOf(shapeOf(1, 1, 2, 14)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos2, resolverOf(pos2)), "tvm-20047-variant-assert positive [1,1,2,16]")
 
         // 反例-不同算子
         matcher.reset()
         val diffOp = mockNode("relu", UirOpKind.RELU,
-            listOf(shapeOf(1, 1, 6, 8)), listOf(shapeOf(1, 1, 6, 8)))
+            listOf(shapeOf(1, 1, 2, 14)), listOf(shapeOf(1, 1, 2, 14)))
         assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20047-variant-assert diff op")
 
         // 反例-不同形状: N=2 not 1
         matcher.reset()
         val n2 = mockNode("conv2d", UirOpKind.CONV2D,
-            listOf(shapeOf(2, 1, 6, 8), shapeOf(1, 1, 1, 3)),
-            listOf(shapeOf(2, 1, 6, 6)),
+            listOf(shapeOf(2, 1, 2, 14), shapeOf(1, 1, 1, 3)),
+            listOf(shapeOf(2, 1, 2, 12)),
             mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
         assertNull(matcher.onNodeGenerated(n2, resolverOf(n2)), "tvm-20047-variant-assert N=2")
 
-        // 反例-不同形状: H=4 (below 6)
+        // 反例-不同形状: W=8 not in [14,16]
         matcher.reset()
-        val h4 = mockNode("conv2d", UirOpKind.CONV2D,
-            listOf(shapeOf(1, 1, 4, 8), shapeOf(1, 1, 1, 3)),
-            listOf(shapeOf(1, 1, 4, 6)),
+        val w8 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(1, 1, 2, 8), shapeOf(1, 1, 1, 3)),
+            listOf(shapeOf(1, 1, 2, 6)),
             mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
-        assertNull(matcher.onNodeGenerated(h4, resolverOf(h4)), "tvm-20047-variant-assert H=4")
+        assertNull(matcher.onNodeGenerated(w8, resolverOf(w8)), "tvm-20047-variant-assert W=8")
 
         // 反例-不同形状: C_in=3 not 1
         matcher.reset()
         val ci3 = mockNode("conv2d", UirOpKind.CONV2D,
-            listOf(shapeOf(1, 3, 6, 8), shapeOf(4, 3, 3, 3)),
-            listOf(shapeOf(1, 4, 4, 6)),
+            listOf(shapeOf(1, 3, 2, 14), shapeOf(4, 3, 3, 3)),
+            listOf(shapeOf(1, 4, 0, 12)),
             mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
         assertNull(matcher.onNodeGenerated(ci3, resolverOf(ci3)), "tvm-20047-variant-assert C_in=3")
 
-        // 反例-不同形状: kernel W=1 (below 2)
+        // 反例-不同形状: kernel_width=2 not 3
         matcher.reset()
-        val kw1 = mockNode("conv2d", UirOpKind.CONV2D,
-            listOf(shapeOf(1, 1, 6, 8), shapeOf(1, 1, 1, 1)),
-            listOf(shapeOf(1, 1, 6, 8)),
+        val kw2 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(1, 1, 2, 14), shapeOf(1, 1, 1, 2)),
+            listOf(shapeOf(1, 1, 2, 13)),
             mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
-        assertNull(matcher.onNodeGenerated(kw1, resolverOf(kw1)), "tvm-20047-variant-assert kW=1")
+        assertNull(matcher.onNodeGenerated(kw2, resolverOf(kw2)), "tvm-20047-variant-assert kW=2")
+    }
+
+    @Test
+    fun `tvm-20047-variant-kh2 conv2d gemv FloorDiv`() {
+        val pattern = allPatterns.first { it.id == "tvm-20047-variant-kh2" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
+
+        // 正例: [4,1,7,1] × [1,1,2,1] — N=4, H=7, W=1
+        val pos = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(4, 1, 7, 1), shapeOf(1, 1, 2, 1)),
+            listOf(shapeOf(4, 1, 6, 1)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20047-variant-kh2 positive [4,1,7,1]")
+
+        // 正例: [6,1,6,1] × [1,1,2,1] — N=6, H=6, W=1
+        matcher.reset()
+        val pos2 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(6, 1, 6, 1), shapeOf(1, 1, 2, 1)),
+            listOf(shapeOf(6, 1, 5, 1)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos2, resolverOf(pos2)), "tvm-20047-variant-kh2 positive [6,1,6,1]")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("relu", UirOpKind.RELU,
+            listOf(shapeOf(4, 1, 7, 1)), listOf(shapeOf(4, 1, 7, 1)))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20047-variant-kh2 diff op")
+
+        // 反例-不同形状: N=2 (below 4)
+        matcher.reset()
+        val n2 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(2, 1, 7, 1), shapeOf(1, 1, 2, 1)),
+            listOf(shapeOf(2, 1, 6, 1)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(n2, resolverOf(n2)), "tvm-20047-variant-kh2 N=2")
+
+        // 反例-不同形状: H=4 (below 6)
+        matcher.reset()
+        val h4 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(4, 1, 4, 1), shapeOf(1, 1, 2, 1)),
+            listOf(shapeOf(4, 1, 3, 1)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(h4, resolverOf(h4)), "tvm-20047-variant-kh2 H=4")
+
+        // 反例-不同形状: W=2 (not 1)
+        matcher.reset()
+        val w2 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(4, 1, 7, 2), shapeOf(1, 1, 2, 1)),
+            listOf(shapeOf(4, 1, 6, 2)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(w2, resolverOf(w2)), "tvm-20047-variant-kh2 W=2")
+
+        // 反例-不同形状: C_in=3 not 1
+        matcher.reset()
+        val ci3 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(4, 3, 7, 1), shapeOf(4, 3, 3, 3)),
+            listOf(shapeOf(4, 4, 5, 1)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(ci3, resolverOf(ci3)), "tvm-20047-variant-kh2 C_in=3")
     }
 
     @Test
@@ -486,6 +604,57 @@ class AllPatternsTest {
             listOf(shapeOf(2, 1, 2, 1)),
             mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
         assertNull(matcher.onNodeGenerated(w1, resolverOf(w1)), "tvm-20048 W=1")
+    }
+
+    @Test
+    fun `tvm-20048-red conv2d reduction bind reduction 1x1`() {
+        val pattern = allPatterns.first { it.id == "tvm-20048-red" }
+        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
+
+        // 正例: [6,2,24,28] × [1,2,1,1] — N≥2, C≥2, W≥20
+        val pos = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(6, 2, 24, 28), shapeOf(1, 2, 1, 1)),
+            listOf(shapeOf(6, 1, 24, 28)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20048-red positive [6,2,24,28]")
+
+        // 正例2: [4,3,28,20] × [1,3,1,1] — W=20正好在边界
+        matcher.reset()
+        val pos2 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(4, 3, 28, 20), shapeOf(1, 3, 1, 1)),
+            listOf(shapeOf(4, 1, 28, 20)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos2, resolverOf(pos2)), "tvm-20048-red positive [4,3,28,20]")
+
+        // 反例-不同算子
+        matcher.reset()
+        val diffOp = mockNode("relu", UirOpKind.RELU,
+            listOf(shapeOf(6, 2, 24, 28)), listOf(shapeOf(6, 2, 24, 28)))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20048-red diff op")
+
+        // 反例-不同形状: N=1 (below 2)
+        matcher.reset()
+        val n1 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(1, 2, 24, 28), shapeOf(1, 2, 1, 1)),
+            listOf(shapeOf(1, 1, 24, 28)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(n1, resolverOf(n1)), "tvm-20048-red N=1")
+
+        // 反例-不同形状: C=1 (below 2)
+        matcher.reset()
+        val c1 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(6, 1, 24, 28), shapeOf(1, 1, 1, 1)),
+            listOf(shapeOf(6, 1, 24, 28)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(c1, resolverOf(c1)), "tvm-20048-red C=1")
+
+        // 反例-不同形状: W=16 (below 20)
+        matcher.reset()
+        val w16 = mockNode("conv2d", UirOpKind.CONV2D,
+            listOf(shapeOf(6, 2, 24, 16), shapeOf(1, 2, 1, 1)),
+            listOf(shapeOf(6, 1, 24, 16)),
+            mapOf("stride" to 1, "padding" to 0, "dilation" to 1, "groups" to 1))
+        assertNull(matcher.onNodeGenerated(w16, resolverOf(w16)), "tvm-20048-red W=16")
     }
 
     @Test

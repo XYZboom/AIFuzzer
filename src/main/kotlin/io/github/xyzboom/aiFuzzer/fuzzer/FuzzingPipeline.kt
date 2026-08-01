@@ -100,12 +100,16 @@ class FuzzingPipeline(
             }
             java.io.File(resource.toURI())
         }
-        if (!dir.isDirectory) {
+        if (!dir.exists()) {
             log.warn { "Pattern 目录 $dir 不存在，去重已禁用" }
             return io.github.xyzboom.aiFuzzer.pattern.PatternDatabase(patterns = emptyList())
         }
         val allPatterns = mutableListOf<io.github.xyzboom.aiFuzzer.pattern.PatternDef>()
-        val files = dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
+        val files = if (dir.isDirectory) {
+            dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
+        } else {
+            arrayOf(dir)
+        }
         for (file in files) {
             try {
                 val json = file.readText()
