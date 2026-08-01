@@ -470,12 +470,12 @@ class FuzzingPipeline(
 
         val skipped = AtomicInteger(0)
         val bugPrevented = AtomicInteger(0)
-        val falsePositive = AtomicInteger(0)
+        val dedupOnlyFail = AtomicInteger(0)
         val bothFailed = AtomicInteger(0)
         val bothSuccess = AtomicInteger(0)
         val failedSeeds = AtomicInteger(0)
         val bugPreventedSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
-        val falsePositiveSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val dedupOnlyFailSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val bothFailedSeeds = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val completed = AtomicInteger(0)
         val count = seeds.size
@@ -565,7 +565,7 @@ class FuzzingPipeline(
                     val noDedupFailed = resultsNoDedup.any { !it.backendResult.success }
                     val dedupFailed = resultsDedup.any { !it.backendResult.success }
 
-                    // 保存 no-dedup 程序完整 IR（保存用于 FP 分析）
+                    // 保存 no-dedup 程序完整 IR（保存用于 dedup-only fail 分析）
                     if (!noDedupFailed && !dedupFailed) {
                         if (noDedupInfo.isNotEmpty()) {
                             val fpDir = java.io.File("reports/fp-analysis")
@@ -577,7 +577,7 @@ class FuzzingPipeline(
 
                     when {
                         noDedupFailed && !dedupFailed -> { bugPrevented.incrementAndGet(); bugPreventedSeeds.add(seed) }
-                        !noDedupFailed && dedupFailed -> { falsePositive.incrementAndGet(); falsePositiveSeeds.add(seed) }
+                        !noDedupFailed && dedupFailed -> { dedupOnlyFail.incrementAndGet(); dedupOnlyFailSeeds.add(seed) }
                         noDedupFailed && dedupFailed -> { bothFailed.incrementAndGet(); bothFailedSeeds.add(seed) }
                         else -> bothSuccess.incrementAndGet()
                     }
@@ -600,18 +600,18 @@ class FuzzingPipeline(
         // 关闭所有 backend 副本
         backendPool.forEach { it.forEach { b -> b.close() } }
 
-        val collected = bugPrevented.get() + falsePositive.get() + bothFailed.get() + bothSuccess.get()
+        val collected = bugPrevented.get() + dedupOnlyFail.get() + bothFailed.get() + bothSuccess.get()
         return DedupEvalSummary(
             totalSeeds = count,
             skipped = skipped.get(),
             collected = collected,
             bugPrevented = bugPrevented.get(),
-            falsePositive = falsePositive.get(),
+            dedupOnlyFail = dedupOnlyFail.get(),
             bothFailed = bothFailed.get(),
             bothSuccess = bothSuccess.get(),
             failedSeeds = failedSeeds.get(),
             bugPreventedSeeds = bugPreventedSeeds.toList(),
-            falsePositiveSeeds = falsePositiveSeeds.toList(),
+            dedupOnlyFailSeeds = dedupOnlyFailSeeds.toList(),
             bothFailedSeeds = bothFailedSeeds.toList(),
             totalTimeMs = System.currentTimeMillis() - startTime,
         )
