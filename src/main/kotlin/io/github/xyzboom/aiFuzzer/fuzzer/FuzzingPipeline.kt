@@ -565,7 +565,7 @@ class FuzzingPipeline(
                     val noDedupFailed = resultsNoDedup.any { !it.backendResult.success }
                     val dedupFailed = resultsDedup.any { !it.backendResult.success }
 
-                    // 保存 no-dedup 程序完整 IR（保存用于 dedup-only fail 分析）
+                    // 保存 no-dedup 程序完整 IR（Both succeeded 时离线分析 pattern 是否过宽）
                     if (!noDedupFailed && !dedupFailed) {
                         if (noDedupInfo.isNotEmpty()) {
                             val fpDir = java.io.File("reports/fp-analysis")

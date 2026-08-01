@@ -141,7 +141,9 @@ Both succeeded:     13           ← 两者都不触发bug
 
 ### FP 分析
 
-当 `no-dedup 不触发bug / dedup 触发bug` 时，自动保存 no-dedup 程序的完整 IR 到 `reports/fp-analysis/fp_seed{seed}.jsonl`，用于离线分析 pattern 是否过宽。
+当分类为 **Both succeeded**（no-dedup 和 dedup 都不触发 bug，但 dedup 触发了重试导致程序不同）时，如果 no-dedup 程序的可打印摘要非空，自动保存其完整 IR 到 `reports/fp-analysis/fp_seed{seed}.jsonl`，用于离线分析 pattern 是否过宽。
+
+> **注意**：Dedup-only fail（仅 dedup 程序触发 bug）不自动保存 IR，需通过分析 dedup 程序的错误签名来判断是新 bug 还是 pattern 问题。
 
 ### 验证流程
 
