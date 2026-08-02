@@ -51,13 +51,17 @@ class UirMutator(
     /**
      * 从种子池中随机选取一个种子，变异后返回。
      * 如果没有种子或变异被禁用，返回 null。
+     *
+     * @param seed 随机种子，传入时保证相同 seed 产生相同的变异结果。
+     *             不传则使用构造时的 rng（不可复现）。
      */
-    fun mutate(): UirProgram? {
+    fun mutate(seed: Long? = null): UirProgram? {
         if (!config.enabled || seedPool.isEmpty()) return null
-        if (rng.nextDouble() > config.rate) return null
+        val localRng = if (seed != null) Random(seed) else rng
+        if (localRng.nextDouble() > config.rate) return null
 
         // 随机选一个种子
-        val seedJsonl = seedPool[rng.nextInt(seedPool.size)]
+        val seedJsonl = seedPool[localRng.nextInt(seedPool.size)]
         val original = try {
             UirSerializer.fromJsonl(seedJsonl)
         } catch (e: Exception) {
@@ -77,9 +81,9 @@ class UirMutator(
         for (graph in program.graphs) {
             if (graph.nodes.isEmpty()) continue
             // 随机选择变异次数（1-3 次）
-            val numMutations = 1 + rng.nextInt(minOf(3, config.maxMutations))
+            val numMutations = 1 + localRng.nextInt(minOf(3, config.maxMutations))
             repeat(numMutations) {
-                applyRandomMutation(graph)
+                applyRandomMutation(graph, localRng)
             }
         }
 
@@ -181,19 +185,19 @@ class UirMutator(
         }
     }
 
-    private fun applyRandomMutation(graph: UirGraph) {
+    private fun applyRandomMutation(graph: UirGraph, localRng: Random) {
         if (graph.nodes.isEmpty()) return
         if (enabledMutationTypes.isEmpty()) return
 
-        val mutationType = enabledMutationTypes[rng.nextInt(enabledMutationTypes.size)]
+        val mutationType = enabledMutationTypes[localRng.nextInt(enabledMutationTypes.size)]
 
         try {
             when (mutationType) {
-                MutationType.SHAPE -> mutateShape(graph)
-                MutationType.OP -> mutateOp(graph)
-                MutationType.INSERT -> mutateInsert(graph)
-                MutationType.DELETE -> mutateDelete(graph)
-                MutationType.ATTRIBUTE -> mutateAttribute(graph)
+                MutationType.SHAPE -> mutateShape(graph, localRng)
+                MutationType.OP -> mutateOp(graph, localRng)
+                MutationType.INSERT -> mutateInsert(graph, localRng)
+                MutationType.DELETE -> mutateDelete(graph, localRng)
+                MutationType.ATTRIBUTE -> mutateAttribute(graph, localRng)
             }
         } catch (e: Exception) {
             // 变异失败（超界、空图等），静默跳过
@@ -202,7 +206,7 @@ class UirMutator(
     }
 
     // ---- SHAPE: 修改维度值 ----
-    private fun mutateShape(graph: UirGraph) {
+    private fun mutateShape(graph: UirGraph, localRng: Random) {
         // 找一个有常量维度的节点
         val candidates = graph.nodes.filter { node ->
             node.outputs.any { ref ->
@@ -212,8 +216,8 @@ class UirMutator(
         }
         if (candidates.isEmpty()) return
 
-        val node = candidates[rng.nextInt(candidates.size)]
-        val outputRef = node.outputs[rng.nextInt(node.outputs.size)]
+        val node = candidates[localRng.nextInt(candidates.size)]
+        val outputRef = node.outputs[localRng.nextInt(node.outputs.size)]
         val shape = outputRef.type.shape
         val dimIndex = shape.dims.indices.filter {
             val v = shape.dims[it].valueOrNull()
@@ -221,15 +225,15 @@ class UirMutator(
         }
         if (dimIndex.isEmpty()) return
 
-        val idx = dimIndex[rng.nextInt(dimIndex.size)]
+        val idx = dimIndex[localRng.nextInt(dimIndex.size)]
         val oldVal = shape.dims[idx].valueOrNull()!!
 
         // 变异策略：增大、减小、设奇数、设偶数
-        val newVal = when (rng.nextInt(4)) {
+        val newVal = when (localRng.nextInt(4)) {
             0 -> oldVal * 2       // 翻倍
             1 -> (oldVal / 2).coerceAtLeast(1) // 减半
-            2 -> oldVal + rng.nextInt(1, 5)   // 加小值
-            3 -> (oldVal - rng.nextInt(1, 3)).coerceAtLeast(1) // 减小值
+            2 -> oldVal + localRng.nextInt(1, 5)   // 加小值
+            3 -> (oldVal - localRng.nextInt(1, 3)).coerceAtLeast(1) // 减小值
             else -> oldVal
         }
 
@@ -252,7 +256,7 @@ class UirMutator(
     }
 
     // ---- OP: 同族算子替换 ----
-    private fun mutateOp(graph: UirGraph) {
+    private fun mutateOp(graph: UirGraph, localRng: Random) {
         val candidates = graph.nodes.filter { node ->
             opFamilies.any { family ->
                 node.op in family.ops && family.ops.any { it != node.op }
@@ -260,23 +264,23 @@ class UirMutator(
         }
         if (candidates.isEmpty()) return
 
-        val node = candidates[rng.nextInt(candidates.size)]
+        val node = candidates[localRng.nextInt(candidates.size)]
         val family = opFamilies.first { node.op in it.ops }
-        val newOp = family.ops.filter { it != node.op }[rng.nextInt(family.ops.size - 1)]
+        val newOp = family.ops.filter { it != node.op }[localRng.nextInt(family.ops.size - 1)]
 
         node.op = newOp
         log.trace { "变异 OP: ${node.name}: ${node.op} → $newOp" }
     }
 
     // ---- INSERT: 在已有节点后插入新节点 ----
-    private fun mutateInsert(graph: UirGraph) {
+    private fun mutateInsert(graph: UirGraph, localRng: Random) {
         // 选一个有输出的节点
         val candidates = graph.nodes.filter { it.outputs.isNotEmpty() }
         if (candidates.size < 2) return
 
-        val targetNode = candidates[rng.nextInt(candidates.size)]
+        val targetNode = candidates[localRng.nextInt(candidates.size)]
         // 选一个输出
-        val outputRef = targetNode.outputs[rng.nextInt(targetNode.outputs.size)]
+        val outputRef = targetNode.outputs[localRng.nextInt(targetNode.outputs.size)]
         val outputShape = outputRef.type.shape
 
         // 找所有使用该输出的后续节点
@@ -286,11 +290,11 @@ class UirMutator(
         if (consumers.isEmpty()) return
 
         // 选一个单输入算子插入
-        val newOp = singleInputOps[rng.nextInt(singleInputOps.size)]
-        val newNodeName = "mut_${rng.nextInt(10000)}_${randomSuffix()}"
+        val newOp = singleInputOps[localRng.nextInt(singleInputOps.size)]
+        val newNodeName = "mut_${localRng.nextInt(10000)}_${randomSuffix(localRng)}"
 
         // 创建新节点的输出
-        val newOutputId = "v_mut_${rng.nextInt(10000)}_${randomSuffix()}"
+        val newOutputId = "v_mut_${localRng.nextInt(10000)}_${randomSuffix(localRng)}"
         val newOutputRef = buildValueRef {
             valueId = newOutputId
             type = buildTensorType {
@@ -325,7 +329,7 @@ class UirMutator(
     }
 
     // ---- DELETE: 删除一个节点 ----
-    private fun mutateDelete(graph: UirGraph) {
+    private fun mutateDelete(graph: UirGraph, localRng: Random) {
         if (graph.nodes.size < 3) return
 
         // 找一个不是 graph input/output 也不是常量的节点
@@ -338,7 +342,7 @@ class UirMutator(
         }
         if (candidates.isEmpty()) return
 
-        val nodeToDelete = candidates[rng.nextInt(candidates.size)]
+        val nodeToDelete = candidates[localRng.nextInt(candidates.size)]
 
         // 对于每个输出，找到消费者并把输入替换为 nodeToDelete 的输入
         for (outputRef in nodeToDelete.outputs) {
@@ -360,22 +364,22 @@ class UirMutator(
     }
 
     // ---- ATTRIBUTE: 修改算子属性 ----
-    private fun mutateAttribute(graph: UirGraph) {
+    private fun mutateAttribute(graph: UirGraph, localRng: Random) {
         // 找有 axis 或 keepdims 属性的节点
         val candidates = graph.nodes.filter { node ->
             node.attributes.containsKey("axis") || node.attributes.containsKey("keepdims")
         }
         if (candidates.isEmpty()) return
 
-        val node = candidates[rng.nextInt(candidates.size)]
+        val node = candidates[localRng.nextInt(candidates.size)]
 
-        if (node.attributes.containsKey("axis") && (rng.nextBoolean() || !node.attributes.containsKey("keepdims"))) {
+        if (node.attributes.containsKey("axis") && (localRng.nextBoolean() || !node.attributes.containsKey("keepdims"))) {
             // 修改 axis
             val attr = node.attributes["axis"] as? io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr
             if (attr != null) {
                 val ndim = node.outputs.firstOrNull()?.type?.shape?.dims?.size ?: return
                 val oldAxis = attr.value
-                val newAxis = rng.nextInt(-ndim, ndim)
+                val newAxis = localRng.nextInt(-ndim, ndim)
                 if (newAxis != oldAxis) {
                     node.attributes["axis"] = buildIntAttr { value = newAxis }
                     log.trace { "变异 ATTRIBUTE: ${node.name}.axis: $oldAxis → $newAxis" }
@@ -393,9 +397,9 @@ class UirMutator(
         }
     }
 
-    private fun randomSuffix(): String {
+    private fun randomSuffix(localRng: Random): String {
         val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-        return (1..8).map { chars[rng.nextInt(chars.length)] }.joinToString("")
+        return (1..8).map { chars[localRng.nextInt(chars.length)] }.joinToString("")
     }
 }
 

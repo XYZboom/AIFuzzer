@@ -216,9 +216,10 @@ class FuzzingPipeline(
         }
 
         // 尝试变异（如果变异器已启用且有种子）
+        // 传入 seed 保证相同 seed 产生相同的变异结果
         val program = mutator?.let { m ->
             synchronized(m) {
-                m.mutate()
+                m.mutate(seed = seed)
             }
         } ?: originalProgram
 
