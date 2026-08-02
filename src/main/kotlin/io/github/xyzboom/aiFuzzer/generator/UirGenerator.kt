@@ -663,29 +663,15 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             val input2ValueId = if (broadcastCompatibleValues.isNotEmpty()) {
                 broadcastCompatibleValues.random(rand)
             } else {
-                // No broadcast-compatible value found — generate a ZEROS constant
-                // with a shape that IS compatible with input1
-                val input1Shape = valueShapes[input1ValueId]!!
-                val compatibleShape = generateBroadcastCompatibleShape(input1Shape)
-                val zerosValueId = newValueId()
-                valueShapes[zerosValueId] = compatibleShape
-                
-                val zerosNode = buildNode {
-                    name = "broadcast_compat_zeros_${randomIdSuffix()}"
-                    this.op = UirOpKind.ZEROS
-                    val outputRef = buildValueRef {
-                        this.valueId = zerosValueId
-                        this.type = buildTensorType {
-                            typeKind = UirTypeKind.TENSOR
-                            shape = compatibleShape
-                            dtype = mkDataType()
-                        }
-                    }
-                    this.outputs.add(outputRef)
-                }
-                nodeList.add(zerosNode)
-                availableValues.add(zerosValueId)
-                zerosValueId
+                // No broadcast-compatible value found — pick an existing value from the graph.
+                // ShapeAdapter will handle shape adaptation (expand dims, broadcast, reshape),
+                // so there's no need to generate a ZEROS constant even as last resort.
+                // If only input1 is available, it's fine — the binary op will have the same
+                // value as both inputs, but that's a valid edge case for fuzzing.
+                val otherValues = availableValues.filter { it != input1ValueId }
+                log.trace { "二元运算: 无广播兼容值，从已有值中随机选 (${otherValues.size} 个候选)" }
+                if (otherValues.isNotEmpty()) otherValues.random(rand)
+                else input1ValueId  // same value for both inputs — valid edge case
             }
             
             val input1Ref = buildValueRef {
@@ -1007,49 +993,6 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         return shape.dims.map { it.valueOrNull() ?: "?" }.joinToString(", ", "[", "]")
     }
     
-    /**
-     * Generate a shape that is broadcast-compatible with the given input shape.
-     * Strategy: create a shape that is either:
-     *   1. A scalar-compatible shape (all 1s) — always broadcastable
-     *   2. A shape with same ndim where each dim is either same as input or 1
-     *   3. A lower-ndim shape where trailing dims match or are 1
-     */
-    private fun generateBroadcastCompatibleShape(inputShape: UirShape): UirShape {
-        val ndim = inputShape.dims.size
-        if (ndim == 0) return buildShape { }  // scalar
-        
-        val strategy = rand.nextInt(3)
-        return when (strategy) {
-            0 -> {
-                // Strategy 1: all-1s shape (always broadcastable)
-                buildShape {
-                    for (i in 0 until ndim) {
-                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = 1 })
-                    }
-                }
-            }
-            1 -> {
-                // Strategy 2: same ndim, each dim either same or 1
-                buildShape {
-                    for (i in 0 until ndim) {
-                        val inputDim = inputShape.dims[i].valueOrNull() ?: 1
-                        val dim = if (rand.nextBoolean()) inputDim else 1
-                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = dim })
-                    }
-                }
-            }
-            else -> {
-                // Strategy 3: fewer dims (1 to ndim-1), trailing dims match or are 1
-                val outNdim = rand.nextInt(1, ndim + 1)
-                buildShape {
-                    val offset = ndim - outNdim
-                    for (i in 0 until outNdim) {
-                        val inputDim = inputShape.dims[offset + i].valueOrNull() ?: 1
-                        val dim = if (rand.nextBoolean()) inputDim else 1
-                        dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = dim })
-                    }
-                }
-            }
-        }
-    }
+    // generateBroadcastCompatibleShape removed — no longer needed since
+    // ShapeAdapter handles all shape adaptation (expand dims, broadcast, reshape).
 }

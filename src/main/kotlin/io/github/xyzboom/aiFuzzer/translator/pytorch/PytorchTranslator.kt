@@ -714,10 +714,18 @@ class PytorchTranslator(
                 val shapeStr = shapeToPython(outputShape)
                 "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ($shapeStr))"
             }
-            UirOpKind.TILE -> {
+UirOpKind.TILE -> {
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                val ndim = node.inputs[0].type.shape.dims.size
-                "$pytorchFunc($inputVar, [1] * $ndim)"
+                val inputShape = node.inputs[0].type.shape
+                val targetShape = node.outputs[0].type.shape
+                val reps = targetShape.dims.mapIndexed { i, outDim ->
+                    val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
+                    val outVal = outDim.value ?: 1
+                    if (inVal > 0) outVal / inVal else 1
+                }
+                // torch.tile requires tuple of ints; 1-element tuple needs trailing comma
+                val repsStr = if (reps.size == 1) "(${reps[0]},)" else "(${reps.joinToString(", ")})"
+                "$pytorchFunc($inputVar, $repsStr)"
             }
 
             // ===== 类型转换 =====

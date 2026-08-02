@@ -201,56 +201,49 @@ object ShapeAdapter {
         
         // 检查是否可广播
         val canBroadcast = canBroadcastTogether(shape1, shape2)
-        
+
+        val wrapperNodes = mutableListOf<UirNode>()
+        val adaptedRefs = mutableListOf<UirValueRef>()
+        val adaptedShapes = mutableListOf<UirShape>()
+
+        var localValueCounter = valueCounter
+        var localNodeCounter = nodeCounter
+
         if (canBroadcast) {
             // 可广播：推导公共目标形状，将两个输入都调整到该形状
             val commonTargetShape = deriveCommonBroadcastTarget(shape1, shape2)
-            
-            val wrapperNodes = mutableListOf<UirNode>()
-            val adaptedRefs = mutableListOf<UirValueRef>()
-            val adaptedShapes = mutableListOf<UirShape>()
-            
-            var localValueCounter = valueCounter
-            var localNodeCounter = nodeCounter
-            
+
             for ((ref, originalShape) in inputValueRefs.zip(inputShapes)) {
                 val (adaptedRef, nodes) = generateWrapperSequence(
                     ref, originalShape, commonTargetShape,
                     valueShapes, localValueCounter, localNodeCounter
                 )
-                
+
                 wrapperNodes.addAll(nodes)
                 adaptedRefs.add(adaptedRef)
                 adaptedShapes.add(valueShapes[adaptedRef.valueId]!!)
-                
+
                 localValueCounter += nodes.size
                 localNodeCounter += nodes.size
             }
-            
+
             return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
         } else {
-            // 不可广播：生成一个新的常量张量作为第二个输入
-            // 使用第一个输入的原始形状作为目标形状（不做任何修改）
-            
-            val wrapperNodes = mutableListOf<UirNode>()
-            val adaptedRefs = mutableListOf<UirValueRef>()
-            val adaptedShapes = mutableListOf<UirShape>()
-            
-            var localValueCounter = valueCounter
-            var localNodeCounter = nodeCounter
-            
+            // 不可广播：用 flatten + TILE/STRIDED_SLICE + RESHAPE 适配第二个输入到 shape1
+            // 保留图中已有值，避免生成常量叶子节点
+
             // 第一个输入：保持原样，不修改
             adaptedRefs.add(inputValueRefs[0])
             adaptedShapes.add(shape1)
-            
-            // 第二个输入：生成常量张量（ZEROS），形状与第一个输入相同
-            val (constRef, constNode) = generateConstantTensor(
-                shape1, valueShapes, localValueCounter, localNodeCounter
+
+            val (adaptedRef, nodes) = adaptWithElemCountMatch(
+                inputValueRefs[1], shape2, shape1,
+                valueShapes, localValueCounter, localNodeCounter
             )
-            wrapperNodes.add(constNode)
-            adaptedRefs.add(constRef)
-            adaptedShapes.add(valueShapes[constRef.valueId]!!)
-            
+            wrapperNodes.addAll(nodes)
+            adaptedRefs.add(adaptedRef)
+            adaptedShapes.add(valueShapes[adaptedRef.valueId]!!)
+
             return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
         }
     }
@@ -1472,5 +1465,189 @@ object ShapeAdapter {
         }
 
         return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
+    }
+
+    /**
+     * 适配第二个输入的形状到目标形状，正确处理元素数不一致的情况。
+     *
+     * 流程：
+     * 1. Flatten 到 1D（RESHAPE）
+     * 2. 对齐元素数：
+     *    - 源元素数 < 目标元素数 → TILE 重复
+     *    - 源元素数 > 目标元素数 → STRIDED_SLICE 裁剪
+     *    - 相等 → 跳过
+     * 3. RESHAPE 到目标形状
+     *
+     * 保留图中已有的值，避免生成常量叶子节点。
+     */
+    private fun adaptWithElemCountMatch(
+        inputRef: UirValueRef,
+        inputShape: UirShape,
+        targetShape: UirShape,
+        valueShapes: MutableMap<String, UirShape>,
+        valueCounter: Int,
+        nodeCounter: Int
+    ): Pair<UirValueRef, List<UirNode>> {
+        val wrapperNodes = mutableListOf<UirNode>()
+        var currentRef = inputRef
+        var currentShape = inputShape
+        var counter = valueCounter
+        var nodeOffset = 0
+
+        val totalElements = inputShape.dims.mapNotNull { it.valueOrNull() }.fold(1L) { acc, v -> acc * v }
+        val targetTotalElements = targetShape.dims.mapNotNull { it.valueOrNull() }.fold(1L) { acc, v -> acc * v }
+
+        if (totalElements <= 0 || targetTotalElements <= 0) {
+            // 有未知维度，无法计算元素数，回退到 generateWrapperSequence
+            return generateWrapperSequence(inputRef, inputShape, targetShape, valueShapes, valueCounter, nodeCounter)
+        }
+
+        // Step 1: Flatten 到 1D
+        val flatShape = buildShape {
+            dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = totalElements.toInt() })
+        }
+        val (flattenedRef, flattenNode) = insertReshape(
+            currentRef, currentShape, flatShape,
+            valueShapes, counter++, nodeOffset++
+        )
+        wrapperNodes.add(flattenNode)
+        currentRef = flattenedRef
+        currentShape = flatShape
+
+        // Step 2: 对齐元素数
+        if (totalElements < targetTotalElements) {
+            // 需要更多元素：TILE 重复
+            val actualRepeats = ((targetTotalElements + totalElements - 1) / totalElements).toInt()  // ceil division
+            val tiledShape = buildShape {
+                dims.add(buildDim {
+                    dimKind = UirDimKind.CONSTANT
+                    value = (totalElements * actualRepeats).toInt()
+                })
+            }
+            val (tiledRef, tileNode) = insertTile(
+                currentRef, currentShape, tiledShape,
+                valueShapes, counter++, nodeOffset++
+            )
+            wrapperNodes.add(tileNode)
+            currentRef = tiledRef
+            currentShape = tiledShape
+
+            // 如果 TILE 后超出了目标大小，裁剪
+            if (totalElements * actualRepeats > targetTotalElements) {
+                val croppedShape = buildShape {
+                    dims.add(buildDim {
+                        dimKind = UirDimKind.CONSTANT
+                        value = targetTotalElements.toInt()
+                    })
+                }
+                val (croppedRef, cropNode) = insertStridedSlice1D(
+                    currentRef, currentShape, croppedShape,
+                    valueShapes, counter++, nodeOffset++
+                )
+                wrapperNodes.add(cropNode)
+                currentRef = croppedRef
+                currentShape = croppedShape
+            }
+        } else if (totalElements > targetTotalElements) {
+            // 元素过多：STRIDED_SLICE 裁剪
+            val croppedShape = buildShape {
+                dims.add(buildDim {
+                    dimKind = UirDimKind.CONSTANT
+                    value = targetTotalElements.toInt()
+                })
+            }
+            val (croppedRef, cropNode) = insertStridedSlice1D(
+                currentRef, currentShape, croppedShape,
+                valueShapes, counter++, nodeOffset++
+            )
+            wrapperNodes.add(cropNode)
+            currentRef = croppedRef
+            currentShape = croppedShape
+        }
+
+        // Step 3: RESHAPE 到目标形状
+        val (reshapedRef, reshapeNode) = insertReshape(
+            currentRef, currentShape, targetShape,
+            valueShapes, counter++, nodeOffset++
+        )
+        wrapperNodes.add(reshapeNode)
+        currentRef = reshapedRef
+
+        return Pair(currentRef, wrapperNodes)
+    }
+
+    /**
+     * 插入 TILE 节点，通过输出形状驱动 translators 计算 repeats。
+     *
+     * TILE(output_shape[i]) = input_shape[i] * repeats[i]，translators 根据 output_shape / input_shape 计算 repeats。
+     */
+    private fun insertTile(
+        inputRef: UirValueRef,
+        inputShape: UirShape,
+        targetShape: UirShape,
+        valueShapes: MutableMap<String, UirShape>,
+        valueIdCounter: Int,
+        nodeIdCounter: Int
+    ): Pair<UirValueRef, UirNode> {
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
+        valueShapes[outputValueId] = targetShape
+
+        val outputRef = buildValueRef {
+            valueId = outputValueId
+            type = buildTensorType {
+                typeKind = UirTypeKind.TENSOR
+                shape = targetShape
+                dtype = inputRef.type.dtype
+            }
+        }
+
+        val node = buildNode {
+            name = "tile_${nodeIdCounter}_${randomIdSuffix()}"
+            op = UirOpKind.TILE
+            inputs.add(inputRef)
+            outputs.add(outputRef)
+        }
+
+        return Pair(outputRef, node)
+    }
+
+    /**
+     * 插入 1D STRIDED_SLICE 节点，裁剪到目标大小。
+     *
+     * 属性：axes=[0], begin=[0], end=[targetSize]
+     */
+    private fun insertStridedSlice1D(
+        inputRef: UirValueRef,
+        inputShape: UirShape,
+        targetShape: UirShape,
+        valueShapes: MutableMap<String, UirShape>,
+        valueIdCounter: Int,
+        nodeIdCounter: Int
+    ): Pair<UirValueRef, UirNode> {
+        val targetSize = targetShape.dims.firstOrNull()?.valueOrNull() ?: 1
+
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
+        valueShapes[outputValueId] = targetShape
+
+        val outputRef = buildValueRef {
+            valueId = outputValueId
+            type = buildTensorType {
+                typeKind = UirTypeKind.TENSOR
+                shape = targetShape
+                dtype = inputRef.type.dtype
+            }
+        }
+
+        val node = buildNode {
+            name = "strided_slice_${nodeIdCounter}_${randomIdSuffix()}"
+            op = UirOpKind.STRIDED_SLICE
+            inputs.add(inputRef)
+            outputs.add(outputRef)
+            attributes["axes"] = buildStringAttr { value = "0" }
+            attributes["begin"] = buildStringAttr { value = "0" }
+            attributes["end"] = buildStringAttr { value = targetSize.toString() }
+        }
+
+        return Pair(outputRef, node)
     }
 }
