@@ -341,6 +341,11 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 availableValues.add(output.valueId)
             }
             
+            // 更新当前分支的 tip 为最新输出的值（实现链式推进）
+            if (lastNode.outputs.isNotEmpty()) {
+                liveTips[currentBranch] = lastNode.outputs.last().valueId
+            }
+            
             // 随机创建新分支
             if (rand.nextDouble() < config.branchProbability && availableValues.size >= 2) {
                 currentBranch++
@@ -582,13 +587,22 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
 
         // 特殊处理：二元运算
         if (op in UirOpKind.binaryInputOps && numInputs == 2 && availableValues.size >= 2) {
-            // 选择第一个输入
-            val input1ValueId = if (tipValue != null && tipValue in availableValues) {
-                log.trace { "二元运算: 使用 tip 作为第一个输入" }
-                tipValue
-            } else {
-                availableValues.random(rand)
+            // 选择第一个输入：加权随机，越新的值权重越高
+            // 利用 availableValues 的顺序（越早生成的越靠前，越新的越靠后）
+            // 权重 = 位置索引 + 1（线性衰减），最新值有最大概率被选中
+            // 这样既保留了链式推进的倾向，又允许跨分支汇聚
+            val weights = availableValues.indices.map { (it + 1).toDouble() }
+            val totalWeight = weights.sum()
+            var roll = rand.nextDouble() * totalWeight
+            var input1ValueId = availableValues.last()  // fallback
+            for (i in availableValues.indices) {
+                roll -= weights[i]
+                if (roll <= 0.0) {
+                    input1ValueId = availableValues[i]
+                    break
+                }
             }
+            log.trace { "二元运算: 加权随机选 input1=$input1ValueId (可用值=${availableValues.size})" }
             
             // 特殊处理：CONV2D 需要生成匹配的权重常量
             if (op == UirOpKind.CONV2D) {
