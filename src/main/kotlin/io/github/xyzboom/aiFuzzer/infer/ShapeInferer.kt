@@ -634,10 +634,11 @@ object ShapeInferer {
             return unknownDim()
         }
 
-        // 确保输出至少为 1。如果输入空间维太小导致输出为 0 或负，
-        // 将输出设为 1（PyTorch 不接受 0 维输出）
-        val outVal = (inVal + 2 * padding - kernelSize) / stride + 1
-        return constantDim(outVal.coerceAtLeast(1))
+        // 使用 floor division 匹配 TVM 的 // 行为
+        // Kotlin 的 / 向零截断，对负值结果与 floor 不同
+        val outVal = Math.floorDiv(inVal + 2 * padding - kernelSize, stride) + 1
+        // 允许 0 输出（degenerate 张量），不强制 min=1
+        return constantDim(outVal.coerceAtLeast(0))
     }
     
     /**
@@ -703,10 +704,10 @@ object ShapeInferer {
             }
         } else {
             // 移除归约维度
-            val filtered = inputShape.dims.filterIndexed { i, _ -> i !in normalizedAxes }
-            // 如果所有维度都被归约了，保持至少 1 维，避免 0-D 张量
-            // TVM 不支持 0-D 张量作为函数参数（会导致 ndim 不匹配崩溃）
-            if (filtered.isEmpty()) listOf(constantDim(1)) else filtered
+            // TVM 的 relax.op.max/min 等算子支持返回 0-D 张量（标量）。
+            // 之前硬编码为 [1] 导致断言失败，因为 TVM 实际返回 []。
+            // 允许空 shape（0-D 张量），匹配 TVM 运行时行为。
+            inputShape.dims.filterIndexed { i, _ -> i !in normalizedAxes }
         }
         
         return listOf(shapeFromDims(outputDims))
@@ -794,10 +795,8 @@ object ShapeInferer {
         val filtered = inputShape.dims.filter { dim ->
             !(dim.dimKind == UirDimKind.CONSTANT && dim.value == 1)
         }
-        // 如果所有维度都被去掉了，保持至少 1 维，避免 0-D 张量
-        val outputDims = if (filtered.isEmpty()) listOf(constantDim(1)) else filtered
-
-        return listOf(shapeFromDims(outputDims))
+        // 如果所有维度都被去掉了，返回空形状（0-D 张量）
+        return listOf(shapeFromDims(filtered))
     }
 
     /**
@@ -936,9 +935,8 @@ object ShapeInferer {
             if (normalizedAxis in outputDims.indices) {
                 outputDims.removeAt(normalizedAxis)
             }
-            // 如果移除后变成 0-D，保持至少 1 维，避免 0-D 张量
-            val safeDims = if (outputDims.isEmpty()) listOf(constantDim(1)) else outputDims
-            return listOf(shapeFromDims(safeDims))
+            // 如果移除后变成 0-D，直接返回空形状（TVM 的 take 支持标量结果）
+            return listOf(shapeFromDims(outputDims))
         }
         
         requireBinaryInput(UirOpKind.GATHER, inputShapes)
@@ -1034,7 +1032,9 @@ object ShapeInferer {
                 val inputDimValue: Int? = inputDim.value
 
                 if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT && end >= 0) {
-                    val sliceLength = end - begin
+                    // TVM 会自动钳制 end 到输入维度上限
+                    val clampedEnd = minOf(end, inputDimValue)
+                    val sliceLength = clampedEnd - begin
                     outputDims[normalizedAxis] = constantDim(sliceLength.coerceAtLeast(1))
                 } else if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT && end < 0) {
                     val sliceLength = if (inputDimValue == 0) 0 else maxOf(1, inputDimValue - 1)
@@ -1148,7 +1148,10 @@ object ShapeInferer {
         requireSingleInput(UirOpKind.EXPAND_DIMS, inputShapes)
         
         val inputShape = inputShapes[0]
-        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+        val rawAxis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+        // 归一化负轴：TVM 的 expand_dims 在负轴时插入位置为 ndim + 1 + axis
+        // 例如 axis=-2 在 3D 输入上 → 3+1+(-2)=2 → 在末尾前插入
+        val axis = if (rawAxis >= 0) rawAxis else inputShape.dims.size + 1 + rawAxis
         
         val outputDims = inputShape.dims.toMutableList()
         outputDims.add(axis.coerceIn(0, outputDims.size), constantDim(1))
@@ -1181,9 +1184,7 @@ object ShapeInferer {
         } else {
             // keepdims=false: 移除 axis 维度
             val actualAxis = if (axis < 0) inputShape.dims.size + axis else axis
-            val filtered = inputShape.dims.filterIndexed { i, _ -> i != actualAxis }
-            // 如果所有维度都被归约了，保持至少 1 维，避免 0-D 张量
-            val outputDims = if (filtered.isEmpty()) listOf(constantDim(1)) else filtered
+            val outputDims = inputShape.dims.filterIndexed { i, _ -> i != actualAxis }
             return listOf(shapeFromDims(outputDims))
         }
     }

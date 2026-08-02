@@ -86,12 +86,12 @@ class UirMutator(
         resetCounters(program)
 
         // 对每个图应用随机变异
-        for (graph in program.graphs) {
+        for ((gIdx, graph) in program.graphs.withIndex()) {
             if (graph.nodes.isEmpty()) continue
             // 随机选择变异次数（1-3 次）
             val numMutations = 1 + localRng.nextInt(minOf(3, config.maxMutations))
             repeat(numMutations) {
-                applyRandomMutation(graph, localRng)
+                applyRandomMutation(graph, localRng, gIdx, program.graphs)
             }
         }
 
@@ -224,7 +224,7 @@ class UirMutator(
         }
     }
 
-    private fun applyRandomMutation(graph: UirGraph, localRng: Random) {
+    private fun applyRandomMutation(graph: UirGraph, localRng: Random, graphIdx: Int = -1, allGraphs: List<UirGraph> = emptyList()) {
         if (graph.nodes.isEmpty()) return
         if (enabledMutationTypes.isEmpty()) return
 
@@ -233,9 +233,9 @@ class UirMutator(
         try {
             when (mutationType) {
                 MutationType.OP -> mutateOp(graph, localRng)
-                MutationType.INSERT -> mutateInsert(graph, localRng)
-                MutationType.DELETE -> mutateDelete(graph, localRng)
-                MutationType.ATTRIBUTE -> mutateAttribute(graph, localRng)
+                MutationType.INSERT -> mutateInsert(graph, localRng, graphIdx, allGraphs)
+                MutationType.DELETE -> mutateDelete(graph, localRng, graphIdx, allGraphs)
+                MutationType.ATTRIBUTE -> mutateAttribute(graph, localRng, graphIdx, allGraphs)
             }
         } catch (e: Exception) {
             // 变异失败（超界、空图等），静默跳过
@@ -263,7 +263,7 @@ class UirMutator(
     }
 
     // ---- INSERT: 在已有节点后插入新节点 ----
-    private fun mutateInsert(graph: UirGraph, localRng: Random) {
+    private fun mutateInsert(graph: UirGraph, localRng: Random, graphIdx: Int = -1, allGraphs: List<UirGraph> = emptyList()) {
         // 选一个有输出的节点
         val candidates = graph.nodes.filter { it.outputs.isNotEmpty() }
         if (candidates.size < 2) return
@@ -315,14 +315,15 @@ class UirMutator(
         val insertIdx = graph.nodes.indexOf(targetNode) + 1
         graph.nodes.add(insertIdx.coerceAtMost(graph.nodes.size), newNode)
 
-        // INSERT 插入的是形状不变的逐元素算子，不需要 fixGraphConsistency
+        // INSERT 可能插入形状变化的算子（REDUCE/ARGMAX/ARGMIN），需要修复形状一致性
+        fixGraphConsistency(graph, graphIdx, allGraphs)
         valueCounter++
         nodeCounter++
         log.trace { "变异 INSERT: 在 ${targetNode.name} 后插入 $newOp" }
     }
 
     // ---- DELETE: 删除一个节点，然后修复形状一致性 ----
-    private fun mutateDelete(graph: UirGraph, localRng: Random) {
+    private fun mutateDelete(graph: UirGraph, localRng: Random, graphIdx: Int = -1, allGraphs: List<UirGraph> = emptyList()) {
         if (graph.nodes.size < 3) return
 
         // 找一个不是 graph input/output 也不是常量的节点
@@ -356,11 +357,11 @@ class UirMutator(
         log.trace { "变异 DELETE: 删除 ${nodeToDelete.name}" }
 
         // DELETE 后修复形状一致性：消费者拿到的形状可能变了
-        fixGraphConsistency(graph)
+        fixGraphConsistency(graph, graphIdx, allGraphs)
     }
 
     // ---- ATTRIBUTE: 修改算子属性，然后修复形状一致性 ----
-    private fun mutateAttribute(graph: UirGraph, localRng: Random) {
+    private fun mutateAttribute(graph: UirGraph, localRng: Random, graphIdx: Int = -1, allGraphs: List<UirGraph> = emptyList()) {
         // 找有 axis 或 keepdims 属性的节点
         val candidates = graph.nodes.filter { node ->
             node.attributes.containsKey("axis") || node.attributes.containsKey("keepdims")
@@ -397,7 +398,7 @@ class UirMutator(
         }
 
         // ATTRIBUTE 变异后修复形状一致性：输出形状变了，下游需要适配
-        fixGraphConsistency(graph)
+        fixGraphConsistency(graph, graphIdx, allGraphs)
     }
 
     /**
@@ -408,9 +409,9 @@ class UirMutator(
      * 2. 如果不满足，调用 ShapeAdapter.adaptInputs() 插入 wrapper 节点修复
      * 3. 重新推导每个节点的输出形状，更新输出 ref 和 valueShapes
      *
-     * 这样保证了变异后的程序一定合法（形状一致）。
+     * 然后同步图间串联形状：将当前图输出形状更新到后续图的输入 ref。
      */
-    private fun fixGraphConsistency(graph: UirGraph) {
+    private fun fixGraphConsistency(graph: UirGraph, graphIdx: Int = -1, allGraphs: List<UirGraph> = emptyList()) {
         val valueShapes = mutableMapOf<String, UirShape>()
 
         // 1. 初始化：图输入的形状
@@ -527,6 +528,19 @@ class UirMutator(
         }
 
         log.trace { "修复形状一致性: 图 ${graph.name} 共 ${graph.nodes.size} 个节点" }
+
+        // 同步图间串联形状：将当前图输出形状更新到后续图的输入 ref
+        if (graphIdx >= 0 && allGraphs.isNotEmpty()) {
+            for (gIdx in graphIdx + 1 until allGraphs.size) {
+                val nextGraph = allGraphs[gIdx]
+                for (input in nextGraph.inputs) {
+                    val prevOutput = graph.outputs.find { it.valueId == input.valueId }
+                    if (prevOutput != null) {
+                        input.type.shape = prevOutput.type.shape
+                    }
+                }
+            }
+        }
     }
 
     private fun randomSuffix(localRng: Random): String {
