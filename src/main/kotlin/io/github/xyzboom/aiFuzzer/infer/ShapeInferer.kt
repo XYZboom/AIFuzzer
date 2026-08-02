@@ -722,12 +722,28 @@ object ShapeInferer {
         attributes: Map<String, Attribute>
     ): List<UirShape> {
         requireSingleInput(UirOpKind.RESHAPE, inputShapes)
-        
-        // 如果有 shape 属性，使用它
-        // 否则展平为 1-D
-        val targetShape = listOf(unknownDim())  // 默认 1-D
-        
-        return listOf(shapeFromDims(targetShape))
+
+        val inputShape = inputShapes[0]
+
+        // 检查是否有 shape 属性
+        val shapeAttr = attributes["shape"]
+        if (shapeAttr != null) {
+            // 如果有 shape 属性，使用它
+            // 注意：翻译器会把 unknown dim 转成 -1，让 TVM 自动推断
+            return listOf(shapeFromDims(listOf(unknownDim())))
+        }
+
+        // 没有 shape 属性：默认展平为 1-D
+        // 如果所有输入维度已知，计算总元素数
+        if (inputShape.dims.all { it.value != null }) {
+            val totalElements = inputShape.dims.fold(1L) { acc, dim -> acc * (dim.value ?: 1) }
+            return listOf(shapeFromDims(listOf(
+                constantDim(totalElements.coerceIn(1, Int.MAX_VALUE.toLong()).toInt())
+            )))
+        }
+
+        // 输入有未知维度，标记为未知
+        return listOf(shapeFromDims(listOf(unknownDim())))
     }
     
     /**
@@ -802,9 +818,13 @@ object ShapeInferer {
     
     /**
      * CONCAT 形状推导。
+     *
+     * 规则：沿 axis 拼接，其余维度必须相等。
+     * 输出形状：ndim 与输入相同，axis 维度为所有输入对应维度的和。
      * 
-     * 规则：沿 axis 拼接，其余维度必须相等
-     * 输出形状：与输入形状相同（axis 维度会增大，但我们用第一个输入的形状）
+     * 注意：不 padding 输入形状，而是对每个输入独立计算 axis 维度值。
+     * 因为 padding（在前面插入1）会导致 axis 偏移，使 axis 维度值取错。
+     * 非 axis 维度由 adaptConcatInputs 保证对齐。
      */
     private fun inferConcatShape(
         inputShapes: List<UirShape>,
@@ -813,22 +833,44 @@ object ShapeInferer {
         if (inputShapes.isEmpty()) {
             throw ShapeInferenceError("CONCAT requires at least 1 input")
         }
-        
-        // 放宽约束：所有输入至少 ndim 相同
-        // 如果不相同，扩展到相同维度
-        val maxNdim = inputShapes.maxOfOrNull { it.dims.size } ?: 1
-        val paddedShapes = inputShapes.map { shape ->
-            if (shape.dims.size < maxNdim) {
-                val missing = maxNdim - shape.dims.size
-                val extra = (1..missing).map { constantDim(1) }
-                shapeFromDims(extra + shape.dims)
+
+        // 读取 axis，使用第一个输入的 ndim 做规范化
+        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+        val firstNdim = inputShapes[0].dims.size
+        val normalizedAxis = if (axis < 0) axis + firstNdim else axis
+        val clampedAxis = normalizedAxis.coerceIn(0, firstNdim - 1)
+
+        // 对每个输入独立计算 axis 维度值（不 padding，因为 padding 会偏移 axis 位置）
+        val hasNullAxis = inputShapes.any { s ->
+            val ndim = s.dims.size
+            if (ndim == 0) return@any true
+            // 对 ndim 较小的输入，axis 可能超出范围，取最后一个维度
+            val perInputAxis = if (axis < 0) axis + ndim else axis
+            val clampedPerInput = perInputAxis.coerceIn(0, ndim - 1)
+            s.dims[clampedPerInput].value == null
+        }
+        val axisSum = inputShapes.sumOf { s ->
+            val ndim = s.dims.size
+            if (ndim == 0) return@sumOf 0L
+            val perInputAxis = if (axis < 0) axis + ndim else axis
+            val clampedPerInput = perInputAxis.coerceIn(0, ndim - 1)
+            s.dims[clampedPerInput].value?.toLong() ?: 0L
+        }
+
+        // 输出形状：axis 维度为所有输入对应维度的和，其余维度与第一个输入相同
+        val outputDims = inputShapes[0].dims.mapIndexed { i, dim ->
+            if (i == clampedAxis) {
+                if (hasNullAxis) {
+                    unknownDim()
+                } else {
+                    constantDim(axisSum.coerceIn(1, Int.MAX_VALUE.toLong()).toInt())
+                }
             } else {
-                shape
+                dim
             }
         }
-        
-        // 返回第一个输入的形状（axis 维度的实际大小未知，用 unknownDim）
-        return listOf(shapeFromDims(paddedShapes[0].dims))
+
+        return listOf(shapeFromDims(outputDims))
     }
     
     /**
@@ -842,14 +884,28 @@ object ShapeInferer {
         attributes: Map<String, Attribute>
     ): List<UirShape> {
         requireSingleInput(UirOpKind.SPLIT, inputShapes)
-        
+
         val inputShape = inputShapes[0]
-        
-        // 读取 axis
         val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-        
-        // 输出形状：与输入相同（axis 维度被分割，但这里简化处理）
-        // 返回 2 个相同形状的输出
+        val ndim = inputShape.dims.size
+        val normalizedAxis = if (axis < 0) axis + ndim else axis
+        val clampedAxis = normalizedAxis.coerceIn(0, ndim - 1)
+        val axisDim = inputShape.dims[clampedAxis].value
+
+        // 翻译器使用 dimSize / 2 作为分割点 (TvmRelaxTranslator:687-694)
+        // 如果 axis 维度已知，可以精确计算分割后的形状
+        if (axisDim != null && axisDim >= 2) {
+            val halfSize = axisDim / 2
+            val outDims1 = inputShape.dims.mapIndexed { i, dim ->
+                if (i == clampedAxis) constantDim(halfSize) else dim
+            }
+            val outDims2 = inputShape.dims.mapIndexed { i, dim ->
+                if (i == clampedAxis) constantDim(axisDim - halfSize) else dim
+            }
+            return listOf(shapeFromDims(outDims1), shapeFromDims(outDims2))
+        }
+
+        // axis 维度 < 2：无法分割，返回原始形状（TVM 会在运行时保持原样）
         return listOf(shapeFromDims(inputShape.dims), shapeFromDims(inputShape.dims))
     }
     
@@ -919,43 +975,69 @@ object ShapeInferer {
         attributes: Map<String, Attribute>
     ): List<UirShape> {
         requireSingleInput(UirOpKind.STRIDED_SLICE, inputShapes)
-        
+
         val inputShape = inputShapes[0]
         val ndim = inputShape.dims.size
-        
-        // 默认切片参数：axes=[0], begin=[0]
-        // 取前半部分：[:shape[0]//2]，与 PyTorch 翻译器对齐
-        val axes = listOf(0)  // 默认 axis=0
-        val begins = listOf(0)  // 默认 begin=0
-        
+
+        // 从 attributes 读取切片参数
+        // 格式：StringAttr，逗号分隔
+        // axes="0,1,2", begin="0,0,0", end="5,10,3"
+        val axes: List<Int> = (attributes["axes"] as? UirStringAttr)?.value
+            ?.split(",")
+            ?.mapNotNull { it.trim().toIntOrNull() }
+            ?: listOf(0)  // 默认 axis=0
+
+        val begins: List<Int> = (attributes["begin"] as? UirStringAttr)?.value
+            ?.split(",")
+            ?.mapNotNull { it.trim().toIntOrNull() }
+            ?: listOf(0)  // 默认 begin=0
+
+        val ends: List<Int> = (attributes["end"] as? UirStringAttr)?.value
+            ?.split(",")
+            ?.mapNotNull { it.trim().toIntOrNull() }
+            ?: emptyList()
+
         // 计算输出形状
         val outputDims = inputShape.dims.toMutableList()
-        
-        for ((axisIdx, axis) in axes.withIndex()) {
-            // 规范化 axis（处理负数）
+
+        if (ends.isEmpty()) {
+            // 无 end 属性：使用旧行为，取前半部分 [:shape[0]//2]
+            // 这是 STRIDED_SLICE 在生成器中的默认行为，与翻译器一致
+            val axis = if (axes.isNotEmpty()) axes[0] else 0
             val normalizedAxis = if (axis < 0) axis + ndim else axis
-            if (normalizedAxis < 0 || normalizedAxis >= ndim) continue
-            
-            val begin = begins.getOrElse(axisIdx) { 0 }
-            
-            val inputDim = inputShape.dims[normalizedAxis]
-            val inputDimValue: Int? = inputDim.value
-            
-            // 计算切片后的维度值
-            if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT) {
-                // 取前半部分：max(1, inputDimValue // 2)
-                val sliceLength = if (inputDimValue == 0) {
-                    0  // 空张量切片后仍为空张量
+            if (normalizedAxis >= 0 && normalizedAxis < ndim) {
+                val inputDim = inputShape.dims[normalizedAxis]
+                val inputDimValue: Int? = inputDim.value
+                if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT) {
+                    val sliceLength = if (inputDimValue == 0) 0 else maxOf(1, inputDimValue / 2)
+                    outputDims[normalizedAxis] = constantDim(sliceLength)
                 } else {
-                    maxOf(1, inputDimValue / 2)
+                    outputDims[normalizedAxis] = unknownDim()
                 }
-                outputDims[normalizedAxis] = constantDim(sliceLength)
-            } else {
-                // 输入维度未知，切片后也未知
-                outputDims[normalizedAxis] = unknownDim()
+            }
+        } else {
+            for ((axisIdx, axis) in axes.withIndex()) {
+                val normalizedAxis = if (axis < 0) axis + ndim else axis
+                if (normalizedAxis < 0 || normalizedAxis >= ndim) continue
+
+                val begin = begins.getOrElse(axisIdx) { 0 }
+                val end = ends.getOrElse(axisIdx) { -1 }
+
+                val inputDim = inputShape.dims[normalizedAxis]
+                val inputDimValue: Int? = inputDim.value
+
+                if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT && end >= 0) {
+                    val sliceLength = end - begin
+                    outputDims[normalizedAxis] = constantDim(sliceLength.coerceAtLeast(1))
+                } else if (inputDimValue != null && inputDim.dimKind == UirDimKind.CONSTANT && end < 0) {
+                    val sliceLength = if (inputDimValue == 0) 0 else maxOf(1, inputDimValue - 1)
+                    outputDims[normalizedAxis] = constantDim(sliceLength)
+                } else {
+                    outputDims[normalizedAxis] = unknownDim()
+                }
             }
         }
-        
+
         return listOf(shapeFromDims(outputDims))
     }
     
@@ -1015,9 +1097,19 @@ object ShapeInferer {
         attributes: Map<String, Attribute>
     ): List<UirShape> {
         requireSingleInput(UirOpKind.BROADCAST_TO, inputShapes)
-        
-        // 应从属性读取 target_shape，这里简化处理
-        return listOf(shapeFromDims(listOf(unknownDim())))
+
+        val inputShape = inputShapes[0]
+
+        // 从 attributes 读取 target shape 属性（如果能提供的话）
+        // 保底策略：返回输入形状（broadcast_to 到自身是合法操作）
+        // 这避免了翻译器生成 ndim 降低的 ShapeExpr 导致 TVM 运行时崩溃
+        val targetShape = inputShape.dims.map { dim ->
+            when (dim.dimKind) {
+                UirDimKind.CONSTANT -> dim
+                else -> unknownDim()
+            }
+        }
+        return listOf(shapeFromDims(targetShape))
     }
     
     /**

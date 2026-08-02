@@ -144,7 +144,6 @@ class UirMutator(
     private val binaryInputOps = listOf(
         UirOpKind.ADD, UirOpKind.SUBTRACT, UirOpKind.MULTIPLY, UirOpKind.DIVIDE,
         UirOpKind.MAXIMUM, UirOpKind.MINIMUM, UirOpKind.POWER,
-        UirOpKind.CONCAT,
         UirOpKind.MATMUL,
     )
 

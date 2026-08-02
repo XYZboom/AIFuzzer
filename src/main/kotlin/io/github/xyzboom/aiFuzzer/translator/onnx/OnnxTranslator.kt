@@ -270,12 +270,31 @@ class OnnxTranslator(
             if (node.op == UirOpKind.STRIDED_SLICE) {
                 val inputShape = node.inputs.firstOrNull()?.type?.shape
                 val ndim = inputShape?.dims?.size ?: 1
-                val endsArr = IntArray(ndim) { i ->
-                    maxOf(1, ((inputShape?.dims?.getOrNull(i)?.value ?: 1) + 1) / 2)
+                // 读取 attributes（多轴逗号分隔，如 axes="0,2", begin="0,0", end="5,3"）
+                val axesAttr = (node.attributes["axes"] as? UirStringAttr)?.value
+                val beginAttr = (node.attributes["begin"] as? UirStringAttr)?.value
+                val endAttr = (node.attributes["end"] as? UirStringAttr)?.value
+
+                val axesArr: List<Int>
+                val startsArr: List<Int>
+                val endsArr: List<Int>
+
+                if (endAttr != null && axesAttr != null) {
+                    // 新格式：从 attributes 读取
+                    axesArr = axesAttr.split(",").map { it.trim().toIntOrNull() ?: 0 }
+                    startsArr = beginAttr?.split(",")?.map { it.trim().toIntOrNull() ?: 0 }
+                        ?: axesArr.map { 0 }
+                    endsArr = endAttr.split(",").map { it.trim().toIntOrNull() ?: 1 }
+                } else {
+                    // 旧格式（无 attrs）：对所有维度取前半部分
+                    axesArr = (0 until ndim).toList()
+                    startsArr = List(ndim) { 0 }
+                    endsArr = List(ndim) { i ->
+                        maxOf(1, ((inputShape?.dims?.getOrNull(i)?.value ?: 1) + 1) / 2)
+                    }
                 }
-                val axesArr = (0 until ndim).toList()
-                val startsArr = IntArray(ndim) { 0 }
-                val stepsArr = IntArray(ndim) { 1 }
+
+                val stepsArr = List(axesArr.size) { 1 }
 
                 val sId = "c${outputId}_st"
                 val eId = "c${outputId}_en"

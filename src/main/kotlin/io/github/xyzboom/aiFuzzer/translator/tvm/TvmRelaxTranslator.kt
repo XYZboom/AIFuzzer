@@ -702,11 +702,19 @@ class TvmRelaxTranslator(
             }
 
             UirOpKind.STRIDED_SLICE -> {
-                // 与 ShapeInferer 一致：只对 axis=0 做切片，[:shape[0]//2]
-                val inputShape = inputShapes[0]
-                val dim0Val = inputShape.dims.getOrNull(0)?.value ?: 1
-                val end = maxOf(1, dim0Val / 2)
-                "relax.op.strided_slice(${inputVars[0]}, axes=[0], begin=[0], end=[$end])"
+                // 从 attributes 读取切片参数
+                val axesAttr = (attributes["axes"] as? UirStringAttr)?.value ?: "0"
+                val beginAttr = (attributes["begin"] as? UirStringAttr)?.value ?: "0"
+                val endAttr = (attributes["end"] as? UirStringAttr)?.value
+                if (endAttr != null) {
+                    "relax.op.strided_slice(${inputVars[0]}, axes=[$axesAttr], begin=[$beginAttr], end=[$endAttr])"
+                } else {
+                    // 默认：取前半部分
+                    val inputShape = inputShapes[0]
+                    val dim0Val = inputShape.dims.getOrNull(0)?.value ?: 1
+                    val end = maxOf(1, dim0Val / 2)
+                    "relax.op.strided_slice(${inputVars[0]}, axes=[0], begin=[0], end=[$end])"
+                }
             }
 
             // ===== 三角矩阵 =====

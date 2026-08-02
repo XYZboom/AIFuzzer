@@ -13,6 +13,7 @@ import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDataType
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDim
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildIntAttr
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildShape
+import io.github.xyzboom.aiFuzzer.ir.types.builder.buildStringAttr
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildTensorType
 
 /**
@@ -68,37 +69,35 @@ object ShapeAdapter {
         if (inputValueRefs.isEmpty()) {
             return AdaptResult(emptyList(), emptyList(), emptyList())
         }
-        
+
         val constraint = ShapeConstraints.getConstraint(op)
         val inputShapes = inputValueRefs.map { ref -> valueShapes[ref.valueId]!! }
-        
-        // 检查是否已经满足约束
-        if (ShapeConstraints.isApplicable(op, inputShapes)) {
-            return AdaptResult(inputValueRefs, emptyList(), inputShapes)
-        }
-        
+
+        // 特殊处理必须优先于 isApplicable 早返回检查，因为有些算子（如 CONCAT）
+        // 的 isApplicable 只检查 ndim 对齐，但非 axis 维度的值可能不一致需要裁剪。
+
         // 特殊处理：需要精确 4D 的算子（conv2d, pool2d）必须优先于 binaryInputOps
         // 这些算子必须 4D (NCHW)，多于4D需要squeeze，少于4D需要expand
         if (op in setOf(UirOpKind.CONV2D, UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D)) {
             return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
         }
-        
+
         // 特殊处理：INTERPOLATE 需要 3D-5D 输入 (PyTorch) 或 4D 输入 (TVM resize2d)
         // 为同时兼容两个后端，强制 4D 输入
         if (op == UirOpKind.INTERPOLATE) {
             return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
         }
-        
+
         // 特殊处理：RESIZE2D 需要 4D 输入 (NCHW)
         if (op == UirOpKind.RESIZE2D) {
             return adaptNchwConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter, op)
         }
-        
+
         // 特殊处理：BATCH_NORM 需要 3D-4D 输入
         if (op == UirOpKind.BATCH_NORM) {
             return adaptBatchNormConstraint(inputValueRefs, inputShapes, valueShapes, valueCounter, nodeCounter)
         }
-        
+
         // 特殊处理：MATMUL (must be before binaryInputOps check since MATMUL ∈ binaryInputOps)
         if (op == UirOpKind.MATMUL && inputShapes.size == 2) {
             return adaptMatmulInputs(
@@ -106,18 +105,22 @@ object ShapeAdapter {
                 valueCounter, nodeCounter
             )
         }
-        
-        // 特殊处理：CONCAT (must be before binaryInputOps check since CONCAT ∈ binaryInputOps)
+
+        // 特殊处理：CONCAT (多输入算子，需独立适配 ndim 对齐 + 裁剪到最小形状)
+        // 注意：这个检查必须在 isApplicable 早返回之前，因为 isApplicable 只检查 ndim 对齐，
+        // 但 CONCAT 的非 axis 维度值可能不一致，需要裁剪。
         if (op == UirOpKind.CONCAT && inputShapes.size >= 2) {
             return adaptConcatInputs(
                 inputValueRefs, inputShapes, valueShapes,
                 valueCounter, nodeCounter
             )
         }
-        
-        // 特殊处理：CONV2D (must be before binaryInputOps check since CONV2D ∈ binaryInputOps)
-        // Already handled above by NCHW constraint check
-        
+
+        // 检查是否已经满足约束（在其他特殊处理之后）
+        if (ShapeConstraints.isApplicable(op, inputShapes)) {
+            return AdaptResult(inputValueRefs, emptyList(), inputShapes)
+        }
+
         // 特殊处理：二元运算需要推导公共目标形状
         if (op in UirOpKind.binaryInputOps && inputShapes.size == 2) {
             return adaptBinaryInputs(
@@ -398,6 +401,13 @@ object ShapeAdapter {
     
     /**
      * 适配 CONCAT 的输入形状。
+     *
+     * CONCAT 要求所有输入维度数相同，且所有非 axis 维度的值必须一致。
+     * 修复策略（裁剪到最小形状）：
+     * 1. 对齐维度数（ndim 小的在前面插入 size=1 的维度）
+     * 2. 对所有非 axis 维度，取所有输入的最小值作为目标形状
+     * 3. 对每个输入中超过最小值的非 axis 维度，插入 STRIDED_SLICE 裁剪
+     * 4. axis 维度保持不变（CONCAT 会拼接该维度）
      */
     private fun adaptConcatInputs(
         inputValueRefs: List<UirValueRef>,
@@ -406,19 +416,23 @@ object ShapeAdapter {
         valueCounter: Int,
         nodeCounter: Int
     ): AdaptResult {
-        // CONCAT 要求所有输入维度数相同
+        // CONCAT 的默认 axis 为 0（与 generateAttributes 和 selectInputValues 保持一致）
+        val axis = 0
+
+        // 1. 对齐维度数
         val maxNdim = inputShapes.maxOfOrNull { it.dims.size } ?: 1
-        
+        val normalizedAxis = axis.coerceIn(0, maxNdim - 1)
+
         val wrapperNodes = mutableListOf<UirNode>()
         val adaptedRefs = mutableListOf<UirValueRef>()
         val adaptedShapes = mutableListOf<UirShape>()
-        
+
         var localValueCounter = valueCounter
         var localNodeCounter = nodeCounter
-        
+
+        // 第一遍：对齐维度数
         for ((ref, shape) in inputValueRefs.zip(inputShapes)) {
             if (shape.dims.size < maxNdim) {
-                // 扩展维度
                 val (newRef, newNodes) = generateWrapperSequence(
                     ref, shape, expandToMinNdim(shape, maxNdim),
                     valueShapes, localValueCounter, localNodeCounter
@@ -433,8 +447,129 @@ object ShapeAdapter {
                 adaptedShapes.add(shape)
             }
         }
-        
+
+        // 2. 计算最小形状：非 axis 维度取所有输入的最小值，axis 维度取第一个输入的值
+        val minDims = mutableListOf<UirDim>()
+        for (d in 0 until maxNdim) {
+            if (d == normalizedAxis) {
+                // axis 维度：不裁剪，取第一个输入的值
+                minDims.add(adaptedShapes[0].dims[d])
+            } else {
+                // 非 axis 维度：取所有输入的最小值
+                val values = adaptedShapes.mapNotNull { s -> s.dims[d].valueOrNull() }
+                if (values.isNotEmpty()) {
+                    val minVal = values.min()
+                    minDims.add(buildDim {
+                        dimKind = UirDimKind.CONSTANT
+                        value = minVal
+                    })
+                } else {
+                    // 有未知维度，fallback 到第一个输入
+                    minDims.add(adaptedShapes[0].dims[d])
+                }
+            }
+        }
+        val minShape = buildShape { minDims.forEach { dims.add(it) } }
+
+        // 3. 对每个输入裁剪到最小形状
+        for (i in adaptedShapes.indices) {
+            val currentShape = adaptedShapes[i]
+            if (shapesEqual(currentShape, minShape)) continue
+
+            // 检查是否需要裁剪：找出所有非 axis 维度中超过最小值的
+            val needsClipping = (0 until maxNdim).any { d ->
+                d != normalizedAxis &&
+                    (currentShape.dims[d].valueOrNull() ?: 0) > (minShape.dims[d].valueOrNull() ?: Int.MAX_VALUE)
+            }
+
+            if (needsClipping) {
+                // 使用 STRIDED_SLICE 裁剪：对每个需要裁剪的维度，取 [0, min_val)
+                val (newRef, newNodes) = insertStridedSliceForConcat(
+                    adaptedRefs[i], currentShape, minShape, normalizedAxis,
+                    valueShapes, localValueCounter, localNodeCounter
+                )
+                wrapperNodes.addAll(newNodes)
+                adaptedRefs[i] = newRef
+                adaptedShapes[i] = valueShapes[newRef.valueId]!!
+                localValueCounter += newNodes.size
+                localNodeCounter += newNodes.size
+            }
+        }
+
         return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
+    }
+
+    /**
+     * 插入一个 STRIDED_SLICE 节点，一次性将所有超出的非 axis 维度裁剪到目标形状。
+     *
+     * 属性格式（逗号分隔，一个 STRIDED_SLICE 处理多轴）：
+     * - "axes":   "0,2,3"  — 需要裁剪的轴列表
+     * - "begin":  "0,0,0"  — 每个轴对应的起始索引（始终为 0）
+     * - "end":    "5,10,3" — 每个轴对应的终止索引（即目标尺寸）
+     */
+    private fun insertStridedSliceForConcat(
+        inputRef: UirValueRef,
+        inputShape: UirShape,
+        targetShape: UirShape,
+        axis: Int,
+        valueShapes: MutableMap<String, UirShape>,
+        valueIdCounter: Int,
+        nodeIdCounter: Int
+    ): Pair<UirValueRef, List<UirNode>> {
+        val ndim = inputShape.dims.size
+        val axesToClip = mutableListOf<Int>()
+        val ends = mutableListOf<Int>()
+
+        // 收集所有需要裁剪的非 axis 维度
+        for (d in 0 until ndim) {
+            if (d == axis) continue
+            val curVal = inputShape.dims[d].valueOrNull()
+            val tgtVal = targetShape.dims[d].valueOrNull()
+            if (curVal != null && tgtVal != null && curVal > tgtVal) {
+                axesToClip.add(d)
+                ends.add(tgtVal)
+            }
+        }
+
+        if (axesToClip.isEmpty()) {
+            return Pair(inputRef, emptyList())
+        }
+
+        // 构建输出形状：所有裁剪维度换成目标值
+        val outputDims = inputShape.dims.toMutableList()
+        for (i in axesToClip.indices) {
+            val d = axesToClip[i]
+            outputDims[d] = buildDim {
+                dimKind = UirDimKind.CONSTANT
+                value = ends[i]
+            }
+        }
+        val outputShape = buildShape { outputDims.forEach { dims.add(it) } }
+
+        val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
+        valueShapes[outputValueId] = outputShape
+
+        val outputRef = buildValueRef {
+            valueId = outputValueId
+            type = buildTensorType {
+                typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
+                shape = outputShape
+                dtype = inputRef.type.dtype
+            }
+        }
+
+        val begins = axesToClip.map { "0" }
+        val node = buildNode {
+            name = "strided_slice_${nodeIdCounter}_${randomIdSuffix()}"
+            op = UirOpKind.STRIDED_SLICE
+            inputs.add(inputRef)
+            outputs.add(outputRef)
+            attributes["axes"] = buildStringAttr { value = axesToClip.joinToString(",") }
+            attributes["begin"] = buildStringAttr { value = begins.joinToString(",") }
+            attributes["end"] = buildStringAttr { value = ends.joinToString(",") }
+        }
+
+        return Pair(outputRef, listOf(node))
     }
     
     /**

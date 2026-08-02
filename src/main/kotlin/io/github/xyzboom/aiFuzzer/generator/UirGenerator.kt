@@ -72,6 +72,10 @@ data class GeneratorConfig(
      * 默认开启，排除 CEIL, FLOOR, ROUND, ARGMAX, ARGMIN。
      */
     val avoidExtremeOps: Boolean = true,
+    /** CONCAT 最小输入数量（随机选择输入个数的下限） */
+    val concatMinInputs: Int = 2,
+    /** CONCAT 最大输入数量（随机选择输入个数的上限） */
+    val concatMaxInputs: Int = 5,
     /** 去重配置：在生成阶段规避已知 bug pattern */
     val dedup: DedupConfig = DedupConfig(),
     /** 变异配置 */
@@ -413,6 +417,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             val numInputs = when (candidate) {
                 in UirOpKind.constantOps -> 0
                 in UirOpKind.singleInputOps -> 1
+                in UirOpKind.multiInputOps -> minOf(2, availableValues.size)
                 in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)
                 else -> 1
             }
@@ -468,6 +473,10 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         val numInputs = when (op) {
             in UirOpKind.constantOps -> 0
             in UirOpKind.singleInputOps -> 1
+            in UirOpKind.multiInputOps -> {
+                if (availableValues.size < 2) 1
+                else rand.nextInt(config.concatMinInputs, minOf(config.concatMaxInputs, availableValues.size) + 1)
+            }
             in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)
             else -> 1
         }
@@ -553,6 +562,24 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         val tipValue = liveTips[currentBranch]
         log.trace { "选择输入: op=$op, numInputs=$numInputs, tip=$tipValue, 可用=${availableValues.take(5)}${if (availableValues.size > 5) "..." else ""}" }
         
+        // 特殊处理：多输入运算（CONCAT）—— 随机选择输入，ShapeAdapter 会裁剪到最小形状
+        if (op in UirOpKind.multiInputOps && numInputs >= 2 && availableValues.size >= 2) {
+            val actualNumInputs = minOf(numInputs, availableValues.size)
+            val selectedIds = availableValues.shuffled(rand).take(actualNumInputs)
+            log.trace { "多输入运算: 随机选中 ${selectedIds.size} 个输入" }
+
+            return selectedIds.map { valueId ->
+                buildValueRef {
+                    this.valueId = valueId
+                    this.type = buildTensorType {
+                        this.typeKind = UirTypeKind.TENSOR
+                        this.shape = valueShapes[valueId] ?: buildShape { }
+                        this.dtype = mkDataType()
+                    }
+                }
+            }
+        }
+
         // 特殊处理：二元运算
         if (op in UirOpKind.binaryInputOps && numInputs == 2 && availableValues.size >= 2) {
             // 选择第一个输入

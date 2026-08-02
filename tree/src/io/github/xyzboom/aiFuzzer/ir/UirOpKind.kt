@@ -130,9 +130,13 @@ enum class UirOpKind {
         val binaryInputOps = setOf(
             ADD, SUBTRACT, MULTIPLY, DIVIDE,
             MAXIMUM, MINIMUM, POWER,
-            CONCAT,
             MATMUL,
             CONV2D,
+        )
+
+        /** 多输入算子（≥2 个输入，数量可变） */
+        val multiInputOps = setOf(
+            CONCAT,
         )
 
         /** 常数生成算子（无输入，支持显式 dtype） */

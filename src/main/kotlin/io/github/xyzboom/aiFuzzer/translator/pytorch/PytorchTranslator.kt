@@ -679,9 +679,33 @@ class PytorchTranslator(
                 "torch.select($inputVar, $axis, 0)"
             }
             UirOpKind.STRIDED_SLICE -> {
-                // 简化实现：取前半部分，至少保留1个元素
+                // 从 attributes 读取切片参数（多轴逗号分隔）
+                val axesAttr = (node.attributes["axes"] as? UirStringAttr)?.value
+                val beginAttr = (node.attributes["begin"] as? UirStringAttr)?.value
+                val endAttr = (node.attributes["end"] as? UirStringAttr)?.value
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                "$inputVar[:max(1, ${inputVar}.shape[0]//2)]"
+                if (endAttr != null && axesAttr != null) {
+                    // 生成 strided_slice 的 Python 切片表达式
+                    // axes="0,2", begin="0,0", end="5,3" → inputVar[:, :5, :, :3]
+                    // 解析多轴切片
+                    val axes = axesAttr.split(",").map { it.trim().toIntOrNull() ?: 0 }
+                    val ends = endAttr.split(",").map { it.trim().toIntOrNull() ?: 1 }
+                    val ndim = node.inputs[0].type.shape.dims.size
+                    val sliceParts = mutableListOf<String>()
+                    for (d in 0 until ndim) {
+                        val axisIdx = axes.indexOf(d)
+                        if (axisIdx >= 0) {
+                            val end = ends[axisIdx]
+                            sliceParts.add(":$end")
+                        } else {
+                            sliceParts.add(":")
+                        }
+                    }
+                    "$inputVar[${sliceParts.joinToString(", ")}]"
+                } else {
+                    // 简化实现：取前半部分，至少保留1个元素
+                    "$inputVar[:max(1, ${inputVar}.shape[0]//2)]"
+                }
             }
 
             // ===== 广播/填充 =====
