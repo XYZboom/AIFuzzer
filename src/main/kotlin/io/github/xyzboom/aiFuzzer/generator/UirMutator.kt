@@ -2,6 +2,7 @@ package io.github.xyzboom.aiFuzzer.generator
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.xyzboom.aiFuzzer.config.MutationConfig as ConfigMutationConfig
+import io.github.xyzboom.aiFuzzer.infer.ShapeInferer
 import io.github.xyzboom.aiFuzzer.ir.*
 import io.github.xyzboom.aiFuzzer.ir.builder.*
 import io.github.xyzboom.aiFuzzer.ir.types.*
@@ -15,7 +16,7 @@ private val log = KotlinLogging.logger {}
  * UIR 程序变异器。
  *
  * 对已有的 UirProgram 应用随机变异，然后用 ShapeAdapter 修复形状不匹配。
- * 变异后的程序可能不合法（形状不匹配），但 ShapeAdapter 会插入适配算子修复。
+ * 变异后的程序保证合法（形状适配会在 DELETE 和 ATTRIBUTE 变异后自动修复）。
  */
 class UirMutator(
     private val config: ConfigMutationConfig = ConfigMutationConfig(),
@@ -23,6 +24,10 @@ class UirMutator(
     /** 去重匹配器：变异后检查是否触发了已知 bug pattern */
     private val patternMatcher: io.github.xyzboom.aiFuzzer.pattern.PatternMatcher? = null,
 ) {
+    /** 计数器，用于生成唯一 ID（起始值设大避免与生成器计数器冲突） */
+    private var valueCounter = 10000
+    private var nodeCounter = 10000
+
     /** 种子池：从原始程序序列化/反序列化实现深拷贝 */
     private val seedPool = mutableListOf<String>()
 
@@ -77,6 +82,9 @@ class UirMutator(
             return null
         }
 
+        // 重置计数器（基于当前程序中的最大 ID）
+        resetCounters(program)
+
         // 对每个图应用随机变异
         for (graph in program.graphs) {
             if (graph.nodes.isEmpty()) continue
@@ -94,6 +102,38 @@ class UirMutator(
         }
 
         return program
+    }
+
+    /**
+     * 重置计数器，基于程序中的最大节点/值 ID。
+     */
+    private fun resetCounters(program: UirProgram) {
+        var maxValueNum = 0
+        var maxNodeNum = 0
+        for (graph in program.graphs) {
+            for (node in graph.nodes) {
+                // 从节点名中提取数字（如 "relu_0_abcdefgh" → 0）
+                val nodeMatch = Regex("""(\d+)""").find(node.name)
+                if (nodeMatch != null) {
+                    maxNodeNum = maxOf(maxNodeNum, nodeMatch.value.toInt())
+                }
+                // 从值 ID 中提取数字（如 "v_0_abcdefgh" → 0）
+                for (ref in node.inputs + node.outputs) {
+                    val valMatch = Regex("""(\d+)""").find(ref.valueId)
+                    if (valMatch != null) {
+                        maxValueNum = maxOf(maxValueNum, valMatch.value.toInt())
+                    }
+                }
+            }
+            for (ref in graph.inputs + graph.outputs) {
+                val valMatch = Regex("""(\d+)""").find(ref.valueId)
+                if (valMatch != null) {
+                    maxValueNum = maxOf(maxValueNum, valMatch.value.toInt())
+                }
+            }
+        }
+        valueCounter = maxValueNum + 1
+        nodeCounter = maxNodeNum + 1
     }
 
     /**
@@ -176,7 +216,6 @@ class UirMutator(
     private val enabledMutationTypes: List<MutationType> by lazy {
         MutationType.entries.filter { type ->
             when (type) {
-                MutationType.SHAPE -> config.shapeMutation
                 MutationType.OP -> config.opMutation
                 MutationType.INSERT -> config.insertMutation
                 MutationType.DELETE -> config.deleteMutation
@@ -193,7 +232,6 @@ class UirMutator(
 
         try {
             when (mutationType) {
-                MutationType.SHAPE -> mutateShape(graph, localRng)
                 MutationType.OP -> mutateOp(graph, localRng)
                 MutationType.INSERT -> mutateInsert(graph, localRng)
                 MutationType.DELETE -> mutateDelete(graph, localRng)
@@ -203,56 +241,6 @@ class UirMutator(
             // 变异失败（超界、空图等），静默跳过
             log.trace { "变异跳过: ${e.message}" }
         }
-    }
-
-    // ---- SHAPE: 修改维度值 ----
-    private fun mutateShape(graph: UirGraph, localRng: Random) {
-        // 找一个有常量维度的节点
-        val candidates = graph.nodes.filter { node ->
-            node.outputs.any { ref ->
-                val shape = ref.type.shape
-                shape.dims.any { it.valueOrNull() != null && it.valueOrNull()!! > 1 }
-            }
-        }
-        if (candidates.isEmpty()) return
-
-        val node = candidates[localRng.nextInt(candidates.size)]
-        val outputRef = node.outputs[localRng.nextInt(node.outputs.size)]
-        val shape = outputRef.type.shape
-        val dimIndex = shape.dims.indices.filter {
-            val v = shape.dims[it].valueOrNull()
-            v != null && v > 1
-        }
-        if (dimIndex.isEmpty()) return
-
-        val idx = dimIndex[localRng.nextInt(dimIndex.size)]
-        val oldVal = shape.dims[idx].valueOrNull()!!
-
-        // 变异策略：增大、减小、设奇数、设偶数
-        val newVal = when (localRng.nextInt(4)) {
-            0 -> oldVal * 2       // 翻倍
-            1 -> (oldVal / 2).coerceAtLeast(1) // 减半
-            2 -> oldVal + localRng.nextInt(1, 5)   // 加小值
-            3 -> (oldVal - localRng.nextInt(1, 3)).coerceAtLeast(1) // 减小值
-            else -> oldVal
-        }
-
-        if (newVal == oldVal) return
-
-        // 修改维度值
-        val oldShape = shape
-        val newDims = oldShape.dims.mapIndexed { i, dim ->
-            if (i == idx) buildDim {
-                dimKind = UirDimKind.CONSTANT
-                value = newVal
-            } else dim
-        }
-        val newShape = buildShape { newDims.forEach { dims.add(it) } }
-
-        // 更新 outputRef 的 shape
-        outputRef.type.shape = newShape
-
-        log.trace { "变异 SHAPE: ${node.name}[$idx]: $oldVal → $newVal" }
     }
 
     // ---- OP: 同族算子替换 ----
@@ -270,6 +258,8 @@ class UirMutator(
 
         node.op = newOp
         log.trace { "变异 OP: ${node.name}: ${node.op} → $newOp" }
+
+        // OP 变异后形状不变（同族算子），不需要 fixGraphConsistency
     }
 
     // ---- INSERT: 在已有节点后插入新节点 ----
@@ -291,10 +281,10 @@ class UirMutator(
 
         // 选一个单输入算子插入
         val newOp = singleInputOps[localRng.nextInt(singleInputOps.size)]
-        val newNodeName = "mut_${localRng.nextInt(10000)}_${randomSuffix(localRng)}"
+        val newNodeName = "mut_${nodeCounter}_${randomSuffix(localRng)}"
 
         // 创建新节点的输出
-        val newOutputId = "v_mut_${localRng.nextInt(10000)}_${randomSuffix(localRng)}"
+        val newOutputId = "v_mut_${valueCounter}_${randomSuffix(localRng)}"
         val newOutputRef = buildValueRef {
             valueId = newOutputId
             type = buildTensorType {
@@ -325,10 +315,13 @@ class UirMutator(
         val insertIdx = graph.nodes.indexOf(targetNode) + 1
         graph.nodes.add(insertIdx.coerceAtMost(graph.nodes.size), newNode)
 
+        // INSERT 插入的是形状不变的逐元素算子，不需要 fixGraphConsistency
+        valueCounter++
+        nodeCounter++
         log.trace { "变异 INSERT: 在 ${targetNode.name} 后插入 $newOp" }
     }
 
-    // ---- DELETE: 删除一个节点 ----
+    // ---- DELETE: 删除一个节点，然后修复形状一致性 ----
     private fun mutateDelete(graph: UirGraph, localRng: Random) {
         if (graph.nodes.size < 3) return
 
@@ -361,9 +354,12 @@ class UirMutator(
 
         graph.nodes.remove(nodeToDelete)
         log.trace { "变异 DELETE: 删除 ${nodeToDelete.name}" }
+
+        // DELETE 后修复形状一致性：消费者拿到的形状可能变了
+        fixGraphConsistency(graph)
     }
 
-    // ---- ATTRIBUTE: 修改算子属性 ----
+    // ---- ATTRIBUTE: 修改算子属性，然后修复形状一致性 ----
     private fun mutateAttribute(graph: UirGraph, localRng: Random) {
         // 找有 axis 或 keepdims 属性的节点
         val candidates = graph.nodes.filter { node ->
@@ -383,6 +379,8 @@ class UirMutator(
                 if (newAxis != oldAxis) {
                     node.attributes["axis"] = buildIntAttr { value = newAxis }
                     log.trace { "变异 ATTRIBUTE: ${node.name}.axis: $oldAxis → $newAxis" }
+                } else {
+                    return  // 没有实际变化，不需要修复
                 }
             }
         } else if (node.attributes.containsKey("keepdims")) {
@@ -394,7 +392,141 @@ class UirMutator(
                 node.attributes["keepdims"] = buildIntAttr { value = newVal }
                 log.trace { "变异 ATTRIBUTE: ${node.name}.keepdims: $oldVal → $newVal" }
             }
+        } else {
+            return  // 没有实际变化
         }
+
+        // ATTRIBUTE 变异后修复形状一致性：输出形状变了，下游需要适配
+        fixGraphConsistency(graph)
+    }
+
+    /**
+     * 修复整个图的形状一致性。
+     *
+     * 拓扑序遍历所有节点：
+     * 1. 检查每个节点的输入形状是否满足算子约束
+     * 2. 如果不满足，调用 ShapeAdapter.adaptInputs() 插入 wrapper 节点修复
+     * 3. 重新推导每个节点的输出形状，更新输出 ref 和 valueShapes
+     *
+     * 这样保证了变异后的程序一定合法（形状一致）。
+     */
+    private fun fixGraphConsistency(graph: UirGraph) {
+        val valueShapes = mutableMapOf<String, UirShape>()
+
+        // 1. 初始化：图输入的形状
+        for (input in graph.inputs) {
+            valueShapes[input.valueId] = input.type.shape
+        }
+
+        // 2. 拓扑序遍历节点（nodes 列表保持拓扑序）
+        var i = 0
+        while (i < graph.nodes.size) {
+            val node = graph.nodes[i]
+
+            // 单输入算子（常数生成算子无输入，跳过）
+            if (node.inputs.isEmpty()) {
+                // 常数生成算子：输出形状已经在 ref 中，直接注册
+                for (output in node.outputs) {
+                    valueShapes[output.valueId] = output.type.shape
+                }
+                i++
+                continue
+            }
+
+            // 收集输入形状
+            val inputShapes = node.inputs.map { ref ->
+                valueShapes[ref.valueId] ?: run {
+                    log.warn { "修复形状: 输入 ${ref.valueId} 的形状不存在，使用 ref 中的形状" }
+                    ref.type.shape
+                }
+            }
+
+            // 检查是否满足约束
+            if (!ShapeConstraints.isApplicable(node.op, inputShapes)) {
+                // 不满足：调用 ShapeAdapter 修复
+                val result = ShapeAdapter.adaptInputs(
+                    node.op, node.inputs, valueShapes,
+                    valueCounter, nodeCounter
+                )
+
+                // 更新节点输入
+                node.inputs.clear()
+                node.inputs.addAll(result.adaptedRefs)
+
+                // 插入 wrapper 节点（在当前节点之前）
+                if (result.wrapperNodes.isNotEmpty()) {
+                    graph.nodes.addAll(i, result.wrapperNodes)
+
+                    // 手动处理每个 wrapper 节点的形状推导：
+                    // 1. wrapper 节点的输出 ref shape 由 ShapeAdapter 设置为目标形状，
+                    //    但必须用 ShapeInferer 重新推导，确保与实际语义一致
+                    // 2. 更新 valueShapes 供后续节点使用
+                    // 3. 不要走主循环（避免再次触发 adaptInputs）
+                    for (wrapperNode in result.wrapperNodes) {
+                        val wrapperInputShapes = wrapperNode.inputs.map {
+                            valueShapes[it.valueId] ?: it.type.shape
+                        }
+                        val wrapperOutputShapes = try {
+                            ShapeInferer.inferShape(
+                                wrapperNode.op, wrapperInputShapes, wrapperNode.attributes
+                            )
+                        } catch (e: Exception) {
+                            log.warn { "wrapper 形状推导失败: ${wrapperNode.name}: ${e.message}，使用原有形状" }
+                            wrapperNode.outputs.map { it.type.shape }
+                        }
+                        if (wrapperOutputShapes.size == wrapperNode.outputs.size) {
+                            for ((output, shape) in wrapperNode.outputs.zip(wrapperOutputShapes)) {
+                                output.type.shape = shape
+                                valueShapes[output.valueId] = shape
+                            }
+                        } else {
+                            for (output in wrapperNode.outputs) {
+                                valueShapes[output.valueId] = output.type.shape
+                            }
+                        }
+                    }
+
+                    valueCounter += result.wrapperNodes.size
+                    nodeCounter += result.wrapperNodes.size
+                    // 跳过已处理的 wrapper 节点
+                    i += result.wrapperNodes.size
+                }
+            }
+
+            // 重新推导输出形状（使用适配后的输入形状）
+            val adaptedInputShapes = node.inputs.map { valueShapes[it.valueId]!! }
+            val outputShapes = try {
+                ShapeInferer.inferShape(node.op, adaptedInputShapes, node.attributes)
+            } catch (e: Exception) {
+                log.warn { "形状推导失败: ${node.name}(${node.op}): ${e.message}，使用原有形状" }
+                node.outputs.map { it.type.shape }
+            }
+
+            // 更新输出 ref 和 valueShapes
+            if (outputShapes.size == node.outputs.size) {
+                for ((output, shape) in node.outputs.zip(outputShapes)) {
+                    output.type.shape = shape
+                    valueShapes[output.valueId] = shape
+                }
+            } else {
+                // 输出数量不匹配，保持原有形状
+                for (output in node.outputs) {
+                    valueShapes[output.valueId] = output.type.shape
+                }
+            }
+
+            i++
+        }
+
+        // 3. 更新图输出的形状（确保图输出 ref 的形状与 valueShapes 一致）
+        for (output in graph.outputs) {
+            val shape = valueShapes[output.valueId]
+            if (shape != null) {
+                output.type.shape = shape
+            }
+        }
+
+        log.trace { "修复形状一致性: 图 ${graph.name} 共 ${graph.nodes.size} 个节点" }
     }
 
     private fun randomSuffix(localRng: Random): String {
@@ -405,7 +537,6 @@ class UirMutator(
 
 /** 变异操作类型 */
 enum class MutationType {
-    SHAPE,      // 修改维度值
     OP,         // 同族算子替换
     INSERT,     // 插入新节点
     DELETE,     // 删除节点

@@ -702,8 +702,11 @@ object ShapeInferer {
                 if (i in normalizedAxes) constantDim(1) else dim
             }
         } else {
-            // 移除归约维度，可能产生 0-D tensor（标量）
-            inputShape.dims.filterIndexed { i, _ -> i !in normalizedAxes }
+            // 移除归约维度
+            val filtered = inputShape.dims.filterIndexed { i, _ -> i !in normalizedAxes }
+            // 如果所有维度都被归约了，保持至少 1 维，避免 0-D 张量
+            // TVM 不支持 0-D 张量作为函数参数（会导致 ndim 不匹配崩溃）
+            if (filtered.isEmpty()) listOf(constantDim(1)) else filtered
         }
         
         return listOf(shapeFromDims(outputDims))
@@ -786,15 +789,17 @@ object ShapeInferer {
         requireSingleInput(UirOpKind.SQUEEZE, inputShapes)
         
         val inputShape = inputShapes[0]
-        
+
         // 简化处理：去掉所有 size=1 的常数维度
-        val outputDims = inputShape.dims.filter { dim ->
+        val filtered = inputShape.dims.filter { dim ->
             !(dim.dimKind == UirDimKind.CONSTANT && dim.value == 1)
         }
-        
+        // 如果所有维度都被去掉了，保持至少 1 维，避免 0-D 张量
+        val outputDims = if (filtered.isEmpty()) listOf(constantDim(1)) else filtered
+
         return listOf(shapeFromDims(outputDims))
     }
-    
+
     /**
      * UNSQUEEZE 形状推导。
      * 
@@ -931,7 +936,9 @@ object ShapeInferer {
             if (normalizedAxis in outputDims.indices) {
                 outputDims.removeAt(normalizedAxis)
             }
-            return listOf(shapeFromDims(outputDims))
+            // 如果移除后变成 0-D，保持至少 1 维，避免 0-D 张量
+            val safeDims = if (outputDims.isEmpty()) listOf(constantDim(1)) else outputDims
+            return listOf(shapeFromDims(safeDims))
         }
         
         requireBinaryInput(UirOpKind.GATHER, inputShapes)
@@ -1174,7 +1181,9 @@ object ShapeInferer {
         } else {
             // keepdims=false: 移除 axis 维度
             val actualAxis = if (axis < 0) inputShape.dims.size + axis else axis
-            val outputDims = inputShape.dims.filterIndexed { i, _ -> i != actualAxis }
+            val filtered = inputShape.dims.filterIndexed { i, _ -> i != actualAxis }
+            // 如果所有维度都被归约了，保持至少 1 维，避免 0-D 张量
+            val outputDims = if (filtered.isEmpty()) listOf(constantDim(1)) else filtered
             return listOf(shapeFromDims(outputDims))
         }
     }

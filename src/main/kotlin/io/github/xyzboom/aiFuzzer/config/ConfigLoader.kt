@@ -101,7 +101,6 @@ object ConfigLoader {
                 config.generator.mutation.rate = (mutMap["rate"] as? Number)?.toDouble() ?: config.generator.mutation.rate
                 config.generator.mutation.maxMutations = mutMap["max_mutations"] as? Int ?: config.generator.mutation.maxMutations
                 config.generator.mutation.maxSeeds = mutMap["max_seeds"] as? Int ?: config.generator.mutation.maxSeeds
-                config.generator.mutation.shapeMutation = mutMap["shape_mutation"] as? Boolean ?: config.generator.mutation.shapeMutation
                 config.generator.mutation.opMutation = mutMap["op_mutation"] as? Boolean ?: config.generator.mutation.opMutation
                 config.generator.mutation.insertMutation = mutMap["insert_mutation"] as? Boolean ?: config.generator.mutation.insertMutation
                 config.generator.mutation.deleteMutation = mutMap["delete_mutation"] as? Boolean ?: config.generator.mutation.deleteMutation

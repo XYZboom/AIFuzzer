@@ -178,7 +178,6 @@ data class MutationConfig(
     /** 种子池上限 */
     var maxSeeds: Int = 100,
     /** 各类型变异的开关 */
-    var shapeMutation: Boolean = true,
     var opMutation: Boolean = true,
     var insertMutation: Boolean = true,
     var deleteMutation: Boolean = true,
