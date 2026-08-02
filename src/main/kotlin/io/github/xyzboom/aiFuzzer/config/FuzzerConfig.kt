@@ -59,20 +59,37 @@ data class FuzzerGenConfig(
                 try {
                     val resource = this::class.java.classLoader.getResource("patterns")
                     if (resource != null) {
-                        val dir = java.io.File(resource.toURI())
-                        if (dir.isDirectory) {
-                            val files = dir.listFiles { f -> f.extension == "json" } ?: emptyArray()
-                            for (file in files) {
-                                try {
-                                    val json = file.readText()
-                                    val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(json)
-                                    allPatterns.addAll(db.patterns)
-                                } catch (e: Exception) {
-                                    System.err.println("[WARN] 加载内置 pattern 文件 ${file.name} 失败: ${e.message}")
-                                }
+                        val urlStr = resource.toString()
+                        val patternFiles = if (urlStr.startsWith("jar:")) {
+                            // JAR 环境：枚举 JAR 条目
+                            val jarPath = urlStr.substringAfter("file:").substringBefore("!")
+                            val entryPrefix = urlStr.substringAfter("!").removePrefix("/")
+                            val jarFile = java.util.jar.JarFile(jarPath)
+                            try {
+                                jarFile.entries().asSequence()
+                                    .filter { it.name.startsWith(entryPrefix) && it.name.endsWith(".json") }
+                                    .map { entry ->
+                                        entry.name to jarFile.getInputStream(entry).readAllBytes().decodeToString()
+                                    }.toList()
+                            } finally {
+                                jarFile.close()
                             }
-                            System.err.println("[INFO] 从内置资源加载了 ${allPatterns.size} 个 pattern (${files.size} 个文件)")
+                        } else {
+                            // 文件系统环境（IDE 开发）
+                            val dir = java.io.File(resource.toURI())
+                            if (dir.isDirectory) {
+                                dir.listFiles { f -> f.extension == "json" }?.map { it.name to it.readText() } ?: emptyList()
+                            } else emptyList()
                         }
+                        for ((name, json) in patternFiles) {
+                            try {
+                                val db = io.github.xyzboom.aiFuzzer.pattern.PatternParser.parse(json)
+                                allPatterns.addAll(db.patterns)
+                            } catch (e: Exception) {
+                                System.err.println("[WARN] 加载内置 pattern 文件 $name 失败: ${e.message}")
+                            }
+                        }
+                        System.err.println("[INFO] 从内置资源加载了 ${allPatterns.size} 个 pattern (${patternFiles.size} 个文件)")
                     } else {
                         System.err.println("[WARN] resources/patterns 目录未找到")
                     }

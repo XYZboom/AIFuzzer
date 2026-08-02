@@ -2,10 +2,10 @@
   "format_version": "1.0",
   "patterns": [
     {
-      "id": "tvm-20048-red",
+      "id": "tvm-20048-red-variant",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU reduction bind compact dataflow — OC=1, C_in≥2, 1x1 kernel, W≥20",
+      "description": "conv2d dlight GPU reduction bind — OC=1, C_in≥2, KH≥2, KW=1, N≥2, W≥6",
       "severity": "crash",
       "nodes": [
         {
@@ -27,8 +27,8 @@
           "shape": [
             {"$gte": 2},
             {"$gte": 2},
-            {"$gte": 2},
-            {"$gte": 20}
+            {},
+            {"$gte": 6}
           ],
           "dtype": "float32"
         },
@@ -38,7 +38,7 @@
           "shape": [
             {"$eq": 1},
             {"$gte": 2},
-            {"$eq": 1},
+            {"$gte": 2},
             {"$eq": 1}
           ],
           "dtype": "float32"

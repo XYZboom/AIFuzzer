@@ -52,6 +52,16 @@ sealed class DimMatcher {
             dimValue != null && dimValue % divisor == remainder
     }
 
+    /** 2 的幂次匹配：$pow2 true 表示是 2 的幂，$pow2 false 表示不是 2 的幂 */
+    data class Pow2(val wantPow2: Boolean) : DimMatcher() {
+        override fun matches(dimValue: Int?): Boolean {
+            if (dimValue == null) return false
+            if (dimValue <= 0) return !wantPow2
+            val isPow2 = dimValue and (dimValue - 1) == 0
+            return isPow2 == wantPow2
+        }
+    }
+
     /** 任意值（通配符） */
     data class Any(val wildcard: Boolean = true) : DimMatcher() {
         override fun matches(dimValue: Int?): Boolean = true
@@ -82,7 +92,7 @@ sealed class DimMatcher {
                 json is JsonObject -> {
                     val obj = json.jsonObject
                     // 检查是否有多个匹配键（复合条件）
-                    val matchKeys = listOf("\$eq", "\$ne", "\$gt", "\$gte", "\$lt", "\$lte", "\$in", "\$mod", "\$any")
+                    val matchKeys = listOf("\$eq", "\$ne", "\$gt", "\$gte", "\$lt", "\$lte", "\$in", "\$mod", "\$any", "\$pow2")
                     val presentKeys = matchKeys.filter { obj.containsKey(it) }
 
                     if (presentKeys.isEmpty()) {
@@ -117,6 +127,7 @@ sealed class DimMatcher {
                     }
                 }
                 "\$any" -> Any(true)
+                "\$pow2" -> Pow2(obj["\$pow2"]!!.jsonPrimitive.boolean)
                 else -> Any(true)
             }
         }

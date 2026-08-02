@@ -5,7 +5,7 @@
       "id": "tvm-20047",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU gemv FloorDiv extent assertion — [1,1,H,10], kernel=[1,1,1,2], H>=2",
+      "description": "conv2d dlight GPU gemv FloorDiv — OC=1, KH∈{1,2}, KW∈{1,2,3}, output H not power of 2",
       "severity": "crash",
       "nodes": [
         {
@@ -27,8 +27,8 @@
           "shape": [
             {"$eq": 1},
             {"$eq": 1},
-            {"$gte": 2},
-            {"$eq": 10}
+            {"$gte": 1},
+            {"$gte": 1}
           ],
           "dtype": "float32"
         },
@@ -38,8 +38,74 @@
           "shape": [
             {"$eq": 1},
             {"$eq": 1},
+            {"$in": [1, 2]},
+            {"$in": [1, 2, 3]}
+          ],
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_out",
+          "ndim": 4,
+          "shape": [
+            {},
+            {},
+            {"$pow2": false},
+            {}
+          ],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-20047-w",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "conv2d dlight GPU gemv FloorDiv — OC=1, KH∈{1,2}, KW∈{1,2,3}, output W not power of 2",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CONV2D",
+          "inputs": ["v_input", "v_weight"],
+          "outputs": ["v_out"],
+          "attrs": {
+            "stride": 1,
+            "padding": 0,
+            "dilation": 1,
+            "groups": 1
+          }
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_input",
+          "ndim": 4,
+          "shape": [
             {"$eq": 1},
-            {"$eq": 2}
+            {"$eq": 1},
+            {"$gte": 1},
+            {"$gte": 1}
+          ],
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_weight",
+          "ndim": 4,
+          "shape": [
+            {"$eq": 1},
+            {"$eq": 1},
+            {"$in": [1, 2]},
+            {"$in": [1, 2, 3]}
+          ],
+          "dtype": "float32"
+        },
+        {
+          "match": "value", "id": "v_out",
+          "ndim": 4,
+          "shape": [
+            {},
+            {},
+            {},
+            {"$pow2": false}
           ],
           "dtype": "float32"
         }

@@ -12,16 +12,8 @@
           "match": "node",
           "id": "n0",
           "op": "BATCH_NORM",
-          "inputs": [
-            "v_in",
-            "v_gamma",
-            "v_beta",
-            "v_moving_mean",
-            "v_moving_var"
-          ],
-          "outputs": [
-            "v_out"
-          ]
+          "inputs": ["v_in"],
+          "outputs": ["v_out"]
         }
       ],
       "values": [
@@ -34,34 +26,6 @@
             {},
             {"$eq": 1}
           ],
-          "dtype": "float32"
-        },
-        {
-          "match": "value",
-          "id": "v_gamma",
-          "ndim": 1,
-          "shape": [],
-          "dtype": "float32"
-        },
-        {
-          "match": "value",
-          "id": "v_beta",
-          "ndim": 1,
-          "shape": [],
-          "dtype": "float32"
-        },
-        {
-          "match": "value",
-          "id": "v_moving_mean",
-          "ndim": 1,
-          "shape": [],
-          "dtype": "float32"
-        },
-        {
-          "match": "value",
-          "id": "v_moving_var",
-          "ndim": 1,
-          "shape": [],
           "dtype": "float32"
         }
       ]
