@@ -428,7 +428,17 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             }
             
             if (numInputs == 0) return candidate  // Constant ops have no constraints
-            
+
+            // CONV2D: 只需 1 个有效 4D 输入，权重由 selectInputValues 自生成
+            if (candidate == UirOpKind.CONV2D) {
+                val hasValidInput = availableValues.any { vid ->
+                    val shape = valueShapes[vid]
+                    shape != null && shape.dims.size == 4
+                }
+                if (hasValidInput) return candidate
+                continue
+            }
+
             // For single-input ops: check if ANY available value satisfies the constraint
             if (numInputs == 1) {
                 val hasValidInput = availableValues.any { vid ->
@@ -482,7 +492,11 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 if (availableValues.size < 2) 1
                 else rand.nextInt(config.concatMinInputs, minOf(config.concatMaxInputs, availableValues.size) + 1)
             }
-            in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)
+            in UirOpKind.binaryInputOps -> {
+                // CONV2D 始终需要 2 个输入（权重由 selectInputValues 自生成）
+                if (op == UirOpKind.CONV2D) 2
+                else minOf(2, availableValues.size)
+            }
             else -> 1
         }
         log.trace { "节点 $nodeIndex: 输入数量 $numInputs" }
@@ -518,6 +532,26 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         val adaptedInputShapes = adaptResult.adaptedShapes
         conversionNodes.addAll(adaptResult.wrapperNodes)
         
+        // 5.5: CONV2D 特殊处理：根据适配后的输入形状动态随机化 stride/padding
+        if (op == UirOpKind.CONV2D && adaptedInputShapes.size == 2) {
+            val inputShape = adaptedInputShapes[0]
+            val weightShape = adaptedInputShapes[1]
+            if (inputShape.dims.size == 4 && weightShape.dims.size == 4) {
+                val h = inputShape.dims[2].valueOrNull() ?: 1
+                val w = inputShape.dims[3].valueOrNull() ?: 1
+
+                // ShapeAdapter 已保证 kH ≤ H, kW ≤ W，所以任意 stride 都满足 H_out ≥ 1
+                val maxStride = maxOf(1, minOf(h, w))
+                val stride = if (maxStride > 1) rand.nextInt(1, maxStride + 1) else 1
+                attributes["stride"] = buildIntAttr { value = stride }
+
+                // padding ∈ [0, min(H, W) / 2]，软限制避免输出过大
+                val maxPadding = maxOf(0, minOf(h, w) / 2)
+                val padding = if (maxPadding > 0) rand.nextInt(0, maxPadding + 1) else 0
+                attributes["padding"] = buildIntAttr { value = padding }
+            }
+        }
+
         // 6. 推导并生成输出值（委托给 ShapeInferer）
         val outputShapes = inferOutputShapes(op, adaptedInputShapes, attributes)
         
