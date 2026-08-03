@@ -318,6 +318,9 @@ object ShapeInferer {
     
     /**
      * 广播两个维度。
+     *
+     * 遵循 NumPy 广播规则：相等 或 一个为 1。
+     * 如果维度不兼容，抛出 ShapeInferenceError 而不是静默使用 max。
      */
     private fun broadcastDim(d1: UirDim, d2: UirDim): UirDim {
         // 未知维度传播
@@ -334,9 +337,10 @@ object ShapeInferer {
                 v1 == v2 -> constantDim(v1)
                 v1 == 1 -> constantDim(v2)
                 v2 == 1 -> constantDim(v1)
-                // 维度不兼容时，返回最大值（宽松广播）
-                // 这样生成的程序虽然语义上不严格合法，但可以用于测试编译器的错误处理
-                else -> constantDim(maxOf(v1, v2))
+                // 维度不兼容时，抛出异常让上游走 ShapeAdapter 修复路径
+                else -> throw ShapeInferenceError(
+                    "Incompatible broadcast dims: $v1 and $v2 (must be equal or one must be 1)"
+                )
             }
         }
         
@@ -1149,9 +1153,10 @@ object ShapeInferer {
         
         val inputShape = inputShapes[0]
         val rawAxis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-        // 归一化负轴：插入到原始张量的第 (ndim + axis) 维之前
-        // 例如 axis=-2 在 3D 输入上 → 3+(-2)=1 → 在 dim 1 之前插入 → [1,1,6,4]
-        val axis = if (rawAxis >= 0) rawAxis else inputShape.dims.size + rawAxis
+        // 归一化负轴：TVM 使用 output_ndim + axis = (input.ndim + 1) + axis
+        // axis=-1 在 1D 输入上 → (1+1)+(-1)=1 → 在末尾插入 → [75,1]
+        // axis=0 在 1D 输入上 → 0 → 在开头插入 → [1,75]
+        val axis = if (rawAxis >= 0) rawAxis else inputShape.dims.size + 1 + rawAxis
         
         val outputDims = inputShape.dims.toMutableList()
         outputDims.add(axis.coerceIn(0, outputDims.size), constantDim(1))

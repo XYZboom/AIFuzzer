@@ -1484,7 +1484,7 @@ object ShapeAdapter {
      *
      * 保留图中已有的值，避免生成常量叶子节点。
      */
-    private fun adaptWithElemCountMatch(
+    internal fun adaptWithElemCountMatch(
         inputRef: UirValueRef,
         inputShape: UirShape,
         targetShape: UirShape,

@@ -464,6 +464,15 @@ class UirMutator(
                     // 2. 更新 valueShapes 供后续节点使用
                     // 3. 不要走主循环（避免再次触发 adaptInputs）
                     for (wrapperNode in result.wrapperNodes) {
+                        // TILE/BROADCAST_TO/RESHAPE 是 ShapeAdapter 插入的适配节点，输出 ref 形状已由适配器正确设置。
+                        // inferShape 无法从输入推导出这些节点的正确输出（因为缺少必要的属性信息），
+                        // 所以直接保持输出 ref 的已有形状。
+                        if (wrapperNode.op == UirOpKind.TILE || wrapperNode.op == UirOpKind.BROADCAST_TO || wrapperNode.op == UirOpKind.RESHAPE) {
+                            for (output in wrapperNode.outputs) {
+                                valueShapes[output.valueId] = output.type.shape
+                            }
+                            continue
+                        }
                         val wrapperInputShapes = wrapperNode.inputs.map {
                             valueShapes[it.valueId] ?: it.type.shape
                         }
@@ -494,13 +503,150 @@ class UirMutator(
                 }
             }
 
+            // TILE: 直接保持输出 ref 形状，但需检查 ndim 是否匹配
+            // 变异可能在 TILE 前插入了节点改变输入 ndim，导致输入 ndim ≠ 输出 ndim。
+            // 此时需插入 RESHAPE 展平到 1D 对齐。
+            if (node.op == UirOpKind.TILE) {
+                val inputShape = valueShapes[node.inputs[0].valueId] ?: node.inputs[0].type.shape
+                val outShape = node.outputs[0].type.shape
+                val oldOutValueId = node.outputs[0].valueId
+                if (inputShape.dims.size != outShape.dims.size) {
+                    log.warn { "TILE ndim 不匹配: input=$inputShape(${inputShape.dims.size}D) -> output=$outShape(${outShape.dims.size}D)，插入 RESHAPE 展平输入" }
+                    val totalElements = inputShape.dims.mapNotNull { it.valueOrNull() }
+                        .fold(1L) { acc, v -> acc * v }
+                    val flatShape = buildShape {
+                        dims.add(buildDim {
+                            dimKind = UirDimKind.CONSTANT
+                            value = totalElements.toInt()
+                        })
+                    }
+                    val flatOutputValueId = "v_${valueCounter}_${rng.nextInt(100000000).toString(36)}"
+                    valueShapes[flatOutputValueId] = flatShape
+                    val flatOutputRef = buildValueRef {
+                        valueId = flatOutputValueId
+                        type = buildTensorType {
+                            typeKind = UirTypeKind.TENSOR
+                            shape = flatShape
+                            dtype = node.inputs[0].type.dtype
+                        }
+                    }
+                    val reshapeNode = buildNode {
+                        name = "reshape_${nodeCounter}_${rng.nextInt(100000000).toString(36)}"
+                        op = UirOpKind.RESHAPE
+                        inputs.add(node.inputs[0])
+                        outputs.add(flatOutputRef)
+                    }
+                    graph.nodes.addAll(i, listOf(reshapeNode))
+                    node.inputs.clear()
+                    node.inputs.add(flatOutputRef)
+                    valueCounter++
+                    nodeCounter++
+                    i++
+                }
+                for (output in node.outputs) {
+                    valueShapes[output.valueId] = output.type.shape
+                }
+                i++
+                continue
+            }
+
+            // BROADCAST_TO: 直接保持输出 ref 形状
+            if (node.op == UirOpKind.BROADCAST_TO) {
+                for (output in node.outputs) {
+                    valueShapes[output.valueId] = output.type.shape
+                }
+                i++
+                continue
+            }
+            if (node.op == UirOpKind.RESHAPE) {
+                val inputShape = valueShapes[node.inputs[0].valueId] ?: node.inputs[0].type.shape
+                val outShape = node.outputs[0].type.shape
+                val inputElements = inputShape.dims.mapNotNull { it.valueOrNull() }
+                    .fold(1L) { acc, v -> acc * v }
+                val outputElements = outShape.dims.mapNotNull { it.valueOrNull() }
+                    .fold(1L) { acc, v -> acc * v }
+                if (inputElements > 0 && outputElements > 0 && inputElements != outputElements) {
+                    // 元素数不匹配，需要重新插入适配
+                    log.warn { "RESHAPE 元素数不匹配: input=$inputShape(${inputElements}el) -> output=$outShape(${outputElements}el)，重新插入适配" }
+                    try {
+                        val (adaptedRef, wrappers) = ShapeAdapter.adaptWithElemCountMatch(
+                            node.inputs[0], inputShape, outShape,
+                            valueShapes, valueCounter, nodeCounter
+                        )
+                        if (wrappers.isNotEmpty()) {
+                            graph.nodes.addAll(i, wrappers)
+                            node.inputs.clear()
+                            node.inputs.add(adaptedRef)
+                            valueCounter += wrappers.size
+                            nodeCounter += wrappers.size
+                            i += wrappers.size
+                        }
+                    } catch (e: Exception) {
+                        log.warn { "RESHAPE 适配也失败: ${e.message}" }
+                    }
+                }
+                // 更新 valueShapes（适配前后 shape 不变只变输入）
+                for (output in node.outputs) {
+                    valueShapes[output.valueId] = output.type.shape
+                }
+                i++
+                continue
+            }
+
             // 重新推导输出形状（使用适配后的输入形状）
             val adaptedInputShapes = node.inputs.map { valueShapes[it.valueId]!! }
             val outputShapes = try {
                 ShapeInferer.inferShape(node.op, adaptedInputShapes, node.attributes)
             } catch (e: Exception) {
-                log.warn { "形状推导失败: ${node.name}(${node.op}): ${e.message}，使用原有形状" }
-                node.outputs.map { it.type.shape }
+                log.warn { "形状推导失败: ${node.name}(${node.op}): ${e.message}，尝试通过 ShapeAdapter 修复" }
+                // 不直接 fallback 到旧形状，而是尝试走 ShapeAdapter 修复路径
+                // 这样可以真正修复广播不兼容等问题，而不是传播错误形状
+                try {
+                    val result = ShapeAdapter.adaptInputs(
+                        node.op, node.inputs, valueShapes,
+                        valueCounter, nodeCounter, node.attributes
+                    )
+                    node.inputs.clear()
+                    node.inputs.addAll(result.adaptedRefs)
+                    if (result.wrapperNodes.isNotEmpty()) {
+                        graph.nodes.addAll(i, result.wrapperNodes)
+                        for (wrapperNode in result.wrapperNodes) {
+                            if (wrapperNode.op == UirOpKind.TILE || wrapperNode.op == UirOpKind.BROADCAST_TO) {
+                                for (output in wrapperNode.outputs) {
+                                    valueShapes[output.valueId] = output.type.shape
+                                }
+                            } else {
+                                val wInputShapes = wrapperNode.inputs.map {
+                                    valueShapes[it.valueId] ?: it.type.shape
+                                }
+                                val wOutputShapes = ShapeInferer.inferShape(
+                                    wrapperNode.op, wInputShapes, wrapperNode.attributes
+                                )
+                                for ((output, shape) in wrapperNode.outputs.zip(wOutputShapes)) {
+                                    output.type.shape = shape
+                                    valueShapes[output.valueId] = shape
+                                }
+                            }
+                        }
+                        valueCounter += result.wrapperNodes.size
+                        nodeCounter += result.wrapperNodes.size
+                        i += result.wrapperNodes.size
+                    }
+                    // 使用适配后的输入形状重新推导
+                    val fixedInputShapes = node.inputs.map { valueShapes[it.valueId]!! }
+                    val fixedOutputShapes = ShapeInferer.inferShape(node.op, fixedInputShapes, node.attributes)
+                    if (fixedOutputShapes.size == node.outputs.size) {
+                        for ((output, shape) in node.outputs.zip(fixedOutputShapes)) {
+                            output.type.shape = shape
+                            valueShapes[output.valueId] = shape
+                        }
+                    }
+                    i++
+                    continue
+                } catch (e2: Exception) {
+                    log.warn { "ShapeAdapter 修复也失败: ${e2.message}，使用原有形状" }
+                    node.outputs.map { it.type.shape }
+                }
             }
 
             // 更新输出 ref 和 valueShapes
@@ -529,15 +675,23 @@ class UirMutator(
 
         log.trace { "修复形状一致性: 图 ${graph.name} 共 ${graph.nodes.size} 个节点" }
 
-        // 同步图间串联形状：将当前图输出形状更新到后续图的输入 ref
+        // 同步图间串联形状：将当前图输出形状更新到后续图的输入 ref，
+        // 然后对后续图重新运行 fixGraphConsistency 以更新所有节点输出 ref 形状。
         if (graphIdx >= 0 && allGraphs.isNotEmpty()) {
             for (gIdx in graphIdx + 1 until allGraphs.size) {
                 val nextGraph = allGraphs[gIdx]
+                var changed = false
                 for (input in nextGraph.inputs) {
                     val prevOutput = graph.outputs.find { it.valueId == input.valueId }
-                    if (prevOutput != null) {
+                    if (prevOutput != null && input.type.shape != prevOutput.type.shape) {
                         input.type.shape = prevOutput.type.shape
+                        changed = true
                     }
+                }
+                // 如果输入形状有变化，重新修复下游图
+                // 注意：递归调用会继续传播到更下游的图
+                if (changed) {
+                    fixGraphConsistency(nextGraph, gIdx, allGraphs)
                 }
             }
         }

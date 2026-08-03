@@ -721,14 +721,24 @@ UirOpKind.TILE -> {
                 val inputVar = valueMap[node.inputs[0].valueId]!!
                 val inputShape = node.inputs[0].type.shape
                 val targetShape = node.outputs[0].type.shape
-                val reps = targetShape.dims.mapIndexed { i, outDim ->
-                    val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
-                    val outVal = outDim.value ?: 1
-                    if (inVal > 0) outVal / inVal else 1
+                if (inputShape.dims.size != targetShape.dims.size) {
+                    // ndim 不匹配：flatten → tile(1D) → reshape
+                    var totalElements = 1L
+                    for (d in inputShape.dims) { totalElements *= (d.value ?: 1).toLong() }
+                    var targetElements = 1L
+                    for (d in targetShape.dims) { targetElements *= (d.value ?: 1).toLong() }
+                    val reps = ((targetElements + totalElements - 1) / totalElements).toInt()
+                    "$inputVar.view($totalElements).tile(($reps,)).view(${targetShape.dims.joinToString(", ") { (it.value ?: 1).toString() }})"
+                } else {
+                    val reps = targetShape.dims.mapIndexed { i, outDim ->
+                        val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
+                        val outVal = outDim.value ?: 1
+                        if (inVal > 0) outVal / inVal else 1
+                    }
+                    // torch.tile requires tuple of ints; 1-element tuple needs trailing comma
+                    val repsStr = if (reps.size == 1) "(${reps[0]},)" else "(${reps.joinToString(", ")})"
+                    "$pytorchFunc($inputVar, $repsStr)"
                 }
-                // torch.tile requires tuple of ints; 1-element tuple needs trailing comma
-                val repsStr = if (reps.size == 1) "(${reps[0]},)" else "(${reps.joinToString(", ")})"
-                "$pytorchFunc($inputVar, $repsStr)"
             }
 
             // ===== 类型转换 =====
@@ -776,9 +786,9 @@ UirOpKind.TILE -> {
                 val inputVar = valueMap[node.inputs[0].valueId]!!
                 val ndim = node.inputs[0].type.shape.dims.size
                 // 归一化负轴：与 ShapeInferer.inferExpandDimsShape 保持一致
-                // ndim 是原始张量的维度数，输出维度数为 ndim + 1
-                // 负轴对应在 output 中的归一化位置
-                val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + rawAxis
+                // PyTorch 的 torch.unsqueeze 使用 output_ndim + axis = (input.ndim + 1) + axis
+                // axis=-1 在 1D 输入上 → (1+1)+(-1)=1 → 在末尾插入 → [75,1]
+                val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + 1 + rawAxis
                 "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $normalizedAxis))"
             }
 

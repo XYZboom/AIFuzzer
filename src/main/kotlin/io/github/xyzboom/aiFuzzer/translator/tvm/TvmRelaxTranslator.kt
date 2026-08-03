@@ -738,12 +738,24 @@ class TvmRelaxTranslator(
                 // Use actual reps from output shape / input shape
                 val inputShape = inputShapes[0]
                 val targetShape = outputShapes[0]
-                val reps = targetShape.dims.mapIndexed { i, outDim ->
-                    val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
-                    val outVal = outDim.value ?: 1
-                    if (inVal > 0) outVal / inVal else 1
-                }.joinToString(", ")
-                "relax.op.tile(${inputVars[0]}, [$reps])"
+                if (inputShape.dims.size != targetShape.dims.size) {
+                    // ndim 不匹配：fixGraphConsistency 展平了输入但输出仍是 N-D
+                    // 解决方案：生成 flatten → tile(1D) → reshape 到目标形状
+                    var totalElements = 1L
+                    for (d in inputShape.dims) { totalElements *= (d.value ?: 1).toLong() }
+                    var targetElements = 1L
+                    for (d in targetShape.dims) { targetElements *= (d.value ?: 1).toLong() }
+                    val reps = ((targetElements + totalElements - 1) / totalElements).toInt()
+                    val targetShapeStr = targetShape.dims.joinToString(", ") { (it.value ?: 1).toString() }
+                    "relax.op.reshape(relax.op.tile(relax.op.reshape(${inputVars[0]}, relax.ShapeExpr([$totalElements])), [$reps]), relax.ShapeExpr([$targetShapeStr]))"
+                } else {
+                    val reps = targetShape.dims.mapIndexed { i, outDim ->
+                        val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
+                        val outVal = outDim.value ?: 1
+                        if (inVal > 0) outVal / inVal else 1
+                    }.joinToString(", ")
+                    "relax.op.tile(${inputVars[0]}, [$reps])"
+                }
             }
 
             // ===== 类型转换 =====
@@ -869,11 +881,11 @@ class TvmRelaxTranslator(
             // ===== 适配算子 =====
             UirOpKind.EXPAND_DIMS -> {
                 val rawAxis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-                val ndim = inputShapes[0].dims.size
-                // 归一化负轴：与 ShapeInferer.inferExpandDimsShape 保持一致
-                // ndim 是输入维度数，axis=-2 表示"在倒数第二维之前插入"
-                // 归一化: ndim + axis (3 + (-2) = 1 → 在位置 1 插入)
-                val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + rawAxis
+                // 使用输出 ndim 而非输入 ndim：跨图传播后输入 ref 形状可能未更新，
+                // 但输出形状始终正确（由 fixGraphConsistency 或 ShapeAdapter 设置）。
+                // TVM 的 expand_dims 负轴归一化用 output_ndim + axis。
+                val outputNdim = outputShapes[0].dims.size
+                val normalizedAxis = if (rawAxis >= 0) rawAxis else outputNdim + rawAxis
                 "relax.op.expand_dims(${inputVars[0]}, axis=$normalizedAxis)"
             }
         }
