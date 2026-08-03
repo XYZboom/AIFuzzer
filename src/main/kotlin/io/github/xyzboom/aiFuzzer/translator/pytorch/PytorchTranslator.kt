@@ -696,7 +696,10 @@ class PytorchTranslator(
                         val axisIdx = axes.indexOf(d)
                         if (axisIdx >= 0) {
                             val end = ends[axisIdx]
-                            sliceParts.add(":$end")
+                            // 使用 min(end, inputVar.shape[d]) 裁剪 end 到实际维度大小
+                            // 避免 ShapeInferer 用过大 end 计算形状，但 PyTorch 实际取 min
+                            // 导致后续 tile 的形状推断错误
+                            sliceParts.add(":min($end, ${inputVar}.shape[$d])")
                         } else {
                             sliceParts.add(":")
                         }
@@ -769,10 +772,14 @@ UirOpKind.TILE -> {
 
             // ===== 适配算子 =====
             UirOpKind.EXPAND_DIMS -> {
-                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
+                val rawAxis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // Runtime guard: skip expand_dims if input is already ≥4D
-                "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $axis))"
+                val ndim = node.inputs[0].type.shape.dims.size
+                // 归一化负轴：与 ShapeInferer.inferExpandDimsShape 保持一致
+                // ndim 是原始张量的维度数，输出维度数为 ndim + 1
+                // 负轴对应在 output 中的归一化位置
+                val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + rawAxis
+                "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $normalizedAxis))"
             }
 
             // ===== 默认 =====

@@ -637,8 +637,8 @@ object ShapeInferer {
         // 使用 floor division 匹配 TVM 的 // 行为
         // Kotlin 的 / 向零截断，对负值结果与 floor 不同
         val outVal = Math.floorDiv(inVal + 2 * padding - kernelSize, stride) + 1
-        // 允许 0 输出（degenerate 张量），不强制 min=1
-        return constantDim(outVal.coerceAtLeast(0))
+        // 不允许 0 输出（TVM 不允许 0 维度张量）
+        return constantDim(outVal.coerceAtLeast(1))
     }
     
     /**
@@ -1149,9 +1149,9 @@ object ShapeInferer {
         
         val inputShape = inputShapes[0]
         val rawAxis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-        // 归一化负轴：TVM 的 expand_dims 在负轴时插入位置为 ndim + 1 + axis
-        // 例如 axis=-2 在 3D 输入上 → 3+1+(-2)=2 → 在末尾前插入
-        val axis = if (rawAxis >= 0) rawAxis else inputShape.dims.size + 1 + rawAxis
+        // 归一化负轴：插入到原始张量的第 (ndim + axis) 维之前
+        // 例如 axis=-2 在 3D 输入上 → 3+(-2)=1 → 在 dim 1 之前插入 → [1,1,6,4]
+        val axis = if (rawAxis >= 0) rawAxis else inputShape.dims.size + rawAxis
         
         val outputDims = inputShape.dims.toMutableList()
         outputDims.add(axis.coerceIn(0, outputDims.size), constantDim(1))

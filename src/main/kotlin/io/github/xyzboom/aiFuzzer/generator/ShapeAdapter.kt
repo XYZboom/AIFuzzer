@@ -663,7 +663,7 @@ object ShapeAdapter {
                 // 都不为 1 且不相等：使用较大值（允许通过 RESHAPE 或 BROADCAST_TO 调整）
                 else -> buildDim {
                     dimKind = UirDimKind.CONSTANT
-                    value = maxOf(v1, v2)  // 使用较大值
+                    value = maxOf(v1, v2)  // 使用较大值，确保 BROADCAST_TO 合法
                 }
             }
         }

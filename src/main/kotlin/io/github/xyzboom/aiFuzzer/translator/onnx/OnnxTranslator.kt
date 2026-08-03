@@ -940,20 +940,6 @@ class OnnxTranslator(
                     p.add("axes=[$axis]")
                 }
             }
-                                    UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
-                val axis = (attrs["axis"] as? UirIntAttr)?.value ?: -1
-                val kd = (attrs["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
-                p.add("keepdims=${kd.toString().replaceFirstChar { it.uppercase() }}")
-                if (opsetVersion >= 18) {
-                    val axesId = "c${outputId}_ax"
-                    tensorInitLines.add("""${axesId}_t = helper.make_tensor("${axesId}_v", $INT64, [1], [$axis])""")
-                    val nvAx = nextNodeVar()
-                    nodeLines.add(NodeLine(nvAx, "    $nvAx = helper.make_node('Constant', inputs=[], outputs=['$axesId'], value=${axesId}_t)"))
-                    extraInputs.add("'$axesId'")
-                } else {
-                    p.add("axes=[$axis]")
-                }
-            }
             // Unsqueeze/Squeeze: axes as input (opset 13+) or attribute (opset 11-12)
             UirOpKind.UNSQUEEZE, UirOpKind.EXPAND_DIMS -> {
                 val axis = (attrs["axis"] as? UirIntAttr)?.value ?: 0

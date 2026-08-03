@@ -868,8 +868,13 @@ class TvmRelaxTranslator(
 
             // ===== 适配算子 =====
             UirOpKind.EXPAND_DIMS -> {
-                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-                "relax.op.expand_dims(${inputVars[0]}, axis=$axis)"
+                val rawAxis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+                val ndim = inputShapes[0].dims.size
+                // 归一化负轴：与 ShapeInferer.inferExpandDimsShape 保持一致
+                // ndim 是输入维度数，axis=-2 表示"在倒数第二维之前插入"
+                // 归一化: ndim + axis (3 + (-2) = 1 → 在位置 1 插入)
+                val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + rawAxis
+                "relax.op.expand_dims(${inputVars[0]}, axis=$normalizedAxis)"
             }
         }
     }
