@@ -16,7 +16,7 @@ backends:
 
   tvm:
     python: "/home/xyzboom/Programs/miniconda3/envs/aifuzzer/bin/python3"
-    mode: "process"
+    mode: "daemon"                     # 注意: "process" 已废弃，每次 import tvm ~5s
 
 pipeline:
   workers: 1

@@ -8,7 +8,13 @@ import java.util.concurrent.TimeUnit
 
 /**
  * TVM Relax 编译器后端。
+ *
+ * @Deprecated 请使用常驻 daemon 后端 [TvmDaemonBackend]。
+ * 每次启动子进程 + import tvm 需要 ~5 秒，性能远低于 daemon 模式 (~100ms/次)。
+ * 配置中设置 `mode: "daemon"`（默认值）即可自动切换。
  */
+@Deprecated("使用 TvmDaemonBackend (mode: daemon) 替代，性能提升 50 倍",
+    ReplaceWith("TvmDaemonBackend"))
 class TvmBackend(
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_tvm"),
     /** 从 config 创建 */

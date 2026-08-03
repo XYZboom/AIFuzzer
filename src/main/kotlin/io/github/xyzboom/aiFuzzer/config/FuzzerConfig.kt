@@ -196,7 +196,14 @@ data class BackendsConfig(
 
 data class TvmConfig(
     var python: String = "python3",
-    /** 执行模式: "process" (每轮独立进程) 或 "daemon" (常驻进程) */
+    /**
+     * 执行模式。
+     *
+     * - "daemon"（推荐，默认）：常驻 Python 进程，只 import TVM 一次，~100ms/次。
+     * - "process"（已废弃）：每次启动子进程，import TVM 耗时 ~5s，性能极差。
+     *
+     * @Deprecated "process" 模式已废弃，将在未来版本移除。请使用默认的 "daemon" 模式。
+     */
     var mode: String = "daemon",
     /** daemon 实例数（= workers 时最高效）*/
     var daemonCount: Int = 1,
