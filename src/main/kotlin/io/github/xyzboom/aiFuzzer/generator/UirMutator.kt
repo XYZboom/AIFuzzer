@@ -447,7 +447,7 @@ class UirMutator(
                 // 不满足：调用 ShapeAdapter 修复
                 val result = ShapeAdapter.adaptInputs(
                     node.op, node.inputs, valueShapes,
-                    valueCounter, nodeCounter
+                    valueCounter, nodeCounter, node.attributes
                 )
 
                 // 更新节点输入

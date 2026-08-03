@@ -1,5 +1,6 @@
 package io.github.xyzboom.aiFuzzer.generator
 
+import io.github.xyzboom.aiFuzzer.ir.Attribute
 import io.github.xyzboom.aiFuzzer.ir.UirDimKind
 import io.github.xyzboom.aiFuzzer.ir.UirNode
 import io.github.xyzboom.aiFuzzer.ir.UirOpKind
@@ -8,6 +9,7 @@ import io.github.xyzboom.aiFuzzer.ir.UirValueRef
 import io.github.xyzboom.aiFuzzer.ir.builder.buildNode
 import io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef
 import io.github.xyzboom.aiFuzzer.ir.types.UirDim
+import io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr
 import io.github.xyzboom.aiFuzzer.ir.types.UirShape
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDataType
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDim
@@ -64,7 +66,8 @@ object ShapeAdapter {
         inputValueRefs: List<UirValueRef>,
         valueShapes: MutableMap<String, UirShape>,
         valueCounter: Int,
-        nodeCounter: Int
+        nodeCounter: Int,
+        attributes: Map<String, Attribute> = emptyMap()
     ): AdaptResult {
         if (inputValueRefs.isEmpty()) {
             return AdaptResult(emptyList(), emptyList(), emptyList())
@@ -112,7 +115,7 @@ object ShapeAdapter {
         if (op == UirOpKind.CONCAT && inputShapes.size >= 2) {
             return adaptConcatInputs(
                 inputValueRefs, inputShapes, valueShapes,
-                valueCounter, nodeCounter
+                valueCounter, nodeCounter, attributes
             )
         }
 
@@ -407,10 +410,11 @@ object ShapeAdapter {
         inputShapes: List<UirShape>,
         valueShapes: MutableMap<String, UirShape>,
         valueCounter: Int,
-        nodeCounter: Int
+        nodeCounter: Int,
+        attributes: Map<String, Attribute> = emptyMap()
     ): AdaptResult {
-        // CONCAT 的默认 axis 为 0（与 generateAttributes 和 selectInputValues 保持一致）
-        val axis = 0
+        // 从 attributes 读取 axis（由 generateAttributes 生成，当前可能随机化），默认 0
+        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
 
         // 1. 对齐维度数
         val maxNdim = inputShapes.maxOfOrNull { it.dims.size } ?: 1

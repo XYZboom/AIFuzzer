@@ -63,22 +63,19 @@
 | CUMSUM/CUMPROD | dtype | 30% 概率添加 |
 | REDUCE_* | dtype | 10% 概率添加 |
 | POOL2D | kernel_size | 1 或 2（60% 概率 1） |
-| POOL2D | stride | 1~kernel_size |
+| POOL2D | stride, padding | stride=1~kernel_size; padding=0~kernel_size/2 |
+| CONV2D | stride, padding | stride∈[1,H/W]; padding∈[0,min(H,W)/2] |
+| CONCAT | axis | 0~maxNdim-1（基于输入 ndim 随机） |
+| SOFTMAX / LOG_SOFTMAX | axis | [-ndim, ndim) 均匀随机 |
+| REDUCE_* | axis, keepdims | axis=0~ndim-1; keepdims=30% true |
+| ARGMAX / ARGMIN | axis | 0~ndim-1 |
+| SPLIT | axis | 0~ndim-1 |
+| GATHER | axis | 0~ndim-1 |
+| CUMSUM / CUMPROD | axis | 0~ndim-1 |
 
-### 3.2 完全固定的属性（问题）
+### 3.2 已修复的固定属性（所有 axis 类算子 ✅ 已修复）
 
-| 算子 | 固定值 | 缺少的变体 |
-|------|--------|-----------|
-| **CONV2D** | stride=1, padding=0, dilation=1, groups=1 | **✅ 已修复** — stride∈[1,H/W], padding∈[0,min(H,W)/2], 根据输入动态随机 |
-| **CONCAT** | axis=0 | axis=1/-1 等 |
-| **SOFTMAX / LOG_SOFTMAX** | axis=-1 | axis=0/1 等 |
-| **SPLIT** | axis=0 | 其他轴 |
-| **GATHER** | axis=0 | 其他轴 |
-| **REDUCE_*** | axis=-1, keepdims=0 | keepdims=1 |
-| **ARGMAX/ARGMIN** | axis=-1 | 其他轴 |
-| **INTERPOLATE/RESIZE2D** | mode="nearest", coord_mode="half_pixel" | "linear"/"bilinear" 等 |
-
-### 3.3 影响最大的固定属性（Conv2D stride/padding ✅ 已修复）
+### 3.3 已修复的属性随机化（Conv2D stride/padding + axis 类算子 ✅ 已全部修复）
 
 **修复时间：** 2026-08-03
 **涉及文件：** `UirGenerator.kt`（`selectOpWithConstraints`、`generateNode`）
@@ -251,19 +248,22 @@ Graph_0 → Graph_1 → Graph_2 → ... → Graph_N
 
 ## 九、总结与优先级
 
-| 优先级 | 维度 | 当前状态 | 影响范围 | 修复难度 | 预期收益 |
-|--------|------|---------|---------|---------|---------|
-| **P0** | Dtype 多样性 | ❌ 严重缺失 | 所有算子，所有后端 | 低（~10 行代码） | 高 — 暴露 dtype promotion bug |
-| **P0** | Conv2D 属性随机化 | ⚠️ 部分固定 | conv2d 形状推导 | 低（~5 行代码） | 高 — 暴露 stride/padding 边界 bug |
-| **P1** | 非连续张量布局 | ❌ 定义未用 | 所有算子的 stride 路径 | 中（调用已有方法） | 中 — 暴露非连续内存 bug |
-| **P1** | 特殊值 | ❌ 定义未用 | 所有算子的异常输入处理 | 低（FULL 中调用） | 中 — 暴露 NaN/Inf 传播 bug |
-| **P1** | 属性随机化扩展 | ⚠️ 部分固定 | SOFTMAX/CONCAT/SPLIT axis | 低 | 中 — 更多 axis 变体 |
-| **P2** | 形状多样性 | ⚠️ 范围偏窄 | 所有算子 | 中 | 中 — 更多极端形状 |
-| **P2** | 图结构多样性 | ⚠️ 偏简单 | 图融合优化路径 | 高 | 中 — 复杂图融合 bug |
-| **P2** | 变异器能力 | ⚠️ 中等 | 变异种子质量 | 中 | 中 — 丰富变异类型 |
+|| 优先级 | 维度 | 当前状态 | 影响范围 | 修复难度 | 预期收益 |
+||--------|------|---------|---------|---------|---------|
+|| **P0** | Dtype 多样性 | ❌ 严重缺失 | 所有算子，所有后端 | 低（~10 行代码） | 高 — 暴露 dtype promotion bug |
+|| **P0** | Conv2D 属性随机化 | ✅ 已修复（2026-08-03） | conv2d 形状推导 | 低 | 高 — 暴露 stride/padding 边界 bug |
+|| **P0** | Axis 类算子随机化 | ✅ 已修复（2026-08-03） | SOFTMAX/CONCAT/REDUCE/SPLIT/GATHER/ARGMAX/CUMSUM/POOL2D | 低 | 高 — 覆盖更多 axis 变体 |
+|| **P1** | 非连续张量布局 | ❌ 定义未用 | 所有算子的 stride 路径 | 中（调用已有方法） | 中 — 暴露非连续内存 bug |
+|| **P1** | 特殊值 | ❌ 定义未用 | 所有算子的异常输入处理 | 低（FULL 中调用） | 中 — 暴露 NaN/Inf 传播 bug |
+|| **P2** | 形状多样性 | ⚠️ 范围偏窄 | 所有算子 | 中 | 中 — 更多极端形状 |
+|| **P2** | 图结构多样性 | ⚠️ 偏简单 | 图融合优化路径 | 高 | 中 — 复杂图融合 bug |
+|| **P2** | 变异器能力 | ⚠️ 中等 | 变异种子质量 | 中 | 中 — 丰富变异类型 |
+|| **P2** | INTERPOLATE 属性 | ⚠️ mode 固定 | INTERPOLATE/RESIZE2D | 低 | 低 — 插值模式变体 |
 
-### 最优先修复的两项（Conv2D 随机化 ✅ 已修复）
+### 最优先修复的三项（✅ 全部已修复）
 
-1. **Dtype 多样性**：调用已有的 `randomDtype()` 让常量生成算子随机选择 dtype，或在生成节点时以 5-10% 概率插入 CAST 节点。改动量极小，收益极高，能立刻暴露 dtype promotion 类 bug。
+1. **Conv2D 属性随机化**：stride/padding 根据输入形状动态随机化。（2026-08-03 修复 ✅）
 
-2. **特殊值生成**：在 FULL 的 fill_value 中以 1-2% 概率插入 NaN/Inf。代码已有，只差调用。
+2. **Dtype 多样性**：曾尝试并向回退（见 §二）。正确方向是 float16/float32 混合精度，不是乱插 CAST。
+
+3. **Axis 类算子随机化**：所有 axis 相关算子根据适配后的 ndim 动态随机化 axis。包含 POOL2D padding 随机（受 kernel_size/2 约束）。（2026-08-03 修复 ✅）

@@ -1,0 +1,44 @@
+run:
+  description: "属性随机化验证 - 20轮3后端，无变异无缩减"
+  seed: "42"
+  output_dir: "./reports/attr-randomize-test"
+  log_level: "info"
+
+generator:
+  min_nodes_per_graph: 3
+  max_nodes_per_graph: 8
+  min_inputs: 1
+  max_inputs: 3
+  min_input_ndim: 2
+  max_input_ndim: 4
+  graph_count: 3
+  shape_tier: "tiny"
+  avoid_nan_inf: true
+  avoid_extreme_ops: true
+  mutation:
+    enabled: false
+
+backends:
+  enabled: ["tvm", "pytorch", "onnx"]
+  tvm:
+    mode: "process"
+    timeout_seconds: 60
+    target: "llvm"
+    device: "cpu"
+  pytorch:
+    mode: "daemon"
+    timeout_seconds: 120
+    device: "cpu"
+  onnx:
+    timeout_seconds: 60
+
+pipeline:
+  workers: 1
+  batch_size: 20
+  report_interval: 10
+  run_timeout_seconds: 120
+  fail_fast: false
+  reducer:
+    enabled: false
+  dedup:
+    enabled: false

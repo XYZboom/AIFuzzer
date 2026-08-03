@@ -515,12 +515,25 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         // 4. 先生成属性（形状推导需要属性信息）
         val attributes = generateAttributes(op)
         if (attributes.isNotEmpty()) {
-            log.trace { "节点 $nodeIndex: 属性 $attributes" }
+            log.trace { "节点 $nodeIndex: 基础属性 $attributes" }
+        }
+        
+        // 4.5: CONCAT 特殊处理：在适配前随机化 axis（ShapeAdapter 需要 axis 确定拼接维度）
+        if (op == UirOpKind.CONCAT && inputValueRefs.size >= 2) {
+            val ndims = inputValueRefs.mapNotNull { valueShapes[it.valueId]?.dims?.size }
+            if (ndims.isNotEmpty()) {
+                val maxNdim = ndims.max()
+                if (maxNdim >= 1) {
+                    val axis = rand.nextInt(maxNdim)
+                    attributes["axis"] = buildIntAttr { value = axis }
+                    log.trace { "CONCAT: 随机化 axis=$axis (maxNdim=$maxNdim)" }
+                }
+            }
         }
         
         // 5. 形状适配：检查输入形状是否满足算子约束，必要时插入 wrapper
         val adaptResult = ShapeAdapter.adaptInputs(
-            op, inputValueRefs, valueShapes, valueCounter, nodeCounter
+            op, inputValueRefs, valueShapes, valueCounter, nodeCounter, attributes
         )
         
         // 记录适配信息
@@ -550,6 +563,100 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 val padding = if (maxPadding > 0) rand.nextInt(0, maxPadding + 1) else 0
                 attributes["padding"] = buildIntAttr { value = padding }
             }
+        }
+
+        // 5.6: 通用属性随机化：根据适配后的输入形状动态随机化算子属性
+        when (op) {
+            // SOFTMAX/LOG_SOFTMAX: 随机 axis（默认 -1 表示最后一维）
+            UirOpKind.SOFTMAX, UirOpKind.LOG_SOFTMAX -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        // axis 范围 [-ndim, ndim)，随机选一个
+                        val axis = if (rand.nextBoolean()) {
+                            rand.nextInt(ndim)  // 非负 0..ndim-1
+                        } else {
+                            -rand.nextInt(1, ndim + 1)  // 负 -ndim..-1
+                        }
+                        attributes["axis"] = buildIntAttr { value = axis }
+                        log.trace { "SOFTMAX: 随机化 axis=$axis (ndim=$ndim)" }
+                    }
+                }
+            }
+            // POOL2D: 随机 padding
+            UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
+                if (adaptedInputShapes.isNotEmpty() && adaptedInputShapes[0].dims.size >= 4) {
+                    val h = adaptedInputShapes[0].dims[2].valueOrNull() ?: 1
+                    val w = adaptedInputShapes[0].dims[3].valueOrNull() ?: 1
+                    // 从 attributes 读取 kernel_size（默认 1）
+                    val kernelSize = (attributes["kernel_size"] as? UirIntAttr)?.value ?: 1
+                    // padding 不能超过 kernel_size / 2（PyTorch 约束 kernel_size=1→padding=0）
+                    val maxPadding = maxOf(0, minOf(minOf(h, w), kernelSize) / 2)
+                    if (maxPadding > 0) {
+                        val padding = rand.nextInt(0, maxPadding + 1)
+                        attributes["padding"] = buildIntAttr { value = padding }
+                        log.trace { "POOL2D: 随机化 padding=$padding (maxPadding=$maxPadding)" }
+                    }
+                }
+            }
+            // REDUCE_*: 随机 axis + keepdims
+            UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        val axis = rand.nextInt(ndim)
+                        attributes["axis"] = buildIntAttr { value = axis }
+                        val keepdims = if (rand.nextDouble() < 0.3) 1 else 0
+                        attributes["keepdims"] = buildIntAttr { value = keepdims }
+                        log.trace { "REDUCE: 随机化 axis=$axis keepdims=$keepdims (ndim=$ndim)" }
+                    }
+                }
+            }
+            // ARGMAX/ARGMIN: 随机 axis + keepdims
+            UirOpKind.ARGMAX, UirOpKind.ARGMIN -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        val axis = rand.nextInt(ndim)
+                        attributes["axis"] = buildIntAttr { value = axis }
+                        log.trace { "ARGMAX: 随机化 axis=$axis (ndim=$ndim)" }
+                    }
+                }
+            }
+            // SPLIT: 随机 axis
+            UirOpKind.SPLIT -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        val axis = rand.nextInt(ndim)
+                        attributes["axis"] = buildIntAttr { value = axis }
+                        log.trace { "SPLIT: 随机化 axis=$axis (ndim=$ndim)" }
+                    }
+                }
+            }
+            // GATHER: 随机 axis
+            UirOpKind.GATHER -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        val axis = rand.nextInt(ndim)
+                        attributes["axis"] = buildIntAttr { value = axis }
+                        log.trace { "GATHER: 随机化 axis=$axis (ndim=$ndim)" }
+                    }
+                }
+            }
+            // CUMSUM/CUMPROD: 随机 axis
+            UirOpKind.CUMSUM, UirOpKind.CUMPROD -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        val axis = rand.nextInt(ndim)
+                        attributes["axis"] = buildIntAttr { value = axis }
+                        log.trace { "CUMSUM: 随机化 axis=$axis (ndim=$ndim)" }
+                    }
+                }
+            }
+            else -> { /* 无特殊属性随机化 */ }
         }
 
         // 6. 推导并生成输出值（委托给 ShapeInferer）
