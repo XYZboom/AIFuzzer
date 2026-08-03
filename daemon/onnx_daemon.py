@@ -19,11 +19,11 @@ import json
 import os
 import signal
 import sys
-import subprocess
-import tempfile
 import threading
 import time
+import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from io import StringIO
 
 # 一次性导入 ONNX + ONNX Runtime
 ONNX_AVAILABLE = False
@@ -43,56 +43,75 @@ try:
 except Exception as _ie:
     _import_error += "; " + repr(_ie)
 
-EXEC_TIMEOUT_SECONDS = 30
+import numpy as np
+
+# 每次 exec 的最大超时时间（秒），避免 ONNX Runtime 的 C 扩展无限阻塞
+# 使用 signal.alarm 超时保护，与 TVM daemon 一致
+EXEC_TIMEOUT_SECONDS = 120
 DAEMON_START_TIME = time.time()
 
 
-def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
-    """执行单次测试源码，用子进程运行 + 硬超时 kill。
+def _timeout_handler(signum, frame):
+    """SIGALRM 处理器，抛出 TimeoutError。"""
+    raise TimeoutError(f"exec timed out after {EXEC_TIMEOUT_SECONDS}s")
 
-    ONNX Runtime 的 C 扩展可能无限阻塞 in-process exec() 无法被 SIGALRM 中断。
-    改用 subprocess.run(timeout=...) 确保超时后 SIGKILL 子进程，daemon 本身永不阻塞。
+
+def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
+    """执行单次测试源码，捕获 stdout/stderr。
+
+    使用 signal.alarm 进行超时保护：ONNX Runtime 的 C 扩展可能在某些输入下
+    无限阻塞，此时 alarm 会触发 TimeoutError，与 TVM daemon 一致。
     """
-    import tempfile
-    import subprocess
+    global onnx, helper, TensorProto, ort, np
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    old_alarm = None
+    sys.stdout = StringIO()
+    sys.stderr = StringIO()
 
     start = time.time()
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(source)
-        f.flush()
-        script_path = f.name
-
+    exit_code = 0
     try:
-        proc = subprocess.run(
-            [sys.executable, script_path],
-            capture_output=True, text=True,
-            timeout=timeout,
-            env={"PYTHONPATH": ":".join(sys.path),
-                 "MKL_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
-                 "OPENBLAS_NUM_THREADS": "1", "VECLIB_MAXIMUM_THREADS": "1"},
-        )
-        elapsed = int((time.time() - start) * 1000)
-        return {
-            "success": proc.returncode == 0,
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "elapsed_ms": elapsed,
-        }
-    except subprocess.TimeoutExpired:
-        elapsed = int((time.time() - start) * 1000)
-        return {
-            "success": False,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": f"TIMEOUT (subprocess): execution timed out after {timeout}s",
-            "elapsed_ms": elapsed,
-        }
+        # 设置 alarm 超时
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            old_alarm = signal.alarm(timeout)
+
+        exec(source, {
+            "onnx": onnx, "helper": helper, "TensorProto": TensorProto,
+            "ort": ort, "np": np,
+        })
+        success = True
+    except SystemExit as e:
+        success = False
+        exit_code = e.code if isinstance(e.code, int) else 1
+        traceback.print_exc()
+    except TimeoutError as e:
+        success = False
+        exit_code = -1
+        print(f"TIMEOUT: {e}", file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
+        success = False
+        exit_code = 1
     finally:
-        try:
-            os.unlink(script_path)
-        except OSError:
-            pass
+        # 恢复 alarm
+        if hasattr(signal, "SIGALRM") and old_alarm is not None:
+            signal.alarm(old_alarm)
+
+    elapsed = int((time.time() - start) * 1000)
+    captured_stdout = sys.stdout.getvalue()
+    captured_stderr = sys.stderr.getvalue()
+    sys.stdout = old_stdout
+    sys.stderr = old_stderr
+
+    return {
+        "success": success,
+        "exit_code": exit_code,
+        "stdout": captured_stdout,
+        "stderr": captured_stderr,
+        "elapsed_ms": elapsed,
+    }
 
 
 class DaemonRequestHandler(BaseHTTPRequestHandler):
