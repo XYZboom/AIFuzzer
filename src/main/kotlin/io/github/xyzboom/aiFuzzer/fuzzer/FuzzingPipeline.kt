@@ -173,6 +173,14 @@ class FuzzingPipeline(
      * 每次调用创建新的 [UirGenerator] 实例，确保线程安全。
      */
     fun runOnce(seed: Long = System.currentTimeMillis()): List<FuzzingResult> {
+        return runOnce(seed, backends)
+    }
+
+    /**
+     * 单次 Fuzzing 运行，使用指定的 backends 列表。
+     * 并行模式下每个 worker 传入自己的 threadBackends 副本。
+     */
+    private fun runOnce(seed: Long, backends: List<Backend<*>>): List<FuzzingResult> {
         log.debug { "运行单次测试: seed=$seed" }
         // 每次创建新的 generator，避免共享可变状态
         var genConfig = generatorConfig.copy(seed = seed)
@@ -352,37 +360,12 @@ class FuzzingPipeline(
 
             val futures = (0 until count).map { i ->
                 val seed = seeds[i]
-                val taskGenConfig = generatorConfig.copy(seed = seed)
-                val finalTaskGenConfig = if (patternDatabase != null) {
-                    val dedupTarget = resolveDedupTarget()
-                    taskGenConfig.copy(
-                        dedup = io.github.xyzboom.aiFuzzer.generator.DedupConfig(
-                            enabled = config.dedup.enabled,
-                            patternDatabase = patternDatabase,
-                            compiler = config.dedup.compiler,
-                            target = dedupTarget,
-                            maxRetries = 10,
-                        )
-                    )
-                } else taskGenConfig
                 executor.submit<List<FuzzingResult>> {
                     val workerId = (nextWorkerId.getAndIncrement() % config.workers).toInt()
                     val threadBackends = backendPool[workerId]
-                    val taskGenerator = UirGenerator(finalTaskGenConfig)
                     try {
-                        val program = taskGenerator.generate()
-                        taskGenerator.patternMatcher?.let { pm ->
-                            totalNodesChecked.addAndGet(pm.totalNodesChecked.toLong())
-                            if (pm.matchCount > 0) {
-                                patternMatchCount.merge("TOTAL_MATCHES", pm.matchCount) { a, b -> a + b }
-                                pm.matchCountByPattern.forEach { (pid, cnt) ->
-                                    patternMatchCount.merge(pid, cnt) { a, b -> a + b }
-                                }
-                            }
-                        }
-                        val results = threadBackends.map { backend ->
-                            runOnBackend(program, backend, seed)
-                        }
+                        // 调用 runOnce(seed, threadBackends) 来复用生成→变异→种子池逻辑
+                        val results = runOnce(seed = seed, backends = threadBackends)
                         results.forEach {
                             if (it.backendResult.success) successCount.incrementAndGet()
                             else if (config.failFast && failFastTriggered.compareAndSet(false, true)) {

@@ -465,9 +465,12 @@ class UirMutator(
                     // 3. 不要走主循环（避免再次触发 adaptInputs）
                     for (wrapperNode in result.wrapperNodes) {
                         // TILE/BROADCAST_TO/RESHAPE 是 ShapeAdapter 插入的适配节点，输出 ref 形状已由适配器正确设置。
+                        // ZEROS/ONES/FULL/ARANGE 是 CONV2D 等算子特殊处理生成的常量张量，输出 ref 形状也已正确设置。
                         // inferShape 无法从输入推导出这些节点的正确输出（因为缺少必要的属性信息），
                         // 所以直接保持输出 ref 的已有形状。
-                        if (wrapperNode.op == UirOpKind.TILE || wrapperNode.op == UirOpKind.BROADCAST_TO || wrapperNode.op == UirOpKind.RESHAPE) {
+                        if (wrapperNode.op == UirOpKind.TILE || wrapperNode.op == UirOpKind.BROADCAST_TO || wrapperNode.op == UirOpKind.RESHAPE
+                            || wrapperNode.op == UirOpKind.ZEROS || wrapperNode.op == UirOpKind.ONES
+                            || wrapperNode.op == UirOpKind.FULL || wrapperNode.op == UirOpKind.ARANGE) {
                             for (output in wrapperNode.outputs) {
                                 valueShapes[output.valueId] = output.type.shape
                             }
@@ -623,7 +626,10 @@ class UirMutator(
                     if (result.wrapperNodes.isNotEmpty()) {
                         graph.nodes.addAll(i, result.wrapperNodes)
                         for (wrapperNode in result.wrapperNodes) {
-                            if (wrapperNode.op == UirOpKind.TILE || wrapperNode.op == UirOpKind.BROADCAST_TO) {
+                            if (wrapperNode.op == UirOpKind.TILE || wrapperNode.op == UirOpKind.BROADCAST_TO
+                                || wrapperNode.op == UirOpKind.RESHAPE
+                                || wrapperNode.op == UirOpKind.ZEROS || wrapperNode.op == UirOpKind.ONES
+                                || wrapperNode.op == UirOpKind.FULL || wrapperNode.op == UirOpKind.ARANGE) {
                                 for (output in wrapperNode.outputs) {
                                     valueShapes[output.valueId] = output.type.shape
                                 }
