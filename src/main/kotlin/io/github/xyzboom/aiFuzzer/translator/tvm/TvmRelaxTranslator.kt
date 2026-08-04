@@ -697,8 +697,14 @@ class TvmRelaxTranslator(
             // ===== 索引 =====
             UirOpKind.GATHER -> {
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
-                // 使用标量索引 0，移除 axis 维度（与 ShapeInferer 对齐）
-                "relax.op.take(${inputVars[0]}, relax.const(0, dtype=\"int64\"), axis=$axis)"
+                val indicesStr = (attributes["indices"] as? UirStringAttr)?.value
+                if (indicesStr != null && indicesStr.contains(",")) {
+                    // 多索引：relax.op.take(tensor, [i0,i1,...], axis=axis)
+                    "relax.op.take(${inputVars[0]}, relax.const([$indicesStr], dtype=\"int64\"), axis=$axis)"
+                } else {
+                    val idx = indicesStr?.toIntOrNull() ?: 0
+                    "relax.op.take(${inputVars[0]}, relax.const($idx, dtype=\"int64\"), axis=$axis)"
+                }
             }
 
             UirOpKind.STRIDED_SLICE -> {

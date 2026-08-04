@@ -623,25 +623,106 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     }
                 }
             }
-            // SPLIT: 随机 axis
+            // SPLIT: 随机 axis + 随机 splits（基于适配后的输入形状）
             UirOpKind.SPLIT -> {
                 if (adaptedInputShapes.isNotEmpty()) {
                     val ndim = adaptedInputShapes[0].dims.size
                     if (ndim >= 1) {
                         val axis = rand.nextInt(ndim)
                         attributes["axis"] = buildIntAttr { value = axis }
-                        log.trace { "SPLIT: 随机化 axis=$axis (ndim=$ndim)" }
+                        // 随机生成 splits：基于 axis 维度值
+                        val axisDimVal = adaptedInputShapes[0].dims[axis].valueOrNull() ?: 2
+                        if (axisDimVal >= 4) {
+                            // 随机分成 2~4 段，每段至少 1
+                            val numSplits = rand.nextInt(2, minOf(5, axisDimVal + 1))
+                            val parts = mutableListOf<Int>()
+                            var remaining = axisDimVal
+                            for (i in 0 until numSplits) {
+                                if (i == numSplits - 1) {
+                                    parts.add(remaining)
+                                } else {
+                                    // 每段至少留 1 给后面的
+                                    val maxTake = remaining - (numSplits - i - 1)
+                                    val take = if (maxTake > 1) rand.nextInt(1, maxTake + 1) else 1
+                                    parts.add(take)
+                                    remaining -= take
+                                }
+                            }
+                            attributes["splits"] = buildStringAttr { value = parts.joinToString(",") }
+                            log.trace { "SPLIT: 随机化 axis=$axis splits=$parts (ndim=$ndim axisDim=$axisDimVal)" }
+                        } else {
+                            // 维度太小，等分 2 份
+                            attributes["splits"] = buildStringAttr { value = "2" }
+                            log.trace { "SPLIT: 随机化 axis=$axis splits=2 (ndim=$ndim, axis dim too small)" }
+                        }
                     }
                 }
             }
-            // GATHER: 随机 axis
+            // GATHER: 随机 axis + indices
             UirOpKind.GATHER -> {
                 if (adaptedInputShapes.isNotEmpty()) {
                     val ndim = adaptedInputShapes[0].dims.size
                     if (ndim >= 1) {
                         val axis = rand.nextInt(ndim)
                         attributes["axis"] = buildIntAttr { value = axis }
-                        log.trace { "GATHER: 随机化 axis=$axis (ndim=$ndim)" }
+                        // 随机 indices：单标量 or 多索引
+                        val axisDimVal = adaptedInputShapes[0].dims[axis].valueOrNull() ?: 4
+                        if (axisDimVal >= 3 && rand.nextBoolean()) {
+                            // 多索引：随机选 2~min(5, axisDimVal) 个不重复索引
+                            val numIndices = rand.nextInt(2, minOf(6, axisDimVal + 1))
+                            val indices = (0 until axisDimVal).shuffled(rand).take(numIndices).sorted()
+                            attributes["indices"] = buildStringAttr { value = indices.joinToString(",") }
+                            log.trace { "GATHER: 随机化 axis=$axis indices=$indices (ndim=$ndim axisDim=$axisDimVal)" }
+                        } else {
+                            // 单标量
+                            val idx = if (axisDimVal > 1) rand.nextInt(axisDimVal) else 0
+                            attributes["indices"] = buildStringAttr { value = idx.toString() }
+                            log.trace { "GATHER: 随机化 axis=$axis indices=$idx (ndim=$ndim)" }
+                        }
+                    }
+                }
+            }
+            // STRIDED_SLICE: 随机 axes + begin + end
+            UirOpKind.STRIDED_SLICE -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val ndim = adaptedInputShapes[0].dims.size
+                    if (ndim >= 1) {
+                        // 随机选 1~min(3, ndim) 个轴
+                        val numAxes = rand.nextInt(1, minOf(4, ndim + 1))
+                        val selectedAxes = (0 until ndim).shuffled(rand).take(numAxes).sorted()
+                        val begins = mutableListOf<Int>()
+                        val ends = mutableListOf<Int>()
+                        for (a in selectedAxes) {
+                            val dimVal = adaptedInputShapes[0].dims[a].valueOrNull() ?: 4
+                            val maxBegin = maxOf(1, dimVal - 1)
+                            val b = if (maxBegin > 0) rand.nextInt(maxBegin) else 0
+                            val e = if (dimVal > b) rand.nextInt(b + 1, dimVal + 1) else b + 1
+                            begins.add(b)
+                            ends.add(e)
+                        }
+                        attributes["axes"] = buildStringAttr { value = selectedAxes.joinToString(",") }
+                        attributes["begin"] = buildStringAttr { value = begins.joinToString(",") }
+                        attributes["end"] = buildStringAttr { value = ends.joinToString(",") }
+                        log.trace { "STRIDED_SLICE: 随机化 axes=$selectedAxes begin=$begins end=$ends (ndim=$ndim)" }
+                    }
+                }
+            }
+            // RESHAPE: 生成随机目标形状（总元素数保持不变）
+            UirOpKind.RESHAPE -> {
+                if (adaptedInputShapes.isNotEmpty()) {
+                    val inputShape = adaptedInputShapes[0]
+                    val totalElements = inputShape.dims.fold(1L) { acc, dim ->
+                        acc * (dim.valueOrNull()?.toLong() ?: 1L)
+                    }
+                    if (totalElements in 1..Int.MAX_VALUE) {
+                        // 分解 totalElements 为合法 ndim
+                        val origNdim = inputShape.dims.size
+                        val targetNdim = rand.nextInt(1, minOf(5, origNdim + 2))
+                        val factors = factorizeRandomly(totalElements.toInt(), targetNdim, rand)
+                        if (factors.isNotEmpty()) {
+                            attributes["shape"] = buildStringAttr { value = factors.joinToString(",") }
+                            log.trace { "RESHAPE: 随机化 target shape=$factors (total=$totalElements ndim=$targetNdim)" }
+                        }
                     }
                 }
             }
@@ -942,6 +1023,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             }
             UirOpKind.SPLIT -> {
                 attrs["axis"] = buildIntAttr { value = 0 }
+                attrs["splits"] = buildStringAttr { value = "2" }  // 默认等分 2 份
             }
             UirOpKind.CONCAT -> {
                 attrs["axis"] = buildIntAttr { value = 0 }
@@ -1146,6 +1228,32 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
      */
     private fun shapeDims(shape: UirShape): String {
         return shape.dims.map { it.valueOrNull() ?: "?" }.joinToString(", ", "[", "]")
+    }
+    
+    /**
+     * 将 totalElements 随机分解为 targetNdim 个正整数的乘积。
+     * 例如：totalElements=12, targetNdim=3 → [2, 2, 3] 或 [3, 4, 1]。
+     */
+    private fun factorizeRandomly(totalElements: Int, targetNdim: Int, rand: Random): List<Int> {
+        if (totalElements <= 0 || targetNdim <= 0) return emptyList()
+        var remaining = totalElements
+        val factors = mutableListOf<Int>()
+        for (i in 0 until targetNdim - 1) {
+            if (remaining <= 1) {
+                factors.add(1)
+                continue
+            }
+            // 找一个随机因数
+            val candidates = (1..remaining).filter { remaining % it == 0 }
+            if (candidates.isEmpty()) {
+                factors.add(1)
+            } else {
+                factors.add(candidates.random(rand))
+                remaining /= factors.last()
+            }
+        }
+        factors.add(remaining)  // 最后一个维度吞掉所有余数
+        return factors
     }
     
     // generateBroadcastCompatibleShape removed — no longer needed since

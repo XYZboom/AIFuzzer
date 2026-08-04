@@ -1,0 +1,76 @@
+# 30 轮 — 3 后端 (TVM CPU + PyTorch CPU + ONNX CPU)，变异 maxMutations=5
+run:
+  description: "30 rounds, 3 backends (tvm-cpu + pytorch + onnx), mutation maxMutations=5"
+  seed: null
+  output_dir: "./reports"
+  log_level: "info"
+
+generator:
+  min_nodes_per_graph: 4
+  max_nodes_per_graph: 12
+  min_inputs: 1
+  max_inputs: 3
+  min_input_ndim: 2
+  max_input_ndim: 4
+  strategy: "random"
+  shape_tier: "tiny"
+  avoid_nan_inf: false
+  avoid_extreme_ops: false
+  ops:
+    include_all: true
+
+  mutation:
+    enabled: true
+    rate: 0.4
+    max_mutations: 5
+    max_seeds: 100
+    op_mutation: true
+    insert_mutation: true
+    delete_mutation: true
+    attribute_mutation: true
+
+backends:
+  enabled: ["tvm", "pytorch", "onnx"]
+
+  tvm:
+    python: "python3"
+    mode: "daemon"
+    daemonCount: 1
+    timeout_seconds: 120
+    keep_artifacts: true
+    target: "llvm"
+    device: "cpu"
+
+  pytorch:
+    python: "python3"
+    mode: "daemon"
+    timeout_seconds: 120
+    keep_artifacts: true
+    dtype: "float32"
+    device: "cpu"
+    compile_mode: "default"
+
+  onnx:
+    python: "python3"
+    timeout_seconds: 120
+    opset_version: 21
+    ir_version: 8
+
+bug_collector:
+  enabled: true
+  ignore_patterns:
+    - "SyntaxError"
+    - "IndentationError"
+    - "ImportError"
+    - "ModuleNotFoundError"
+    - "AttributeError"
+  output_dir: "./reports"
+
+pipeline:
+  workers: 1
+  batch_size: 30
+  run_timeout_seconds: 120
+  reducer:
+    enabled: false
+  dedup:
+    enabled: false

@@ -733,11 +733,14 @@ object ShapeInferer {
 
         val inputShape = inputShapes[0]
 
-        // 检查是否有 shape 属性
+        // 检查是否有 shape 属性（逗号分隔的目标形状，如 "4,72"）
         val shapeAttr = attributes["shape"]
-        if (shapeAttr != null) {
-            // 如果有 shape 属性，使用它
-            // 注意：翻译器会把 unknown dim 转成 -1，让 TVM 自动推断
+        if (shapeAttr is UirStringAttr) {
+            val targetDims = shapeAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
+            if (targetDims.isNotEmpty()) {
+                return listOf(shapeFromDims(targetDims.map { constantDim(it) }))
+            }
+            // 解析失败，标记为未知
             return listOf(shapeFromDims(listOf(unknownDim())))
         }
 
@@ -884,8 +887,8 @@ object ShapeInferer {
     /**
      * SPLIT 形状推导。
      * 
-     * 规则：沿 axis 分割，输出形状与输入相同（多输出）
-     * 当前实现：假设分割为 2 份
+     * 规则：沿 axis 分割。支持 splits 属性（逗号分隔的分段尺寸）。
+     * 无 splits 属性时默认等分 2 份。
      */
     private fun inferSplitShape(
         inputShapes: List<UirShape>,
@@ -894,14 +897,39 @@ object ShapeInferer {
         requireSingleInput(UirOpKind.SPLIT, inputShapes)
 
         val inputShape = inputShapes[0]
-        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
         val ndim = inputShape.dims.size
+        if (ndim == 0) {
+            // 0-D tensor cannot be split, return as-is
+            return listOf(shapeFromDims(inputShape.dims), shapeFromDims(inputShape.dims))
+        }
+        val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
         val normalizedAxis = if (axis < 0) axis + ndim else axis
         val clampedAxis = normalizedAxis.coerceIn(0, ndim - 1)
         val axisDim = inputShape.dims[clampedAxis].value
 
-        // 翻译器使用 dimSize / 2 作为分割点 (TvmRelaxTranslator:687-694)
-        // 如果 axis 维度已知，可以精确计算分割后的形状
+        // 从 attributes 读取 splits（逗号分隔，如 "2,3" 或 "2"）
+        val splitsStr = (attributes["splits"] as? UirStringAttr)?.value
+        val splits: List<Int> = when {
+            splitsStr != null && splitsStr.contains(",") ->
+                splitsStr.split(",").mapNotNull { it.trim().toIntOrNull() }
+            splitsStr != null ->
+                listOfNotNull(splitsStr.trim().toIntOrNull())
+            else -> emptyList()
+        }
+
+        if (splits.isNotEmpty() && axisDim != null) {
+            // 使用 splits 精确计算各输出形状
+            val sumSplits = splits.sum()
+            val remaining = if (sumSplits < axisDim) axisDim - sumSplits else 0
+            return splits.mapIndexed { i, s ->
+                val actualSize = if (i == splits.lastIndex) s + remaining else s
+                shapeFromDims(inputShape.dims.mapIndexed { j, dim ->
+                    if (j == clampedAxis) constantDim(actualSize) else dim
+                })
+            }
+        }
+
+        // Fallback: 等分 2 份
         if (axisDim != null && axisDim >= 2) {
             val halfSize = axisDim / 2
             val outDims1 = inputShape.dims.mapIndexed { i, dim ->
@@ -913,15 +941,17 @@ object ShapeInferer {
             return listOf(shapeFromDims(outDims1), shapeFromDims(outDims2))
         }
 
-        // axis 维度 < 2：无法分割，返回原始形状（TVM 会在运行时保持原样）
+        // axis 维度 < 2：无法分割，返回原始形状
         return listOf(shapeFromDims(inputShape.dims), shapeFromDims(inputShape.dims))
     }
     
     /**
      * GATHER 形状推导。
      * 
-     * 规则：单输入模式（indices 是标量常量）会移除 axis 维度
-     * TVM 的 take(tensor, scalar_index, axis) 会减少一个维度
+     * 规则：
+     * - 单标量索引：移除 axis 维度
+     * - 多索引（逗号分隔 "0,2,4"）：axis 维度大小变为 len(indices)
+     * TVM 的 take(tensor, [i0,i1,i2], axis) 会保留 axis 维度
      */
     private fun inferGatherShape(
         inputShapes: List<UirShape>,
@@ -929,12 +959,24 @@ object ShapeInferer {
     ): List<UirShape> {
         if (inputShapes.size == 1) {
             val dataShape = inputShapes[0]
-            // TVM 翻译器生成 relax.op.take(tensor, scalar_index, axis)
-            // 标量索引会移除 axis 维度，而不是保持同 rank。
-            // 例如: take([2,5,3], 0, axis=0) → [5, 3]
             val ndim = dataShape.dims.size
             val axis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
             val normalizedAxis = if (axis < 0) axis + ndim else axis
+
+            // 检查是否多索引
+            val indicesStr = (attributes["indices"] as? UirStringAttr)?.value
+            val isMultiIndex = indicesStr != null && indicesStr.contains(",")
+            val numIndices = if (isMultiIndex) indicesStr!!.split(",").size else 0
+
+            if (isMultiIndex && numIndices > 0 && normalizedAxis in 0 until ndim) {
+                // 多索引：保留 axis 维度，大小 = len(indices)
+                val outputDims = dataShape.dims.toMutableList()
+                outputDims[normalizedAxis] = constantDim(numIndices)
+                return listOf(shapeFromDims(outputDims))
+            }
+
+            // 单标量索引：移除 axis 维度
+            // 例如: take([2,5,3], 0, axis=0) → [5, 3]
             val outputDims = dataShape.dims.toMutableList()
             if (normalizedAxis in outputDims.indices) {
                 outputDims.removeAt(normalizedAxis)
