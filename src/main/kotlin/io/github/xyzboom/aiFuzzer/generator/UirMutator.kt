@@ -566,28 +566,40 @@ class UirMutator(
                 val outputElements = outShape.dims.mapNotNull { it.valueOrNull() }
                     .fold(1L) { acc, v -> acc * v }
                 if (inputElements > 0 && outputElements > 0 && inputElements != outputElements) {
-                    // 元素数不匹配，需要重新插入适配
-                    log.warn { "RESHAPE 元素数不匹配: input=$inputShape(${inputElements}el) -> output=$outShape(${outputElements}el)，重新插入适配" }
-                    try {
-                        val (adaptedRef, wrappers) = ShapeAdapter.adaptWithElemCountMatch(
-                            node.inputs[0], inputShape, outShape,
-                            valueShapes, valueCounter, nodeCounter
-                        )
-                        if (wrappers.isNotEmpty()) {
-                            graph.nodes.addAll(i, wrappers)
-                            node.inputs.clear()
-                            node.inputs.add(adaptedRef)
-                            valueCounter += wrappers.size
-                            nodeCounter += wrappers.size
-                            i += wrappers.size
+                    // 元素数不匹配：输出形状可能是上游变异后过期的，更新输出形状匹配输入元素数
+                    // 正确做法：保持输出 ndim 不变，但调整各维值使总元素数匹配输入
+                    // 如果不能整除，则 flatten 到 1D
+                    log.warn { "RESHAPE 元素数不匹配: input=$inputShape(${inputElements}el) -> output=$outShape(${outputElements}el)，更新输出形状匹配输入" }
+                    val newOutShape = buildShape {
+                        if (outShape.dims.size == 1) {
+                            // 已经是 1D：直接更新元素数
+                            dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = inputElements.toInt() })
+                        } else {
+                            // 尝试保持 ndim 但调整第一个可变维度
+                            val mutableDims = outShape.dims.toMutableList()
+                            val fixedElements = mutableDims.mapIndexedNotNull { idx, dim ->
+                                if (idx == 0) null else dim.valueOrNull()
+                            }.fold(1L) { acc, v -> acc * v }
+                            if (fixedElements > 0 && inputElements % fixedElements == 0L) {
+                                // 固定维度的乘积能整除总元素数，调整第一个维度
+                                val firstDim = (inputElements / fixedElements).toInt()
+                                dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = firstDim })
+                                for (idx in 1 until mutableDims.size) {
+                                    dims.add(mutableDims[idx])
+                                }
+                            } else {
+                                // 不能整除，flatten 到 1D
+                                dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = inputElements.toInt() })
+                            }
                         }
-                    } catch (e: Exception) {
-                        log.warn { "RESHAPE 适配也失败: ${e.message}" }
                     }
-                }
-                // 更新 valueShapes（适配前后 shape 不变只变输入）
-                for (output in node.outputs) {
-                    valueShapes[output.valueId] = output.type.shape
+                    // 更新输出 ref 的形状
+                    node.outputs[0].type.shape = newOutShape
+                    valueShapes[node.outputs[0].valueId] = newOutShape
+                } else {
+                    for (output in node.outputs) {
+                        valueShapes[output.valueId] = output.type.shape
+                    }
                 }
                 i++
                 continue

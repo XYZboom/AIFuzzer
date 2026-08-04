@@ -791,8 +791,8 @@ class OnnxTranslator(
                     } else {
                         nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$maskId'], outputs=['$usId'], axes=[$usAxes])"))
                     }
-                    // Expand mask to full output shape
-                    val outDims = outputShape?.dims?.joinToString(", ") { it.value?.toString() ?: "1" } ?: "$h, $w"
+                    // Expand mask to full input shape
+                    val outDims = inputShape?.dims?.joinToString(", ") { it.value?.toString() ?: "1" } ?: "$h, $w"
                     val shId = "c${outputId}_sh"
                     tensorInitLines.add("""${shId}_t = helper.make_tensor("${shId}_v", $INT64, [$ndim], [$outDims])""")
                     val nvSh = nextNodeVar()

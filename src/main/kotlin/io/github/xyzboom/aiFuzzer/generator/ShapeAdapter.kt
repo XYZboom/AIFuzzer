@@ -1295,10 +1295,15 @@ object ShapeAdapter {
         if (op == UirOpKind.CONV2D && adaptedShapes.size == 2) {
             val inputC = adaptedShapes[0].dims.getOrNull(1)?.valueOrNull()
             val weightCIn = adaptedShapes[1].dims.getOrNull(1)?.valueOrNull()
+            val weightCOut = adaptedShapes[1].dims.getOrNull(0)?.valueOrNull()
             val inputH = adaptedShapes[0].dims.getOrNull(2)?.valueOrNull() ?: 1
             val inputW = adaptedShapes[0].dims.getOrNull(3)?.valueOrNull() ?: 1
             
-            val cInMismatch = inputC != null && weightCIn != null && inputC != weightCIn
+            // 检查 C_in 不匹配：当任一维度为 null 时也视为不匹配（运行时值实际是具体的）
+            // 因为程序生成时 shape 可能为 UNKNOWN，但运行时实际值一定确定
+            val cInMismatch = (inputC != null && weightCIn != null && inputC != weightCIn) ||
+                (inputC != null && weightCIn == null) ||
+                (inputC == null && weightCIn != null)
             val origKH = adaptedShapes[1].dims.getOrNull(2)?.valueOrNull() ?: 3
             val origKW = adaptedShapes[1].dims.getOrNull(3)?.valueOrNull() ?: 3
             val kHTooBig = origKH > inputH
@@ -1307,8 +1312,9 @@ object ShapeAdapter {
             if (cInMismatch || kHTooBig || kWTooBig) {
                 // 生成常量权重张量替换第二个输入
                 // 权重形状: [C_out, C_in, kH, kW]
-                val cOut = weightCIn ?: inputC ?: 1
-                val cIn = inputC ?: weightCIn ?: 1
+                // C_out 来自旧权重 dim[0]；C_in 来自输入 dim[1]（确保与输入通道匹配）
+                val cOut = weightCOut ?: 1
+                val cIn = inputC ?: 1
                 val kH = minOf(origKH, inputH).coerceAtLeast(1)
                 val kW = minOf(origKW, inputW).coerceAtLeast(1)
                 
