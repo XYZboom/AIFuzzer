@@ -480,9 +480,10 @@ object ShapeAdapter {
             }
 
             if (needsClipping) {
-                // 使用 STRIDED_SLICE 裁剪：对每个需要裁剪的维度，取 [0, min_val)
-                val (newRef, newNodes) = insertStridedSliceForConcat(
-                    adaptedRefs[i], currentShape, minShape, normalizedAxis,
+                // 使用 adaptWithElemCountMatch 裁剪（flatten→tile/crop→reshape）
+                // 避免 STRIDED_SLICE 的 axis/ndim 兼容性问题
+                val (newRef, newNodes) = adaptWithElemCountMatch(
+                    adaptedRefs[i], currentShape, minShape,
                     valueShapes, localValueCounter, localNodeCounter
                 )
                 wrapperNodes.addAll(newNodes)
