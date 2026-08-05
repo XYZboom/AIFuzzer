@@ -991,8 +991,7 @@ class OnnxTranslator(
             UirOpKind.MAX_POOL2D, UirOpKind.AVG_POOL2D -> {
                 var k = (attrs["kernel_size"] as? UirIntAttr)?.value ?: 2
                 var s = (attrs["stride"] as? UirIntAttr)?.value ?: k
-                val pd = (attrs["padding"] as? UirIntAttr)?.value ?: 0
-                // Guard kernel_size against input spatial dims to prevent output size zero
+                var pd = (attrs["padding"] as? UirIntAttr)?.value ?: 0
                 val poolInputShape = inputShapes.firstOrNull()
                 if (poolInputShape != null && poolInputShape.dims.size >= 4) {
                     val h = poolInputShape.dims[2].value ?: k
@@ -1003,6 +1002,8 @@ class OnnxTranslator(
                         s = minOf(s, k)
                     }
                 }
+                val maxPad = maxOf(0, k - 1)
+                if (pd > maxPad) pd = maxPad
                 p.add("kernel_shape=[$k, $k]"); p.add("strides=[$s, $s]"); p.add("pads=[$pd, $pd, $pd, $pd]")
             }
             UirOpKind.CUMSUM -> p.add("axis=${(attrs["axis"] as? UirIntAttr)?.value ?: -1}")

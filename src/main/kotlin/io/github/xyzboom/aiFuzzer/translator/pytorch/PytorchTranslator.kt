@@ -476,9 +476,8 @@ class PytorchTranslator(
             UirOpKind.MAX_POOL2D -> {
                 var kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
                 var stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
-                val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                var padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // Static guard: clamp kernel_size to IR-inferred spatial dims
                 val inputShape = node.inputs[0].type.shape
                 if (inputShape.dims.size >= 4) {
                     val h = inputShape.dims[2].value ?: kernelSize
@@ -488,19 +487,17 @@ class PytorchTranslator(
                         kernelSize = maxOf(1, minSpatial)
                         stride = minOf(stride, kernelSize)
                     }
+                    val maxPad = kernelSize / 2
+                    if (padding > maxPad) padding = maxPad
                 }
-                // Runtime guard: clamp kernel_size to actual spatial dims via min().
-                // This catches cases where the IR-inferred shape is incorrect
-                // (e.g., due to GATHER shape inference limitations), ensuring
-                // kernel_size never exceeds the real spatial dimensions at runtime.
                 val runtimeKs = "max(1, min($kernelSize, $inputVar.shape[2], $inputVar.shape[3]))"
                 "$pytorchFunc($inputVar, " +
-                    "kernel_size=$runtimeKs, stride=min($stride, $runtimeKs), padding=$padding)"
+                    "kernel_size=$runtimeKs, stride=min($stride, $runtimeKs), padding=min($padding, $runtimeKs // 2))"
             }
             UirOpKind.AVG_POOL2D -> {
                 var kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
                 var stride = (node.attributes["stride"] as? UirIntAttr)?.value ?: kernelSize
-                val padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
+                var padding = (node.attributes["padding"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
                 // Static guard: clamp kernel_size to IR-inferred spatial dims
                 val inputShape = node.inputs[0].type.shape

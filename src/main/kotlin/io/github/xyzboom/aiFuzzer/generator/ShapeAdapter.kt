@@ -929,15 +929,15 @@ object ShapeAdapter {
                 currentRef = newRef
                 currentShape = valueShapes[newRef.valueId]!!
             } else {
-                // 不能直接广播：需要先 RESHAPE 调整维度值
-                // 策略：使用 RESHAPE 将形状调整为目标形状
-                val (newRef, newNode) = insertReshape(
+                // 不能直接广播：使用 flatten+tile/crop+reshape 适配元素数
+                val (newRef, nodes) = adaptWithElemCountMatch(
                     currentRef, currentShape, targetShape,
-                    valueShapes, counter++, nodeCounter + wrapperNodes.size
+                    valueShapes, counter, nodeCounter + wrapperNodes.size
                 )
-                wrapperNodes.add(newNode)
+                wrapperNodes.addAll(nodes)
                 currentRef = newRef
                 currentShape = valueShapes[newRef.valueId]!!
+                counter += nodes.size
             }
         }
         
@@ -1124,25 +1124,40 @@ object ShapeAdapter {
         valueIdCounter: Int,
         nodeIdCounter: Int
     ): Pair<UirValueRef, UirNode> {
+        val inEl = inputShape.dims.mapNotNull { it.valueOrNull() }.fold(1L) { a, v -> a * v }
+        val tgtEl = targetShape.dims.mapNotNull { it.valueOrNull() }.fold(1L) { a, v -> a * v }
+        val actualTarget = if (inEl > 0 && tgtEl > 0 && inEl != tgtEl) {
+            // Element count mismatch: recalculate target ndim using actual input count
+            buildShape {
+                val ndim = targetShape.dims.size
+                val factors = factorizeToNdimShape(inEl.toInt(), ndim)
+                if (factors.isNotEmpty()) {
+                    factors.forEach { dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = it }) }
+                } else {
+                    dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = inEl.toInt() })
+                }
+            }
+        } else targetShape
+
         val outputValueId = "v_${valueIdCounter}_${randomIdSuffix()}"
-        valueShapes[outputValueId] = targetShape
-        
+        valueShapes[outputValueId] = actualTarget
+
         val outputRef = buildValueRef {
             valueId = outputValueId
             type = buildTensorType {
                 typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
-                shape = targetShape
+                shape = actualTarget
                 dtype = inputRef.type.dtype
             }
         }
-        
+
         val node = buildNode {
             name = "reshape_${nodeIdCounter}_${randomIdSuffix()}"
             op = UirOpKind.RESHAPE
             inputs.add(inputRef)
             outputs.add(outputRef)
         }
-        
+
         return Pair(outputRef, node)
     }
     
@@ -1192,6 +1207,20 @@ object ShapeAdapter {
             if (v1 == null || v2 == null) true  // 未知维度视为相等
             else v1 == v2
         }
+    }
+
+    private fun factorizeToNdimShape(total: Int, targetNdim: Int): List<Int> {
+        if (total <= 0 || targetNdim <= 0) return emptyList()
+        val factors = mutableListOf<Int>()
+        var remaining = total
+        for (i in 0 until targetNdim - 1) {
+            if (remaining <= 1) { factors.add(1); continue }
+            val candidates = (2..remaining).filter { remaining % it == 0 }
+            factors.add(if (candidates.isNotEmpty()) candidates.random() else 1)
+            remaining /= factors.last()
+        }
+        factors.add(remaining)
+        return factors
     }
     
     /**

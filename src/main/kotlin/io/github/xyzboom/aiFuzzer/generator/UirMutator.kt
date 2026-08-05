@@ -95,7 +95,25 @@ class UirMutator(
             }
         }
 
-        // 去重检查：扫描所有节点，如果触发了已知 pattern 就丢弃
+        // 全局输入引用回传: fixGraphConsistency 后同步输入 ref 形状
+        for (graph in program.graphs) {
+            val shapesByValueId = mutableMapOf<String, UirShape>()
+            for (node in graph.nodes) {
+                for (output in node.outputs) {
+                    shapesByValueId[output.valueId] = output.type.shape
+                }
+            }
+            for (node in graph.nodes) {
+                for (input in node.inputs) {
+                    val latestShape = shapesByValueId[input.valueId]
+                    if (latestShape != null && input.type.shape != latestShape) {
+                        input.type.shape = latestShape
+                    }
+                }
+            }
+        }
+
+        // 去重检查
         if (patternMatcher != null && isDedupMatch(program)) {
             log.trace { "变异程序命中已知 bug pattern，丢弃" }
             return null
@@ -553,10 +571,18 @@ class UirMutator(
                 continue
             }
 
-            // BROADCAST_TO: 直接保持输出 ref 形状
+            // BROADCAST_TO: 验证广播兼容性
             if (node.op == UirOpKind.BROADCAST_TO) {
-                for (output in node.outputs) {
-                    valueShapes[output.valueId] = output.type.shape
+                val inputShape = valueShapes[node.inputs[0].valueId] ?: node.inputs[0].type.shape
+                val outShape = node.outputs[0].type.shape
+                if (inputShape.dims.size > outShape.dims.size || !canBroadcast(inputShape, outShape)) {
+                    log.warn { "BROADCAST_TO 不兼容: 重置为恒等广播" }
+                    node.outputs[0].type.shape = inputShape
+                    valueShapes[node.outputs[0].valueId] = inputShape
+                } else {
+                    for (output in node.outputs) {
+                        valueShapes[output.valueId] = output.type.shape
+                    }
                 }
                 i++
                 continue
@@ -569,44 +595,34 @@ class UirMutator(
                 val outputElements = outShape.dims.mapNotNull { it.valueOrNull() }
                     .fold(1L) { acc, v -> acc * v }
                 if (inputElements > 0 && outputElements > 0 && inputElements != outputElements) {
-                    // 元素数不匹配：输出形状可能是上游变异后过期的，更新输出形状匹配输入元素数
-                    // 正确做法：保持输出 ndim 不变，但调整各维值使总元素数匹配输入
-                    // 如果不能整除，则 flatten 到 1D
-                    log.warn { "RESHAPE 元素数不匹配: input=$inputShape(${inputElements}el) -> output=$outShape(${outputElements}el)，更新输出形状匹配输入" }
-                    val newOutShape = buildShape {
-                        if (outShape.dims.size == 1) {
-                            // 已经是 1D：直接更新元素数
-                            dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = inputElements.toInt() })
-                        } else {
-                            // 尝试保持 ndim 但调整第一个可变维度
-                            val mutableDims = outShape.dims.toMutableList()
-                            val fixedElements = mutableDims.mapIndexedNotNull { idx, dim ->
-                                if (idx == 0) null else dim.valueOrNull()
-                            }.fold(1L) { acc, v -> acc * v }
-                            if (fixedElements > 0 && inputElements % fixedElements == 0L) {
-                                // 固定维度的乘积能整除总元素数，调整第一个维度
-                                val firstDim = (inputElements / fixedElements).toInt()
-                                dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = firstDim })
-                                for (idx in 1 until mutableDims.size) {
-                                    dims.add(mutableDims[idx])
-                                }
-                            } else {
-                                // 不能整除，flatten 到 1D
-                                dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = inputElements.toInt() })
+                    log.warn { "RESHAPE 元素数不匹配: 插入 wrapper 适配输入" }
+                    val result = ShapeAdapter.adaptWithElemCountMatch(
+                        node.inputs[0], inputShape, outShape,
+                        valueShapes, valueCounter, nodeCounter
+                    )
+                    if (result.second.isNotEmpty()) {
+                        graph.nodes.addAll(i, result.second)
+                        node.inputs.clear()
+                        node.inputs.add(result.first)
+                        for (wrapperNode in result.second) {
+                            for (output in wrapperNode.outputs) {
+                                valueShapes[output.valueId] = output.type.shape
                             }
                         }
+                        valueCounter += result.second.size
+                        nodeCounter += result.second.size
+                        i += result.second.size
                     }
-                    // 更新输出 ref 的形状
-                    node.outputs[0].type.shape = newOutShape
-                    valueShapes[node.outputs[0].valueId] = newOutShape
-                } else {
-                    for (output in node.outputs) {
-                        valueShapes[output.valueId] = output.type.shape
-                    }
+                }
+                sanitizeReshapeShapeAttr(node, inputShape)
+                for (output in node.outputs) {
+                    valueShapes[output.valueId] = output.type.shape
                 }
                 i++
                 continue
             }
+
+            sanitizeAxisAttrs(node, valueShapes)
 
             // 重新推导输出形状（使用适配后的输入形状）
             val adaptedInputShapes = node.inputs.map { valueShapes[it.valueId]!! }
@@ -719,6 +735,70 @@ class UirMutator(
         val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
         return (1..8).map { chars[localRng.nextInt(chars.length)] }.joinToString("")
     }
+
+    private fun canBroadcast(inputShape: UirShape, targetShape: UirShape): Boolean {
+        val inDims = inputShape.dims
+        val tgtDims = targetShape.dims
+        if (inDims.size > tgtDims.size) return false
+        val offset = tgtDims.size - inDims.size
+        for (i in inDims.indices) {
+            val iv = inDims[i].valueOrNull() ?: return false
+            val tv = tgtDims[offset + i].valueOrNull() ?: return false
+            if (iv != tv && iv != 1) return false
+        }
+        return true
+    }
+
+    private fun sanitizeAxisAttrs(node: UirNode, valueShapes: MutableMap<String, UirShape>) {
+        val inputShape = node.inputs.firstOrNull()?.let { valueShapes[it.valueId] } ?: return
+        val ndim = inputShape.dims.size
+        if (ndim == 0) return
+        if (node.op !in setOf(
+            UirOpKind.SOFTMAX, UirOpKind.LOG_SOFTMAX,
+            UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN,
+            UirOpKind.ARGMAX, UirOpKind.ARGMIN,
+            UirOpKind.CUMSUM, UirOpKind.CUMPROD,
+            UirOpKind.SPLIT, UirOpKind.CONCAT, UirOpKind.GATHER
+        )) return
+        val axisAttr = node.attributes["axis"] as? UirIntAttr ?: return
+        val oldAxis = axisAttr.value
+        val normalized = if (oldAxis < 0) oldAxis + ndim else oldAxis
+        val clamped = normalized.coerceIn(0, ndim - 1)
+        if (clamped != oldAxis) {
+            node.attributes["axis"] = buildIntAttr { value = clamped }
+            log.trace { "sanitize axis: ${node.name}.$oldAxis->$clamped" }
+        }
+    }
+
+    private fun sanitizeReshapeShapeAttr(node: UirNode, inputShape: UirShape) {
+        val shapeAttr = node.attributes["shape"] as? UirStringAttr ?: return
+        val targetDims = shapeAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
+        if (targetDims.isEmpty()) return
+        val inputEl = inputShape.dims.mapNotNull { it.valueOrNull() }.fold(1L) { a, v -> a * v }
+        val shapeEl = targetDims.fold(1L) { a, v -> a * v }
+        if (inputEl > 0 && inputEl != shapeEl) {
+            log.warn { "RESHAPE shape attr expired: ${inputEl}el vs ${targetDims}=${shapeEl}el" }
+            val newShape = factorizeToNdim(inputEl.toInt(), targetDims.size)
+            node.attributes["shape"] = buildStringAttr {
+                value = if (newShape.isNotEmpty()) newShape.joinToString(",") else inputEl.toString()
+            }
+        }
+    }
+
+    private fun factorizeToNdim(total: Int, targetNdim: Int): List<Int> {
+        if (total <= 0 || targetNdim <= 0) return emptyList()
+        val factors = mutableListOf<Int>()
+        var remaining = total
+        for (i in 0 until targetNdim - 1) {
+            if (remaining <= 1) { factors.add(1); continue }
+            val candidates = (2..remaining).filter { remaining % it == 0 }
+            factors.add(if (candidates.isNotEmpty()) candidates.random() else 1)
+            remaining /= factors.last()
+        }
+        factors.add(remaining)
+        return factors
+    }
+
 }
 
 /** 变异操作类型 */
