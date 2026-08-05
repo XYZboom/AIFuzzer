@@ -692,11 +692,12 @@ class PytorchTranslator(
                     for (d in 0 until ndim) {
                         val axisIdx = axes.indexOf(d)
                         if (axisIdx >= 0) {
+                            val begin = if (beginAttr != null) {
+                                val begins = beginAttr.split(",").map { it.trim().toIntOrNull() ?: 0 }
+                                begins.getOrElse(axisIdx) { 0 }
+                            } else 0
                             val end = ends[axisIdx]
-                            // 使用 min(end, inputVar.shape[d]) 裁剪 end 到实际维度大小
-                            // 避免 ShapeInferer 用过大 end 计算形状，但 PyTorch 实际取 min
-                            // 导致后续 tile 的形状推断错误
-                            sliceParts.add(":min($end, ${inputVar}.shape[$d])")
+                            sliceParts.add("$begin:min($end, ${inputVar}.shape[$d])")
                         } else {
                             sliceParts.add(":")
                         }
