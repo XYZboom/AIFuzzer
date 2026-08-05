@@ -670,10 +670,24 @@ class PytorchTranslator(
             // ===== 索引 =====
             UirOpKind.GATHER -> {
                 val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
+                val indicesAttr = (node.attributes["indices"] as? UirStringAttr)?.value
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // 使用 torch.select 移除 axis 维度，与 TVM relax.op.take(scalar_index) 语义一致
-                // 也与 ShapeInferer 对齐（标量索引移除 axis 维）
-                "torch.select($inputVar, $axis, 0)"
+                if (indicesAttr != null) {
+                    val indices = indicesAttr.split(",").map { it.trim().toIntOrNull() ?: 0 }
+                    if (indices.size == 1) {
+                        // 单值索引：torch.select 移除维度，与 ShapeInferer 对齐
+                        "torch.select($inputVar, $axis, ${indices[0]})"
+                    } else {
+                        // 多值索引：用切片语法保持维度
+                        val ndim = node.inputs[0].type.shape.dims.size
+                        val slices = (0 until ndim).joinToString(", ") { d ->
+                            if (d == axis) "${indices.first()}:${indices.last() + 1}" else ":"
+                        }
+                        "$inputVar[$slices]"
+                    }
+                } else {
+                    "torch.select($inputVar, $axis, 0)"
+                }
             }
             UirOpKind.STRIDED_SLICE -> {
                 // 从 attributes 读取切片参数（多轴逗号分隔）
