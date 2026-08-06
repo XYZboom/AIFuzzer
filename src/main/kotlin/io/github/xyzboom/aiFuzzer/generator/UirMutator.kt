@@ -98,6 +98,12 @@ class UirMutator(
         // 全局输入引用回传: fixGraphConsistency 后同步输入 ref 形状
         for (graph in program.graphs) {
             val shapesByValueId = mutableMapOf<String, UirShape>()
+            for (input in graph.inputs) {
+                shapesByValueId[input.valueId] = input.type.shape
+            }
+            for (output in graph.outputs) {
+                shapesByValueId[output.valueId] = output.type.shape
+            }
             for (node in graph.nodes) {
                 for (output in node.outputs) {
                     shapesByValueId[output.valueId] = output.type.shape
@@ -623,6 +629,8 @@ class UirMutator(
             }
 
             sanitizeAxisAttrs(node, valueShapes)
+            sanitizeStridedSliceAttrs(node, valueShapes)
+            sanitizePoolPadAttrs(node)
 
             // 重新推导输出形状（使用适配后的输入形状）
             val adaptedInputShapes = node.inputs.map { valueShapes[it.valueId]!! }
@@ -767,6 +775,32 @@ class UirMutator(
         if (clamped != oldAxis) {
             node.attributes["axis"] = buildIntAttr { value = clamped }
             log.trace { "sanitize axis: ${node.name}.$oldAxis->$clamped" }
+        }
+    }
+
+    private fun sanitizeStridedSliceAttrs(node: UirNode, valueShapes: MutableMap<String, UirShape>) {
+        if (node.op != UirOpKind.STRIDED_SLICE) return
+        val axesAttr = node.attributes["axes"] as? UirStringAttr ?: return
+        val inputShape = node.inputs.firstOrNull()?.let { valueShapes[it.valueId] } ?: return
+        val ndim = inputShape.dims.size
+        if (ndim == 0) return
+        val oldAxes = axesAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
+        if (oldAxes.isEmpty()) return
+        if (oldAxes.any { it >= ndim || it < -ndim }) {
+            val fixed = oldAxes.map { Math.floorMod(it, ndim) }.joinToString(",")
+            node.attributes["axes"] = buildStringAttr { value = fixed }
+            log.warn { "strided_slice axes: ${node.name} ${axesAttr.value} -> $fixed (ndim=$ndim)" }
+        }
+    }
+
+    private fun sanitizePoolPadAttrs(node: UirNode) {
+        if (node.op != UirOpKind.MAX_POOL2D && node.op != UirOpKind.AVG_POOL2D) return
+        val kernelAttr = node.attributes["kernel_size"] as? UirIntAttr ?: return
+        val padAttr = node.attributes["padding"] as? UirIntAttr ?: return
+        val maxPad = kernelAttr.value / 2
+        if (padAttr.value > maxPad) {
+            node.attributes["padding"] = buildIntAttr { value = maxPad }
+            log.warn { "pool pad: ${node.name} ${padAttr.value} -> $maxPad (kernel=${kernelAttr.value})" }
         }
     }
 
