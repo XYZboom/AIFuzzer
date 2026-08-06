@@ -26,6 +26,7 @@
       "values": [
         {
           "match": "value", "id": "v_in",
+          "ndim": {"$gte": 1},
           "dtype": "float32"
         }
       ]

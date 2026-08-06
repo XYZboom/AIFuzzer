@@ -18,10 +18,12 @@
       "values": [
         {
           "match": "value", "id": "v_a",
+          "ndim": {"$gte": 1},
           "dtype": "float32"
         },
         {
           "match": "value", "id": "v_b",
+          "ndim": {"$gte": 1},
           "dtype": "float32"
         }
       ]
