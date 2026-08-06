@@ -781,15 +781,54 @@ class UirMutator(
     private fun sanitizeStridedSliceAttrs(node: UirNode, valueShapes: MutableMap<String, UirShape>) {
         if (node.op != UirOpKind.STRIDED_SLICE) return
         val axesAttr = node.attributes["axes"] as? UirStringAttr ?: return
+        val beginAttr = node.attributes["begin"] as? UirStringAttr
+        val endAttr = node.attributes["end"] as? UirStringAttr
         val inputShape = node.inputs.firstOrNull()?.let { valueShapes[it.valueId] } ?: return
         val ndim = inputShape.dims.size
         if (ndim == 0) return
         val oldAxes = axesAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
         if (oldAxes.isEmpty()) return
+
+        // 消毒 axes: 超出 ndim 范围的轴取模
         if (oldAxes.any { it >= ndim || it < -ndim }) {
-            val fixed = oldAxes.map { Math.floorMod(it, ndim) }.joinToString(",")
-            node.attributes["axes"] = buildStringAttr { value = fixed }
-            log.warn { "strided_slice axes: ${node.name} ${axesAttr.value} -> $fixed (ndim=$ndim)" }
+            val fixedAxes = oldAxes.map { Math.floorMod(it, ndim) }.joinToString(",")
+            node.attributes["axes"] = buildStringAttr { value = fixedAxes }
+            log.warn { "strided_slice axes: ${node.name} ${axesAttr.value} -> $fixedAxes (ndim=$ndim)" }
+        }
+
+        // 消毒 begin/end: 不能超过该轴的实际维度大小
+        if (endAttr != null) {
+            val ends = endAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
+            val begins = beginAttr?.value?.split(",")?.mapNotNull { it.trim().toIntOrNull() } ?: oldAxes.map { 0 }
+            if (ends.size == oldAxes.size) {
+                val fixedEnds = mutableListOf<Int>()
+                val fixedBegins = mutableListOf<Int>()
+                var changedEnd = false
+                var changedBegin = false
+                for (i in oldAxes.indices) {
+                    val axis = Math.floorMod(oldAxes[i], ndim)
+                    val dimSize = inputShape.dims.getOrNull(axis)?.valueOrNull()
+                    if (dimSize != null) {
+                        val clampedEnd = ends[i].coerceAtMost(dimSize)
+                        if (clampedEnd != ends[i]) changedEnd = true
+                        fixedEnds.add(clampedEnd)
+                        val clampedBegin = begins.getOrElse(i) { 0 }.coerceAtMost(clampedEnd - 1).coerceAtLeast(0)
+                        if (i < begins.size && clampedBegin != begins[i]) changedBegin = true
+                        fixedBegins.add(clampedBegin)
+                    } else {
+                        fixedEnds.add(ends[i])
+                        fixedBegins.add(begins.getOrElse(i) { 0 })
+                    }
+                }
+                if (changedEnd) {
+                    node.attributes["end"] = buildStringAttr { value = fixedEnds.joinToString(",") }
+                    log.warn { "strided_slice end: ${node.name} ${endAttr.value} -> ${fixedEnds.joinToString(",")}" }
+                }
+                if (changedBegin) {
+                    node.attributes["begin"] = buildStringAttr { value = fixedBegins.joinToString(",") }
+                    log.warn { "strided_slice begin: ${node.name} ${beginAttr?.value ?: "0"} -> ${fixedBegins.joinToString(",")}" }
+                }
+            }
         }
     }
 
