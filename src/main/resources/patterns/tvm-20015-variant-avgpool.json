@@ -61,7 +61,7 @@
       "id": "tvm-20015-variant-avgpool-stride1",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "avg_pool2d(k=2,s=1): N=1, C=4, (H-1)*(W-1)∈{10,14}",
+      "description": "avg_pool2d(k=2,s=1): N=1, C=4, H*W∈{18,22,28} (removed 24,30,36: non-trigger shapes found standalone)",
       "severity": "crash",
       "nodes": [{"match": "node", "id": "n0", "op": "AVG_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 1, "padding": 0}}],
       "values": [{
@@ -70,22 +70,8 @@
         "shape": [{"$eq": 1}, {"$eq": 4}],
         "dtype": "float32",
         "expressionConstraints": [
-          {"dimIndices": [2, 3], "op": "mul", "divisors": [1, 1], "allowedValues": [10, 14]}
+          {"dimIndices": [2, 3], "op": "mul", "divisors": [1, 1], "allowedValues": [18, 22, 28]}
         ]
-      }]
-    },
-    {
-      "id": "tvm-20015-variant-maxpool-stride1",
-      "compiler": "tvm",
-      "target": "llvm",
-      "description": "max_pool2d(k=2,s=1): N=4, C≥5, ndim=4, requires reduce_mean downstream",
-      "severity": "crash",
-      "nodes": [{"match": "node", "id": "n0", "op": "MAX_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 1, "padding": 0}}],
-      "values": [{
-        "match": "value", "id": "v_in",
-        "ndim": 4,
-        "shape": [{"$eq": 4}, {"$gte": 5}],
-        "dtype": "float32"
       }]
     }
   ]
