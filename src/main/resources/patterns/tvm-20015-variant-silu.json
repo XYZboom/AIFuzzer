@@ -19,23 +19,6 @@
       }]
     },
     {
-      "id": "tvm-20015-variant-silu-1d",
-      "compiler": "tvm",
-      "target": "llvm",
-      "description": "silu LLVM shufflevector: 1D input, size∈{10,14}",
-      "severity": "crash",
-      "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
-      "values": [{
-        "match": "value", "id": "v_in",
-        "ndim": 1,
-        "shape": [],
-        "dtype": "float32",
-        "expressionConstraints": [
-          {"dimIndices": [0], "op": "mul", "allowedValues": [10, 14]}
-        ]
-      }]
-    },
-    {
       "id": "tvm-20015-variant-silu-2d",
       "compiler": "tvm",
       "target": "llvm",
