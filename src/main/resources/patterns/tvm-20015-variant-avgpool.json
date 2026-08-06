@@ -75,30 +75,16 @@
       }]
     },
     {
-      "id": "tvm-20015-variant-maxpool",
-      "compiler": "tvm",
-      "target": "llvm",
-      "description": "max_pool2d(k=2,s=2): any N,C,H,W, ndim=4",
-      "severity": "crash",
-      "nodes": [{"match": "node", "id": "n0", "op": "MAX_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 2, "padding": 0}}],
-      "values": [{
-        "match": "value", "id": "v_in",
-        "ndim": 4,
-        "shape": [],
-        "dtype": "float32"
-      }]
-    },
-    {
       "id": "tvm-20015-variant-maxpool-stride1",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "max_pool2d(k=2,s=1): any N,C,H,W, ndim=4",
+      "description": "max_pool2d(k=2,s=1): N=4, C≥5, ndim=4, requires reduce_mean downstream",
       "severity": "crash",
       "nodes": [{"match": "node", "id": "n0", "op": "MAX_POOL2D", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {"kernel_size": 2, "stride": 1, "padding": 0}}],
       "values": [{
         "match": "value", "id": "v_in",
         "ndim": 4,
-        "shape": [],
+        "shape": [{"$eq": 4}, {"$gte": 5}],
         "dtype": "float32"
       }]
     }

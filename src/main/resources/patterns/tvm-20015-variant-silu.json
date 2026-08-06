@@ -39,16 +39,16 @@
       "id": "tvm-20015-variant-silu-2d",
       "compiler": "tvm",
       "target": "llvm",
-      "description": "silu LLVM shufflevector: 2D input, N*C∈{10,14}",
+      "description": "silu LLVM shufflevector: 2D input, N=4, N*C∈{40,56,72}",
       "severity": "crash",
       "nodes": [{"match": "node", "id": "n0", "op": "SILU", "inputs": ["v_in"], "outputs": ["v_out"], "attrs": {}}],
       "values": [{
         "match": "value", "id": "v_in",
         "ndim": 2,
-        "shape": [],
+        "shape": [{"$eq": 4}],
         "dtype": "float32",
         "expressionConstraints": [
-          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [10, 14]}
+          {"dimIndices": [0, 1], "op": "mul", "allowedValues": [40, 56, 72]}
         ]
       }]
     },
