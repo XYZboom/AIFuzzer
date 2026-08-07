@@ -54,7 +54,8 @@ class PatternMatcher(
      */
     fun onNodeGenerated(
         node: UirNode,
-        valueResolver: (String) -> UirValueRef?
+        valueResolver: (String) -> UirValueRef?,
+        valueRangeResolver: ((String) -> ValueRange?)? = null,
     ): PatternDef? {
         totalNodesChecked++
         // 增量维护图级状态
@@ -69,7 +70,7 @@ class PatternMatcher(
             if (matchNode(node, pattern.nodes[nextIdx])) {
                 val allNodes = active.matchedNodes + node
                 if (nextIdx == pattern.nodes.size - 1) {
-                    if (checkAllValueConstraints(pattern, allNodes, valueResolver) &&
+                    if (checkAllValueConstraints(pattern, allNodes, valueResolver, valueRangeResolver) &&
                         checkGraphConstraints(pattern) &&
                         checkFlowConstraints(pattern, allNodes)) {
                         matchCount++
@@ -95,7 +96,7 @@ class PatternMatcher(
         if (singlePatterns != null) {
             for (pattern in singlePatterns) {
                 if (matchNode(node, pattern.nodes[0]) &&
-                    checkAllValueConstraints(pattern, listOf(node), valueResolver) &&
+                    checkAllValueConstraints(pattern, listOf(node), valueResolver, valueRangeResolver) &&
                     checkGraphConstraints(pattern) &&
                     checkFlowConstraints(pattern, listOf(node))) {
                     matchCount++
@@ -148,14 +149,16 @@ class PatternMatcher(
     private fun checkAllValueConstraints(
         pattern: PatternDef,
         nodes: List<UirNode>,
-        valueResolver: (String) -> UirValueRef?
+        valueResolver: (String) -> UirValueRef?,
+        valueRangeResolver: ((String) -> ValueRange?)? = null,
     ): Boolean {
         for ((valueId, patternValue) in pattern.values) {
             val actualRef = findActualRefByPosition(valueId, pattern, nodes, valueResolver)
             if (actualRef == null) {
                 if (patternValue.shape.all { it is DimMatcher.Any } &&
                     patternValue.dtype is DtypeMatcher.AnyDtype &&
-                    (patternValue.ndim == null || patternValue.ndim is DimMatcher.Any)) {
+                    (patternValue.ndim == null || patternValue.ndim is DimMatcher.Any) &&
+                    patternValue.range is ValueRangeMatcher.Any) {
                     continue
                 }
                 return false
@@ -180,6 +183,16 @@ class PatternMatcher(
                 if (!patternValue.dtype.matches(actualDtype.name, actualDtype.bits)) return false
             }
 
+            // 检查值域约束（仅当 valueRangeResolver 提供且 pattern 有非 Any 约束）
+            if (patternValue.range !is ValueRangeMatcher.Any) {
+                if (valueRangeResolver != null) {
+                    val range = valueRangeResolver(valueId)
+                        ?: findRangeByPosition(valueId, pattern, nodes, valueRangeResolver)
+                    if (range == null || !patternValue.range.matches(range)) return false
+                }
+                // valueRangeResolver 为 null 时跳过值域约束（视为通过）
+            }
+
             // 检查跨维度表达式约束
             for (ec in patternValue.expressionConstraints) {
                 val dimValues = actualDims.map { it.value }
@@ -192,6 +205,31 @@ class PatternMatcher(
             }
         }
         return true
+    }
+
+    /**
+     * 按位置查找 valueId 对应的值域（与 findActualRefByPosition 相同的定位逻辑）。
+     * 优先用 pattern 中节点的 input/output 位置在 [nodes] 中定位。
+     */
+    private fun findRangeByPosition(
+        valueId: String,
+        pattern: PatternDef,
+        nodes: List<UirNode>,
+        valueRangeResolver: (String) -> ValueRange?
+    ): ValueRange? {
+        for ((pNodeIdx, pNode) in pattern.nodes.withIndex()) {
+            if (pNodeIdx >= nodes.size) continue
+            val actualNode = nodes[pNodeIdx]
+            val inputPos = pNode.inputs.indexOf(valueId)
+            if (inputPos >= 0 && inputPos < actualNode.inputs.size) {
+                return valueRangeResolver(actualNode.inputs[inputPos].valueId)
+            }
+            val outputPos = pNode.outputs.indexOf(valueId)
+            if (outputPos >= 0 && outputPos < actualNode.outputs.size) {
+                return valueRangeResolver(actualNode.outputs[outputPos].valueId)
+            }
+        }
+        return valueRangeResolver(valueId)
     }
 
     /**

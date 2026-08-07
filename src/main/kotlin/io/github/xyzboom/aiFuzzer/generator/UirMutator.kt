@@ -175,7 +175,7 @@ class UirMutator(
                         .plus(graph.outputs)
                         .find { it.valueId == vid }
                 }
-                val matched = patternMatcher.onNodeGenerated(node, resolver)
+                val matched = patternMatcher.onNodeGenerated(node, resolver, null)
                 if (matched != null) {
                     log.debug { "变异去重命中: pattern=${matched.id}, 节点=${node.name}(${node.op})" }
                     return true

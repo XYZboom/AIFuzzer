@@ -48,6 +48,7 @@ class FuzzingPipeline(
             val target: String = "llvm",
             val patternDir: String = "",
             val patternMode: PipelineConfig.PatternMode = PipelineConfig.PatternMode.BUILTIN,
+            val valueRangeAnalysis: Boolean = false,
         )
     }
 
@@ -194,6 +195,7 @@ class FuzzingPipeline(
                     compiler = config.dedup.compiler,
                     target = dedupTarget,
                     maxRetries = 10,
+                    valueRangeAnalysis = config.dedup.valueRangeAnalysis,
                 )
             )
         }
@@ -563,6 +565,7 @@ class FuzzingPipeline(
                                 compiler = config.dedup.compiler,
                                 target = dedupTarget,
                                 maxRetries = 10,
+                                valueRangeAnalysis = config.dedup.valueRangeAnalysis,
                             )
                         )
                     } else generatorConfig.copy(seed = seed)

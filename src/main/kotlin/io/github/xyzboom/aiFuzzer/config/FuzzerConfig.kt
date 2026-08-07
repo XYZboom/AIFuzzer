@@ -147,6 +147,7 @@ data class FuzzerGenConfig(
                 compiler = dedup.compiler,
                 target = dedup.target,
                 maxRetries = 10,
+                valueRangeAnalysis = dedup.valueRangeAnalysis,
             ),
             mutationConfig = mutation,
         )
@@ -326,6 +327,8 @@ data class PipelineConfig(
         var target: String = "llvm",
         /** 去重模式：builtin / custom / both */
         var patternMode: PatternMode = PatternMode.BUILTIN,
+        /** 值域分析开关：启用后 pattern 可匹配值的范围 */
+        var valueRangeAnalysis: Boolean = false,
     )
 
     fun toFuzzingConfig(): FuzzingPipeline.FuzzingConfig {
@@ -347,6 +350,7 @@ data class PipelineConfig(
                     // 如果指定了 patternDir 但模式是 BUILTIN，自动切换到 BOTH
                     PatternMode.BOTH
                 } else dedup.patternMode,
+                valueRangeAnalysis = dedup.valueRangeAnalysis,
             ),
         )
     }

@@ -109,6 +109,7 @@ object PatternParser {
                 shape = shape,
                 dtype = dtype,
                 expressionConstraints = expressionConstraints,
+                range = obj["range"]?.let { ValueRangeMatcher.fromJson(it) } ?: ValueRangeMatcher.Any,
             )
         }
         return result

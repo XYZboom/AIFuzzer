@@ -356,6 +356,7 @@ data class PatternValueDef(
     val shape: List<DimMatcher> = emptyList(),
     val dtype: DtypeMatcher = DtypeMatcher.AnyDtype(),
     val expressionConstraints: List<ExpressionConstraint> = emptyList(),
+    val range: ValueRangeMatcher = ValueRangeMatcher.Any,
 )
 
 /**

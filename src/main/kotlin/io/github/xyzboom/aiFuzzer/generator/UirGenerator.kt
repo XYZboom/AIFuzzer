@@ -89,6 +89,8 @@ data class DedupConfig(
     val compiler: String = "tvm",
     val target: String? = "llvm",
     val maxRetries: Int = 10,
+    /** 值域分析开关：启用后 pattern 可匹配值的范围（如含有零、负数等） */
+    val valueRangeAnalysis: Boolean = false,
 )
 
 /**
@@ -134,6 +136,9 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
     
     // 形状管理：valueId -> shape
     private val valueShapes = mutableMapOf<String, UirShape>()
+
+    // 值域管理：valueId -> ValueRange（仅当 valueRangeAnalysis 启用时维护）
+    private val valueRanges = mutableMapOf<String, io.github.xyzboom.aiFuzzer.pattern.ValueRange>()
 
     /** 本次生成已使用的元素总数，生成时动态压缩形状不超 [shapeTier] 预算 */
     private var usedElements = 0L
@@ -296,13 +301,33 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 val nodes = generateNode(nodeIndex, availableValues, liveTips, currentBranch)
                 val mainNode = nodes.last()
 
+                // 更新值域（值域分析启用时）
+                if (config.dedup.valueRangeAnalysis) {
+                    for (n in nodes) {
+                        val inputRanges = n.inputs.map { ref ->
+                            valueRanges[ref.valueId] ?: io.github.xyzboom.aiFuzzer.pattern.ValueRange.UNKNOWN
+                        }
+                        val attrs = n.attributes.mapValues { (_, v) -> v.toString() }
+                        for (output in n.outputs) {
+                            val range = io.github.xyzboom.aiFuzzer.pattern.ValueRangeAnalyzer.outputRange(
+                                n.op.name, inputRanges, attrs
+                            )
+                            valueRanges[output.valueId] = range
+                        }
+                    }
+                }
+
                 // 去重检查（仅对主节点，跳过 wrapper 节点）
                 if (patternMatcher != null) {
                     val resolver: (String) -> UirValueRef? = { vid ->
                         nodes.flatMap { n -> n.inputs + n.outputs }.find { it.valueId == vid }
                     }
+                    // 值域解析器（值域分析启用时）
+                    val rangeResolver: ((String) -> io.github.xyzboom.aiFuzzer.pattern.ValueRange?)? =
+                        if (config.dedup.valueRangeAnalysis) { { vid -> valueRanges[vid] } }
+                        else null
                     log.trace { "节点 $nodeIndex (${mainNode.op}): 检查去重" }
-                    val matched = patternMatcher.onNodeGenerated(mainNode, resolver)
+                    val matched = patternMatcher.onNodeGenerated(mainNode, resolver, rangeResolver)
                     if (matched != null) {
                         println("[seed=${config.seed}] 节点 $nodeIndex (${mainNode.op}): 匹配 pattern ${matched.id}")
                         log.trace { "节点 $nodeIndex: 与已知 pattern ${matched.id} 匹配！重试第 ${retry + 1} 次" }
@@ -315,6 +340,9 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                             finalNodes = nodes
                             for (n in nodes) {
                                 n.outputs.forEach { o -> valueShapes.remove(o.valueId) }
+                                if (config.dedup.valueRangeAnalysis) {
+                                    n.outputs.forEach { o -> valueRanges.remove(o.valueId) }
+                                }
                             }
                             // 清理上一轮的 availableValues（如果 prevNodes 存在）
                             if (prevNodes != null) {
