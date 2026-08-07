@@ -1,0 +1,33 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-189804",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor GELU produces tiny negative instead of -0.0 causing sign mismatch",
+      "severity": "silent_correctness",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "GELU",
+          "inputs": ["v_in"],
+          "outputs": ["v_gelu"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n1", "op": "SIGN",
+          "inputs": ["v_gelu"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": {"$gte": 1},
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "pt-189801",
+      "compiler": "pytorch",
+      "target": "inductor",
+      "description": "inductor rounds slightly negative ELU outputs to 0.0 causing div-by-zero nan",
+      "severity": "silent_correctness",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "ELU",
+          "inputs": ["v_in"],
+          "outputs": ["v_elu"],
+          "attrs": {}
+        },
+        {
+          "match": "node", "id": "n1", "op": "DIVIDE",
+          "inputs": ["v_elu", "v_zero"],
+          "outputs": ["v_out"],
+          "attrs": {}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": {"$gte": 1},
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}
