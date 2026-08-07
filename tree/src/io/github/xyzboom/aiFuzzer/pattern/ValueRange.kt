@@ -99,6 +99,16 @@ sealed class ValueRangeMatcher {
         override fun matches(range: ValueRange): Boolean = true
     }
 
+    /** 值域是否已知（非 UNKNOWN） */
+    data object Known : ValueRangeMatcher() {
+        override fun matches(range: ValueRange): Boolean = range.isKnown
+    }
+
+    /** 多个约束 AND 组合 */
+    data class And(val matchers: List<ValueRangeMatcher>) : ValueRangeMatcher() {
+        override fun matches(range: ValueRange): Boolean = matchers.all { it.matches(range) }
+    }
+
     companion object {
         fun fromJson(json: kotlinx.serialization.json.JsonElement): ValueRangeMatcher {
             return when {
@@ -113,14 +123,19 @@ sealed class ValueRangeMatcher {
                 }
                 json is kotlinx.serialization.json.JsonObject -> {
                     val obj = json.jsonObject
+                    // 解析多个约束条件（AND 组合）
+                    val matchers = mutableListOf<ValueRangeMatcher>()
+                    if (obj.containsKey("\$lt")) matchers.add(Less((obj["\$lt"]!! as JsonPrimitive).content.toDouble()))
+                    if (obj.containsKey("\$gt")) matchers.add(Greater((obj["\$gt"]!! as JsonPrimitive).content.toDouble()))
+                    if (obj.containsKey("\$eq")) matchers.add(Exact((obj["\$eq"]!! as JsonPrimitive).content.toDouble()))
+                    if (obj.containsKey("\$contains_zero")) matchers.add(ContainsZero)
+                    if (obj.containsKey("\$non_negative")) matchers.add(NonNegative)
+                    if (obj.containsKey("\$non_positive")) matchers.add(NonPositive)
+                    if (obj.containsKey("\$known")) matchers.add(Known)
                     when {
-                        obj.containsKey("\$lt") -> Less((obj["\$lt"]!! as JsonPrimitive).content.toDouble())
-                        obj.containsKey("\$gt") -> Greater((obj["\$gt"]!! as JsonPrimitive).content.toDouble())
-                        obj.containsKey("\$eq") -> Exact((obj["\$eq"]!! as JsonPrimitive).content.toDouble())
-                        obj.containsKey("\$contains_zero") -> ContainsZero
-                        obj.containsKey("\$non_negative") -> NonNegative
-                        obj.containsKey("\$non_positive") -> NonPositive
-                        else -> Any
+                        matchers.isEmpty() -> Any
+                        matchers.size == 1 -> matchers[0]
+                        else -> And(matchers)
                     }
                 }
                 else -> Any
@@ -178,7 +193,11 @@ object ValueRangeAnalyzer {
             "EXP" -> {
                 if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
                 val r = inputRanges[0]
-                ValueRange(exp(r.min), exp(r.max), hasInf = true)
+                val eMin = exp(r.min)
+                val eMax = exp(r.max)
+                // 只有实际溢出时才标记 hasInf
+                val hasInf = r.hasInf || !eMax.isFinite()
+                ValueRange(eMin, if (eMax.isFinite()) eMax else Double.MAX_VALUE, hasInf = hasInf)
             }
             "LOG" -> {
                 if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
@@ -235,8 +254,50 @@ object ValueRangeAnalyzer {
                 if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
                 val r = inputRanges[0]
                 // leaky_relu(x) = x if x>0 else alpha*x (alpha≈0.01)
-                // 近似：负值被缩小但仍在 [-inf,0]
-                ValueRange(r.min, r.max, hasNaN = r.hasNaN, hasInf = r.hasInf)
+                // 负值被缩小到 alpha 倍，更接近 0
+                val alpha = 0.01
+                val newMin = if (r.min < 0.0) alpha * r.min else r.min
+                val newMax = if (r.max < 0.0) alpha * r.max else r.max
+                ValueRange(newMin, newMax, hasNaN = r.hasNaN, hasInf = r.hasInf)
+            }
+            "SELU" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                val r = inputRanges[0]
+                // selu(x) = scale * (max(0,x) + min(0, alpha*(exp(x)-1)))
+                // scale≈1.05, alpha≈1.67, 负值输出范围 ≈ [-1.05*alpha, 0) ≈ [-1.76, 0)
+                val newMin = minOf(r.min, -1.76)
+                val newMax = maxOf(r.max, 0.0)
+                ValueRange(newMin, newMax, hasNaN = r.hasNaN, hasInf = r.hasInf)
+            }
+            "MISH" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                val r = inputRanges[0]
+                // mish(x) = x * tanh(softplus(x)), range ≈ [-0.31, +inf)
+                val newMin = minOf(r.min, -0.31)
+                ValueRange(newMin, r.max, hasNaN = r.hasNaN, hasInf = r.hasInf)
+            }
+            "HARDTANH" -> {
+                // hardtanh(x) = clamp(x, -1, 1)
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                val r = inputRanges[0]
+                ValueRange(
+                    min = maxOf(r.min, -1.0),
+                    max = minOf(r.max, 1.0),
+                    hasNaN = r.hasNaN
+                )
+            }
+            "CLAMP" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                val r = inputRanges[0]
+                val minVal = attrs["min"]?.toString()?.toDoubleOrNull()
+                val maxVal = attrs["max"]?.toString()?.toDoubleOrNull()
+                if (minVal != null && maxVal != null) {
+                    ValueRange(
+                        min = maxOf(r.min, minVal),
+                        max = minOf(r.max, maxVal),
+                        hasNaN = r.hasNaN
+                    )
+                } else ValueRange(r.min, r.max, hasNaN = r.hasNaN, hasInf = r.hasInf)
             }
             "ELU" -> {
                 // elu(x) = alpha*(exp(x)-1) for x<0, x for x>=0, alpha≈1
@@ -292,14 +353,86 @@ object ValueRangeAnalyzer {
                     ValueRange(quotients.min(), quotients.max(), hasNaN = a.hasNaN || b.hasNaN, hasInf = a.hasInf || b.hasInf)
                 }
             }
+            "MAXIMUM" -> {
+                if (inputRanges.size < 2) return ValueRange.UNKNOWN
+                val a = inputRanges[0]; val b = inputRanges[1]
+                ValueRange(
+                    min = maxOf(a.min, b.min),
+                    max = maxOf(a.max, b.max),
+                    hasNaN = a.hasNaN || b.hasNaN,
+                    hasInf = a.hasInf || b.hasInf,
+                )
+            }
+            "MINIMUM" -> {
+                if (inputRanges.size < 2) return ValueRange.UNKNOWN
+                val a = inputRanges[0]; val b = inputRanges[1]
+                ValueRange(
+                    min = minOf(a.min, b.min),
+                    max = minOf(a.max, b.max),
+                    hasNaN = a.hasNaN || b.hasNaN,
+                    hasInf = a.hasInf || b.hasInf,
+                )
+            }
+            "MATMUL" -> {
+                // 矩阵乘法：输出范围取决于输入元素范围
+                // 对 over-approximate 而言，元素范围相乘足够
+                if (inputRanges.size < 2) return ValueRange.UNKNOWN
+                val a = inputRanges[0]; val b = inputRanges[1]
+                val products = listOf(a.min * b.min, a.min * b.max, a.max * b.min, a.max * b.max)
+                ValueRange(products.min(), products.max(), hasNaN = a.hasNaN || b.hasNaN, hasInf = a.hasInf || b.hasInf)
+            }
             "POWER" -> ValueRange.UNKNOWN  // 幂运算值域复杂，放宽
 
             // === 一元三角/杂项 ===
             "SIN", "COS" -> ValueRange(-1.0, 1.0)
 
             // === 汇总/归约 ===
-            "REDUCE_SUM", "REDUCE_MEAN", "REDUCE_MAX", "REDUCE_MIN",
-            "ARGMIN", "ARGMAX" -> ValueRange.UNKNOWN  // 取决于 axis 和 keepdims，放宽
+            "REDUCE_MAX" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                // reduce_max 的最大值 = 输入 max
+                inputRanges[0]
+            }
+            "REDUCE_MIN" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                // reduce_min 的最小值 = 输入 min
+                inputRanges[0]
+            }
+            "REDUCE_MEAN" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                // mean 在输入范围内
+                inputRanges[0]
+            }
+            "REDUCE_SUM" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                // sum 的范围可能比输入宽（多元素累加），保守用输入范围
+                inputRanges[0]
+            }
+            "ARGMIN", "ARGMAX" -> ValueRange.UNKNOWN  // 索引值，放宽
+
+            // === 形状变换（不改变元素值） ===
+            "RESHAPE", "TRANSPOSE", "SQUEEZE", "UNSQUEEZE",
+            "BROADCAST_TO", "TILE", "EXPAND_DIMS",
+            "CAST", "STRIDED_SLICE", "GATHER" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                inputRanges[0]
+            }
+            // CONCAT 拼接多个输入，取并集
+            "CONCAT", "SPLIT" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                inputRanges.reduce { a, b -> a.union(b) }
+            }
+
+            // === 池化（对元素做统计，范围不超出输入） ===
+            "MAX_POOL2D", "AVG_POOL2D" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                inputRanges[0]
+            }
+
+            // === 其他（不变换值） ===
+            "INTERPOLATE", "RESIZE2D" -> {
+                if (inputRanges.isEmpty()) return ValueRange.UNKNOWN
+                inputRanges[0]
+            }
 
             // === 其他 ===
             else -> ValueRange.UNKNOWN

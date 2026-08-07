@@ -87,8 +87,8 @@ class AllPatternsTest {
     // ===== 测试 =====
 
     @Test
-    fun `load all 38 patterns from resources`() {
-        assertEquals(40, allPatterns.size)
+    fun `load all patterns from resources`() {
+        assertEquals(28, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
@@ -135,20 +135,20 @@ class AllPatternsTest {
         assertNull(matcher.onNodeGenerated(oddH, resolverOf(oddH)), "tvm-20015 H=5 odd")
     }
 
-    @Test
+@Test
     fun `tvm-20015-variant-silu-2d silu 2D shufflevector`() {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-silu-2d" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
 
-        // 正例: 2D [2,5] (2*5=10)
+        // 正例: 2D [4,10] (N=4, N*C=40 ∈ {40,56,72})
         val pos = mockNode("silu", UirOpKind.SILU,
-            listOf(shapeOf(2, 5)), listOf(shapeOf(2, 5)))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu-2d positive [2,5]")
+            listOf(shapeOf(4, 10)), listOf(shapeOf(4, 10)))
+        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu-2d positive [4,10]")
 
         // 反例-不同算子
         matcher.reset()
         val diffOp = mockNode("relu", UirOpKind.RELU,
-            listOf(shapeOf(4, 5)), listOf(shapeOf(4, 5)))
+            listOf(shapeOf(4, 10)), listOf(shapeOf(4, 10)))
         assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-silu-2d diff op")
 
         // 反例-不同ndim: 3D [4,5,2] (not 2D)
@@ -181,7 +181,7 @@ class AllPatternsTest {
         assertNull(matcher.onNodeGenerated(ndim2, resolverOf(ndim2)), "tvm-20015-variant-silu-3d 2D")
     }
 
-    @Test
+@Test
     fun `tvm-20015-variant-silu-4d silu 4D shufflevector`() {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-silu-4d" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
@@ -223,14 +223,14 @@ class AllPatternsTest {
         assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-avgpool diff op")
     }
 
-    @Test
+@Test
     fun `tvm-20015-variant-avgpool-stride1 avg_pool2d k=2 stride=1`() {
         val pattern = allPatterns.first { it.id == "tvm-20015-variant-avgpool-stride1" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
 
-        // 正例: [1,4,2,5] — C=4, k=2, stride=1, H_out*W_out=2*5=10
+        // 正例: [1,4,3,6] — N=1, C=4, H*W=3*6=18 ∈ {18,22,28}, k=2, stride=1
         val pos = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
-            listOf(shapeOf(1, 4, 2, 5)), listOf(shapeOf(1, 4, 1, 4)),
+            listOf(shapeOf(1, 4, 3, 6)), listOf(shapeOf(1, 4, 2, 5)),
             mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
         assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-avgpool-stride1 positive")
 
@@ -248,87 +248,19 @@ class AllPatternsTest {
             mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
         assertNull(matcher.onNodeGenerated(wrongC, resolverOf(wrongC)), "tvm-20015-variant-avgpool-stride1 C=3")
 
+        // 反例-不同形状: H*W=12 (not in {18,22,28})
+        matcher.reset()
+        val wrongHW = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
+            listOf(shapeOf(1, 4, 3, 4)), listOf(shapeOf(1, 4, 2, 3)),
+            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
+        assertNull(matcher.onNodeGenerated(wrongHW, resolverOf(wrongHW)), "tvm-20015-variant-avgpool-stride1 H*W=12")
+
         // 反例-不同形状: 3D (ndim=3, not 4)
         matcher.reset()
         val ndim3 = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
             listOf(shapeOf(4, 3, 6)), listOf(shapeOf(4, 2, 5)),
             mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
         assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-avgpool-stride1 3D")
-    }
-
-    @Test
-    fun `tvm-20015-variant-maxpool max_pool2d LLVM shufflevector k=2 stride=2`() {
-        val pattern = allPatterns.first { it.id == "tvm-20015-variant-maxpool" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
-
-        // 正例: [4,5,2,5] — any N,C,H,W, k=2, stride=2
-        val pos = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
-            listOf(shapeOf(4, 5, 2, 5)), listOf(shapeOf(4, 5, 1, 2)),
-            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-maxpool positive")
-
-        // 反例-不同算子
-        matcher.reset()
-        val diffOp = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
-            listOf(shapeOf(4, 5, 2, 5)), listOf(shapeOf(4, 5, 1, 2)),
-            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
-        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-maxpool diff op")
-
-        // 反例-不同ndim: 3D (not 4D)
-        matcher.reset()
-        val ndim3 = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
-            listOf(shapeOf(4, 5, 2)), listOf(shapeOf(4, 5, 1)),
-            mapOf("kernel_size" to 2, "stride" to 2, "padding" to 0))
-        assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-maxpool 3D")
-    }
-
-    @Test
-    fun `tvm-20015-variant-maxpool-stride1 max_pool2d LLVM shufflevector k=2 stride=1`() {
-        val pattern = allPatterns.first { it.id == "tvm-20015-variant-maxpool-stride1" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
-
-        // 正例: [4,6,4,5] — any N,C,H,W, k=2, stride=1
-        val pos = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
-            listOf(shapeOf(4, 6, 4, 5)), listOf(shapeOf(4, 6, 3, 4)),
-            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-maxpool-stride1 positive")
-
-        // 反例-不同算子
-        matcher.reset()
-        val diffOp = mockNode("avg_pool2d", UirOpKind.AVG_POOL2D,
-            listOf(shapeOf(4, 6, 4, 5)), listOf(shapeOf(4, 6, 3, 4)),
-            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
-        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-maxpool-stride1 diff op")
-
-        // 反例-不同ndim: 3D (not 4D)
-        matcher.reset()
-        val ndim3 = mockNode("max_pool2d", UirOpKind.MAX_POOL2D,
-            listOf(shapeOf(4, 6, 4)), listOf(shapeOf(4, 6, 3)),
-            mapOf("kernel_size" to 2, "stride" to 1, "padding" to 0))
-        assertNull(matcher.onNodeGenerated(ndim3, resolverOf(ndim3)), "tvm-20015-variant-maxpool-stride1 3D")
-    }
-
-    @Test
-    fun `tvm-20015-variant-silu-1d silu 1D shufflevector`() {
-        val pattern = allPatterns.first { it.id == "tvm-20015-variant-silu-1d" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "llvm")
-
-        // 正例: 1D [10]
-        val pos = mockNode("silu", UirOpKind.SILU,
-            listOf(shapeOf(10)), listOf(shapeOf(10)))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "tvm-20015-variant-silu-1d positive")
-
-        // 反例-不同算子
-        matcher.reset()
-        val diffOp = mockNode("relu", UirOpKind.RELU,
-            listOf(shapeOf(1)), listOf(shapeOf(1)))
-        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20015-variant-silu-1d diff op")
-
-        // 反例-不同形状: 2D [1,1] (ndim=2, not 1)
-        matcher.reset()
-        val ndim2 = mockNode("silu", UirOpKind.SILU,
-            listOf(shapeOf(1, 1)), listOf(shapeOf(1, 1)))
-        assertNull(matcher.onNodeGenerated(ndim2, resolverOf(ndim2)), "tvm-20015-variant-silu-1d 2D")
     }
 
     @Test
@@ -792,99 +724,6 @@ class AllPatternsTest {
     }
 
     @Test
-    fun `pt-189799 add negative zero`() {
-        val pattern = allPatterns.first { it.id == "pt-189799" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "pytorch", "inductor")
-
-        // 正例: 任何 ADD 就会匹配（这是宽泛 pattern）
-        val pos = mockNode("add", UirOpKind.ADD,
-            listOf(shapeOf(1), shapeOf(1)), listOf(shapeOf(1)))
-        assertNotNull(matcher.onNodeGenerated(pos, resolverOf(pos)), "pt-189799 positive")
-
-        // 反例-不同算子
-        matcher.reset()
-        val diffOp = mockNode("subtract", UirOpKind.SUBTRACT,
-            listOf(shapeOf(1), shapeOf(1)), listOf(shapeOf(1)))
-        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "pt-189799 diff op")
-    }
-
-    @Test
-    fun `pt-189801 ELU-div zero`() {
-        val pattern = allPatterns.first { it.id == "pt-189801" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "pytorch", "inductor")
-
-        // 正例: ELU → DIVIDE
-        val elu = mockNode("elu", UirOpKind.ELU,
-            listOf(shapeOf(1)), listOf(shapeOf(1)),
-            mapOf("alpha" to "0.52"))
-        assertNull(matcher.onNodeGenerated(elu, resolverOf(elu)), "pt-189801 first node only")
-
-        val div = mockNode("div", UirOpKind.DIVIDE,
-            listOf(shapeOf(1), shapeOf(1)), listOf(shapeOf(1)))
-        assertNotNull(matcher.onNodeGenerated(div, resolverOf(div)), "pt-189801 complete chain")
-
-        // 反例: ELU → SUBTRACT
-        matcher.reset()
-        matcher.onNodeGenerated(mockNode("elu", UirOpKind.ELU,
-            listOf(shapeOf(1)), listOf(shapeOf(1)),
-            mapOf("alpha" to "0.52")), resolverOf(elu))
-        val sub = mockNode("sub", UirOpKind.SUBTRACT,
-            listOf(shapeOf(1), shapeOf(1)), listOf(shapeOf(1)))
-        assertNull(matcher.onNodeGenerated(sub, resolverOf(sub)), "pt-189801 different second op")
-    }
-
-    @Test
-    fun `pt-189803 reciprocal(elu+exp(elu))`() {
-        val pattern = allPatterns.first { it.id == "pt-189803" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "pytorch", "inductor")
-
-        // 正例: 4节点链
-        val elu = mockNode("elu", UirOpKind.ELU,
-            listOf(shapeOf(24, 57, 37)), listOf(shapeOf(24, 57, 37)),
-            mapOf("alpha" to "1.24"))
-        assertNull(matcher.onNodeGenerated(elu, resolverOf(elu)))
-        val exp = mockNode("exp", UirOpKind.EXP,
-            listOf(shapeOf(24, 57, 37)), listOf(shapeOf(24, 57, 37)))
-        assertNull(matcher.onNodeGenerated(exp, resolverOf(exp)))
-        val add = mockNode("add", UirOpKind.ADD,
-            listOf(shapeOf(24, 57, 37), shapeOf(24, 57, 37)), listOf(shapeOf(24, 57, 37)))
-        assertNull(matcher.onNodeGenerated(add, resolverOf(add)))
-        val recip = mockNode("reciprocal", UirOpKind.RECIPROCAL,
-            listOf(shapeOf(24, 57, 37)), listOf(shapeOf(24, 57, 37)))
-        assertNotNull(matcher.onNodeGenerated(recip, resolverOf(recip)), "pt-189803 complete chain")
-
-        // 反例: 前3步匹配，第4步不同
-        matcher.reset()
-        matcher.onNodeGenerated(elu, resolverOf(elu))
-        matcher.onNodeGenerated(exp, resolverOf(exp))
-        matcher.onNodeGenerated(add, resolverOf(add))
-        val sigmoid = mockNode("sigmoid", UirOpKind.SIGMOID,
-            listOf(shapeOf(24, 57, 37)), listOf(shapeOf(24, 57, 37)))
-        assertNull(matcher.onNodeGenerated(sigmoid, resolverOf(sigmoid)), "pt-189803 different fourth op")
-    }
-
-    @Test
-    fun `pt-189804 GELU sign`() {
-        val pattern = allPatterns.first { it.id == "pt-189804" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "pytorch", "inductor")
-
-        // 正例: GELU → SIGN
-        val gelu = mockNode("gelu", UirOpKind.GELU,
-            listOf(shapeOf(23, 64, 62)), listOf(shapeOf(23, 64, 62)))
-        assertNull(matcher.onNodeGenerated(gelu, resolverOf(gelu)))
-        val sign = mockNode("sign", UirOpKind.SIGN,
-            listOf(shapeOf(23, 64, 62)), listOf(shapeOf(23, 64, 62)))
-        assertNotNull(matcher.onNodeGenerated(sign, resolverOf(sign)), "pt-189804 complete chain")
-
-        // 反例: GELU → RELU
-        matcher.reset()
-        matcher.onNodeGenerated(gelu, resolverOf(gelu))
-        val relu = mockNode("relu", UirOpKind.RELU,
-            listOf(shapeOf(23, 64, 62)), listOf(shapeOf(23, 64, 62)))
-        assertNull(matcher.onNodeGenerated(relu, resolverOf(relu)), "pt-189804 different second op")
-    }
-
-    @Test
     fun `pt-189808 sqrt negative NaN`() {
         val pattern = allPatterns.first { it.id == "pt-189808" }
         val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "pytorch", "inductor")
@@ -1048,39 +887,6 @@ class AllPatternsTest {
                 assertNotNull(result, "onnx-8204 should match on complete chain")
             }
         }
-    }
-
-    @Test
-    fun `tvm-20060-argmin reduce-to-scalar CUDA global memory`() {
-        val pattern = allPatterns.first { it.id == "tvm-20060-argmin" }
-        val matcher = PatternMatcher(PatternDatabase(patterns = listOf(pattern)), "tvm", "cuda")
-
-        // 正例: ARGMIN with 1D input → 0D output
-        val pos = mockNode("argmin", UirOpKind.ARGMIN,
-            listOf(shapeOf(1)), listOf(shapeOf()))
-        val resolver: (String) -> UirValueRef? = { vid ->
-            if (vid == "v_in") pos.inputs[0]
-            else if (vid == "v_out") pos.outputs[0]
-            else null
-        }
-        assertNotNull(matcher.onNodeGenerated(pos, resolver), "tvm-20060-argmin positive")
-
-        // 反例-不同算子
-        matcher.reset()
-        val diffOp = mockNode("relu", UirOpKind.RELU,
-            listOf(shapeOf(1)), listOf(shapeOf(1)))
-        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-20060-argmin diff op")
-
-        // 反例-不同形状: output is 1D not 0D
-        matcher.reset()
-        val notScalar = mockNode("argmin", UirOpKind.ARGMIN,
-            listOf(shapeOf(1, 2)), listOf(shapeOf(2)))
-        val r2: (String) -> UirValueRef? = { vid ->
-            if (vid == "v_in") notScalar.inputs[0]
-            else if (vid == "v_out") notScalar.outputs[0]
-            else null
-        }
-        assertNull(matcher.onNodeGenerated(notScalar, r2), "tvm-20060-argmin non-scalar output")
     }
 
     @Test

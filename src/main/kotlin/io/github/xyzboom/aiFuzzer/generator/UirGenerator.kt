@@ -267,6 +267,10 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             
             val shape = generateRandomShape(config.minNdim, config.maxNdim)
             valueShapes[valueId] = shape
+            // 初始化输入值域：输入为随机浮点，假设均匀分布在 [-1, 1]（可过 VRA-aware 规避）
+            if (config.dedup.valueRangeAnalysis) {
+                valueRanges[valueId] = io.github.xyzboom.aiFuzzer.pattern.ValueRange.range(-1.0, 1.0)
+            }
             log.trace { "新输入值 $valueId: 形状=${shapeDims(shape)}" }
             
             buildValueRef {
@@ -445,6 +449,28 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 availableValues.size == 1 -> candidates.filter { it in UirOpKind.constantOps || it in UirOpKind.singleInputOps }.randomOrNull(rand) ?: UirOpKind.RELU
                 else -> candidates.random(rand)
             }
+
+            // VRA-aware NaN/Inf 规避（valueRangeAnalysis 启用时）：
+            // 若候选 op 是 NaN/Inf 高风险算子，要求至少有一个可用值的值域对该 op 安全，
+            // 否则跳过该 op（等价于 smart avoid_nan_inf，但不是粗暴移除算子，而是依赖值域判断）。
+            if (config.dedup.valueRangeAnalysis && candidate in nanInfProneOps && availableValues.isNotEmpty()) {
+                val hasSafeInput = availableValues.any { vid ->
+                    val range = valueRanges[vid]
+                    if (range == null) true  // 未知值域 → 保守放行
+                    else isRangeSafeFor(candidate, range)
+                }
+                if (!hasSafeInput) continue
+            }
+            // VRA-aware extreme op 规避（valueRangeAnalysis 启用时）：
+            // 对 SIGN 等极端算子，当输入值域可能接近 0 时跳过，避免极值行为。
+            if (config.dedup.valueRangeAnalysis && candidate in extremeOps && availableValues.isNotEmpty()) {
+                val hasSafeInput = availableValues.any { vid ->
+                    val range = valueRanges[vid]
+                    if (range == null) true
+                    else isRangeSafeFor(candidate, range)
+                }
+                if (!hasSafeInput) continue
+            }
             
             // Check constraint: get the input shape(s) this op would receive
             val numInputs = when (candidate) {
@@ -500,6 +526,24 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         
         // Fallback: pick a safe op (RELU works on any shape)
         return UirOpKind.RELU
+    }
+
+    /**
+     * 判断某个值域对于一个 NaN/Inf 高风险算子是否安全（即不会因此产生 NaN/Inf）。
+     * 仅用于 VRA-aware 规避（valueRangeAnalysis 启用时）。
+     * 若值域未知（UNKNOWN），保守放行（返回 true）。
+     */
+    private fun isRangeSafeFor(op: UirOpKind, range: io.github.xyzboom.aiFuzzer.pattern.ValueRange): Boolean {
+        return when (op) {
+            UirOpKind.SQRT -> range.min >= 0.0          // 输入非负 → sqrt 安全
+            UirOpKind.RSQRT -> range.min > 0.0          // 输入 >0 → rsqrt 安全
+            UirOpKind.LOG, UirOpKind.LOG2 -> range.min > 0.0  // 输入 >0 → log 安全
+            UirOpKind.RECIPROCAL -> !range.containsZero()     // 不包含0 → 倒数安全
+            UirOpKind.DIVIDE -> !range.containsZero()          // 输入不含0 → 用作除数安全
+            UirOpKind.SIGN -> !range.containsZero()            // 不含0 → sign 行为确定
+            // EXP / POWER / CUMPROD 对有限输入不会产生 NaN/Inf（可能 Overflow 但可接受）
+            else -> true
+        }
     }
     
     open fun generateNode(
