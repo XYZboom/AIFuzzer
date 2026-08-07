@@ -5,7 +5,7 @@
       "id": "tvm-20047",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU gemv FloorDiv — OC=1, KH∈{1,2}, KW∈{1,2,3}, output H not power of 2",
+      "description": "conv2d dlight GPU gemv FloorDiv — OC=1, KH∈{1,2}, KW∈{1,2,3}, output H not power of 2, H≥3",
       "severity": "crash",
       "nodes": [
         {
@@ -27,7 +27,7 @@
           "shape": [
             {"$eq": 1},
             {"$eq": 1},
-            {"$gte": 1},
+            {"$gte": 3},
             {"$gte": 1}
           ],
           "dtype": "float32"
@@ -60,7 +60,7 @@
       "id": "tvm-20047-w",
       "compiler": "tvm",
       "target": "cuda",
-      "description": "conv2d dlight GPU gemv FloorDiv — OC=1, KH∈{1,2}, KW∈{1,2,3}, output W not power of 2",
+      "description": "conv2d dlight GPU gemv FloorDiv — OC=1, KH∈{1,2}, KW∈{1,2,3}, output W not power of 2, W≥4",
       "severity": "crash",
       "nodes": [
         {
@@ -83,7 +83,7 @@
             {"$eq": 1},
             {"$eq": 1},
             {"$gte": 1},
-            {"$gte": 1}
+            {"$gte": 4}
           ],
           "dtype": "float32"
         },
