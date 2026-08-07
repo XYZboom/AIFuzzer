@@ -603,7 +603,27 @@ class FuzzingPipeline(
                     when {
                         noDedupFailed && !dedupFailed -> { bugPrevented.incrementAndGet(); bugPreventedSeeds.add(seed) }
                         !noDedupFailed && dedupFailed -> { dedupOnlyFail.incrementAndGet(); dedupOnlyFailSeeds.add(seed) }
-                        noDedupFailed && dedupFailed -> { bothFailed.incrementAndGet(); bothFailedSeeds.add(seed) }
+                        noDedupFailed && dedupFailed -> {
+                            bothFailed.incrementAndGet(); bothFailedSeeds.add(seed)
+                            // 保存 no-dedup 和 dedup 程序到独立目录，供手动分析错误签名是否相同
+                            try {
+                                val bfDir = java.io.File("reports/both-failed/seed${seed}")
+                                bfDir.mkdirs()
+                                val ndDir = java.io.File(bfDir, "no-dedup")
+                                ndDir.mkdirs()
+                                java.io.File(ndDir, "ir.jsonl").writeText(serialNoDedup)
+                                val ndStderr = resultsNoDedup.firstOrNull { !it.backendResult.success }?.backendResult?.stderr ?: ""
+                                java.io.File(ndDir, "stderr.log").writeText(ndStderr)
+                                val dDir = java.io.File(bfDir, "dedup")
+                                dDir.mkdirs()
+                                val serialDedup = io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer.toJsonl(genDedup)
+                                java.io.File(dDir, "ir.jsonl").writeText(serialDedup)
+                                val dStderr = resultsDedup.firstOrNull { !it.backendResult.success }?.backendResult?.stderr ?: ""
+                                java.io.File(dDir, "stderr.log").writeText(dStderr)
+                            } catch (e: Exception) {
+                                log.warn(e) { "seed=$seed 保存 both-failed 程序失败" }
+                            }
+                        }
                         else -> bothSuccess.incrementAndGet()
                     }
                     completed.incrementAndGet()
