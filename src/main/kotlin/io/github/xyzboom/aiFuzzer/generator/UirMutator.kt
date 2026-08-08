@@ -582,7 +582,7 @@ class UirMutator(
                 val inputShape = valueShapes[node.inputs[0].valueId] ?: node.inputs[0].type.shape
                 val outShape = node.outputs[0].type.shape
                 if (inputShape.dims.size > outShape.dims.size || !canBroadcast(inputShape, outShape)) {
-                    log.warn { "BROADCAST_TO 不兼容: 重置为恒等广播" }
+                    log.trace { "BROADCAST_TO 不兼容: 重置为恒等广播" }
                     node.outputs[0].type.shape = inputShape
                     valueShapes[node.outputs[0].valueId] = inputShape
                 } else {
@@ -601,23 +601,21 @@ class UirMutator(
                 val outputElements = outShape.dims.mapNotNull { it.valueOrNull() }
                     .fold(1L) { acc, v -> acc * v }
                 if (inputElements > 0 && outputElements > 0 && inputElements != outputElements) {
-                    log.warn { "RESHAPE 元素数不匹配: 插入 wrapper 适配输入" }
-                    val result = ShapeAdapter.adaptWithElemCountMatch(
-                        node.inputs[0], inputShape, outShape,
-                        valueShapes, valueCounter, nodeCounter
-                    )
-                    if (result.second.isNotEmpty()) {
-                        graph.nodes.addAll(i, result.second)
-                        node.inputs.clear()
-                        node.inputs.add(result.first)
-                        for (wrapperNode in result.second) {
-                            for (output in wrapperNode.outputs) {
-                                valueShapes[output.valueId] = output.type.shape
+                    // 变异后上游形状改变，RESHAPE 的 target shape 属性不再匹配输入元素数。
+                    // 直接更新 shape 属性，不插入 wrapper 节点（wrapper 改变语义，违反"生成合法程序"原则）。
+                    sanitizeReshapeShapeAttr(node, inputShape)
+                    // 从更新后的 shape 属性解析新输出形状
+                    val shapeAttr = node.attributes["shape"] as? UirStringAttr
+                    if (shapeAttr != null) {
+                        val newDims = shapeAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
+                        if (newDims.isNotEmpty()) {
+                            val newShape = buildShape {
+                                newDims.forEach { d ->
+                                    dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = d })
+                                }
                             }
+                            node.outputs[0].type.shape = newShape
                         }
-                        valueCounter += result.second.size
-                        nodeCounter += result.second.size
-                        i += result.second.size
                     }
                 }
                 sanitizeReshapeShapeAttr(node, inputShape)
@@ -793,7 +791,7 @@ class UirMutator(
         if (oldAxes.any { it >= ndim || it < -ndim }) {
             val fixedAxes = oldAxes.map { Math.floorMod(it, ndim) }.joinToString(",")
             node.attributes["axes"] = buildStringAttr { value = fixedAxes }
-            log.warn { "strided_slice axes: ${node.name} ${axesAttr.value} -> $fixedAxes (ndim=$ndim)" }
+            log.trace { "strided_slice axes: ${node.name} ${axesAttr.value} -> $fixedAxes (ndim=$ndim)" }
         }
 
         // 消毒 begin/end: 不能超过该轴的实际维度大小
@@ -822,11 +820,11 @@ class UirMutator(
                 }
                 if (changedEnd) {
                     node.attributes["end"] = buildStringAttr { value = fixedEnds.joinToString(",") }
-                    log.warn { "strided_slice end: ${node.name} ${endAttr.value} -> ${fixedEnds.joinToString(",")}" }
+                    log.trace { "strided_slice end: ${node.name} ${endAttr.value} -> ${fixedEnds.joinToString(",")}" }
                 }
                 if (changedBegin) {
                     node.attributes["begin"] = buildStringAttr { value = fixedBegins.joinToString(",") }
-                    log.warn { "strided_slice begin: ${node.name} ${beginAttr?.value ?: "0"} -> ${fixedBegins.joinToString(",")}" }
+                    log.trace { "strided_slice begin: ${node.name} ${beginAttr?.value ?: "0"} -> ${fixedBegins.joinToString(",")}" }
                 }
             }
         }
@@ -839,7 +837,7 @@ class UirMutator(
         val maxPad = kernelAttr.value / 2
         if (padAttr.value > maxPad) {
             node.attributes["padding"] = buildIntAttr { value = maxPad }
-            log.warn { "pool pad: ${node.name} ${padAttr.value} -> $maxPad (kernel=${kernelAttr.value})" }
+            log.trace { "pool pad: ${node.name} ${padAttr.value} -> $maxPad (kernel=${kernelAttr.value})" }
         }
     }
 
@@ -850,7 +848,7 @@ class UirMutator(
         val inputEl = inputShape.dims.mapNotNull { it.valueOrNull() }.fold(1L) { a, v -> a * v }
         val shapeEl = targetDims.fold(1L) { a, v -> a * v }
         if (inputEl > 0 && inputEl != shapeEl) {
-            log.warn { "RESHAPE shape attr expired: ${inputEl}el vs ${targetDims}=${shapeEl}el" }
+            log.trace { "RESHAPE shape attr更新: ${inputEl}el vs ${targetDims}=${shapeEl}el" }
             val newShape = factorizeToNdim(inputEl.toInt(), targetDims.size)
             node.attributes["shape"] = buildStringAttr {
                 value = if (newShape.isNotEmpty()) newShape.joinToString(",") else inputEl.toString()
