@@ -171,6 +171,11 @@ class PytorchTranslator(
         builder.appendLine("import torch.nn.functional as F")
         builder.appendLine("import sys")
         builder.appendLine("import copy")
+        if (compileMode == "tvm") {
+            builder.appendLine("import tvm")
+            builder.appendLine("from tvm import relax")
+            builder.appendLine("from tvm.relax.frontend.torch import from_exported_program")
+        }
         builder.appendLine()
 
         // 翻译每个图
@@ -236,62 +241,13 @@ class PytorchTranslator(
         val finalRefVar = lastGraph.outputs.singleOrNull()?.valueId ?: "ref_out_${element.graphs.size - 1}"
 
         // === Compiled 模式执行（整条链编译，后端自动融合跨图算子）===
-        val forwardParams = freshInputIds.joinToString(", ")
         builder.appendLine("# Chained compiled execution (entire pipeline compiled together)")
         builder.appendLine("try:")
-        builder.appendLine("    class ChainedModel(nn.Module):")
-        builder.appendLine("        def __init__(self, mods):")
-        builder.appendLine("            super().__init__()")
-        builder.appendLine("            self._mods = mods")
-        builder.appendLine("        def forward(self, $forwardParams):")
-        // 追踪哪些参数已被消费（分配给图输入）
-        var paramIndex = 0
-        // 前面图（prevGraph）的输出集合，用于判断链入输入
-        var prevGraphOutputIds = emptySet<String>()
-        for ((gIdx, graph) in element.graphs.withIndex()) {
-            if (gIdx == 0) {
-                // graph_0: 所有输入都是 fresh params（位置对应）
-                val moduleInputs = graph.inputs.indices.joinToString(", ") { i ->
-                    if (i < freshInputIds.size) freshInputIds[i] else graph.inputs[i].valueId
-                }
-                builder.appendLine("            x = self._mods[0]($moduleInputs)")
-                paramIndex = graph.inputs.size
-            } else {
-                // graph_i: 链入的输入来自 x（上一图输出），新增的来自 fresh params
-                // 注意：只查找前一个图的输出，而不是所有图的输出（防止跨图误匹配）
-                val chainInputIds = graph.inputs.filter { it.valueId in prevGraphOutputIds }
-                val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in prevGraphOutputIds }
-                val callArgs = mutableListOf<String>()
-                if (chainInputIds.size > 1) {
-                    // 解包 x（可能是元组）
-                    val chainNames = chainInputIds.map { "ch_${it.valueId}" }.joinToString(", ")
-                    builder.appendLine("            $chainNames = x if isinstance(x, tuple) else (x,)")
-                    chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
-                } else {
-                    callArgs.add("x")
-                }
-                // 追加新增输入
-                freshInputIdsForGraph.forEach { callArgs.add(it.valueId) }
-                builder.appendLine("            x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
-            }
-            // 更新 prevGraphOutputIds 为当前图的输出，供后续图判断链入输入
-            prevGraphOutputIds = graph.outputs.map { it.valueId }.toSet()
-        }
-        builder.appendLine("            return x")
+        generateChainedModelClass(builder, freshInputIds, element.graphs)
         builder.appendLine()
         val modList = element.graphs.indices.joinToString(", ") { "model_$it" }
         val allFreshArgs = freshInputIds.joinToString(", ")
-        val compileLabel = if (compileMode == "jit") "torch.jit" else "torch.compile"
-        if (compileMode == "jit") {
-            // TorchScript JIT：trace → freeze → optimize_for_inference（与 torch.compile 是不同编译路径）
-            // 注意：torch.jit.freeze 要求模块处于 eval 模式，因此先 .eval()
-            builder.appendLine("    _jit_model = ChainedModel(nn.ModuleList([$modList])).eval()")
-            builder.appendLine("    chained = torch.jit.trace(_jit_model, ($allFreshArgs,))")
-            builder.appendLine("    chained = torch.jit.freeze(chained)")
-            builder.appendLine("    chained = torch.jit.optimize_for_inference(chained)")
-        } else {
-            builder.appendLine("    chained = torch.compile(ChainedModel(nn.ModuleList([$modList])), mode=\"$compileMode\")")
-        }
+        val compileLabel = generateCompileCall(builder, compileMode, modList, allFreshArgs, device)
         builder.appendLine("except Exception as e:")
         builder.appendLine("    print(f'$compileLabel failed: {e}')")
         builder.appendLine("    raise")
@@ -877,5 +833,98 @@ UirOpKind.TILE -> {
                 UirDimKind.UNKNOWN -> "1"
             }
         }.joinToString(", ")
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 编译执行相关：ChainedModel 类 + 编译调用生成
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * 生成 ChainedModel 类定义（多图链式串联）。
+     * 所有编译模式复用同一 ChainedModel 结构。
+     */
+    private fun generateChainedModelClass(
+        builder: StringBuilder,
+        freshInputIds: List<String>,
+        graphs: List<UirGraph>,
+    ) {
+        val forwardParams = freshInputIds.joinToString(", ")
+        builder.appendLine("    class ChainedModel(nn.Module):")
+        builder.appendLine("        def __init__(self, mods):")
+        builder.appendLine("            super().__init__()")
+        builder.appendLine("            self._mods = mods")
+        builder.appendLine("        def forward(self, $forwardParams):")
+        var prevGraphOutputIds = emptySet<String>()
+        for ((gIdx, graph) in graphs.withIndex()) {
+            if (gIdx == 0) {
+                val moduleInputs = graph.inputs.indices.joinToString(", ") { i ->
+                    if (i < freshInputIds.size) freshInputIds[i] else graph.inputs[i].valueId
+                }
+                builder.appendLine("            x = self._mods[0]($moduleInputs)")
+            } else {
+                val chainInputIds = graph.inputs.filter { it.valueId in prevGraphOutputIds }
+                val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in prevGraphOutputIds }
+                val callArgs = mutableListOf<String>()
+                if (chainInputIds.size > 1) {
+                    val chainNames = chainInputIds.map { "ch_${it.valueId}" }.joinToString(", ")
+                    builder.appendLine("            $chainNames = x if isinstance(x, tuple) else (x,)")
+                    chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
+                } else {
+                    callArgs.add("x")
+                }
+                freshInputIdsForGraph.forEach { callArgs.add(it.valueId) }
+                builder.appendLine("            x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
+            }
+            prevGraphOutputIds = graph.outputs.map { it.valueId }.toSet()
+        }
+        builder.appendLine("            return x")
+    }
+
+    /**
+     * 生成编译调用代码（模式相关）。
+     *
+     * @return 编译标签（用于错误消息）
+     */
+    private fun generateCompileCall(
+        builder: StringBuilder,
+        compileMode: String,
+        modList: String,
+        allFreshArgs: String,
+        device: String,
+    ): String {
+        return when (compileMode) {
+            "jit" -> {
+                // TorchScript JIT：trace → freeze → optimize_for_inference
+                builder.appendLine("    _jit_model = ChainedModel(nn.ModuleList([$modList])).eval()")
+                builder.appendLine("    chained = torch.jit.trace(_jit_model, ($allFreshArgs,))")
+                builder.appendLine("    chained = torch.jit.freeze(chained)")
+                builder.appendLine("    chained = torch.jit.optimize_for_inference(chained)")
+                "torch.jit"
+            }
+            "tvm" -> {
+                // TVM 前端导入：torch.export → from_exported_program → relax.build → VM
+                val tvmTarget = if (device == "cuda") "cuda" else "llvm"
+                val tvmDevice = if (device == "cuda") "tvm.cuda()" else "tvm.cpu()"
+                builder.appendLine("    _tvm_model = ChainedModel(nn.ModuleList([$modList])).eval()")
+                builder.appendLine("    _tvm_ep = torch.export.export(_tvm_model, ($allFreshArgs,))")
+                builder.appendLine("    _tvm_mod = from_exported_program(_tvm_ep)")
+                builder.appendLine("    _tvm_ex = relax.build(_tvm_mod, target=\"$tvmTarget\")")
+                builder.appendLine("    _tvm_vm = relax.VirtualMachine(_tvm_ex, $tvmDevice)")
+                builder.appendLine("    def _tvm_call(*a):")
+                builder.appendLine("        _raw = _tvm_vm[\"main\"](*a)")
+                builder.appendLine("        if hasattr(_raw, 'numpy'):")
+                builder.appendLine("            return torch.from_numpy(_raw.numpy())")
+                builder.appendLine("        else:")
+                builder.appendLine("            import numpy as np")
+                builder.appendLine("            return tuple(torch.from_numpy(o.numpy()) for o in _raw)")
+                builder.appendLine("    chained = _tvm_call")
+                "tvm_frontend"
+            }
+            else -> {
+                // torch.compile（默认）
+                builder.appendLine("    chained = torch.compile(ChainedModel(nn.ModuleList([$modList])), mode=\"$compileMode\")")
+                "torch.compile"
+            }
+        }
     }
 }
