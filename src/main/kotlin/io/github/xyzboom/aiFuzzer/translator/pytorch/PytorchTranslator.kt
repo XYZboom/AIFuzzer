@@ -175,6 +175,9 @@ class PytorchTranslator(
             builder.appendLine("import tvm")
             builder.appendLine("from tvm import relax")
             builder.appendLine("from tvm.relax.frontend.torch import from_exported_program")
+        } else if (compileMode == "onnx") {
+            builder.appendLine("import io")
+            builder.appendLine("import onnxruntime as ort")
         }
         builder.appendLine()
 
@@ -919,6 +922,25 @@ UirOpKind.TILE -> {
                 builder.appendLine("            return tuple(torch.from_numpy(o.numpy()) for o in _raw)")
                 builder.appendLine("    chained = _tvm_call")
                 "tvm_frontend"
+            }
+            "onnx" -> {
+                // PyTorch→ONNX export：torch.onnx.export → ONNX Runtime 运行
+                val argNames = allFreshArgs.split(", ").map { "input_$it" }
+                val inputNames = argNames.joinToString(", ") { "\"$it\"" }
+                builder.appendLine("    _torch_model = ChainedModel(nn.ModuleList([$modList])).eval()")
+                builder.appendLine("    _buf = io.BytesIO()")
+                builder.appendLine("    torch.onnx.export(_torch_model, ($allFreshArgs,), _buf, input_names=[$inputNames], opset_version=17)")
+                builder.appendLine("    _buf.seek(0)")
+                builder.appendLine("    _sess = ort.InferenceSession(_buf.read(), providers=['CPUExecutionProvider'])")
+                builder.appendLine("    _onnx_in_names = [i.name for i in _sess.get_inputs()]")
+                builder.appendLine("    def _onnx_call(*a):")
+                builder.appendLine("        _feed = {n: t.detach().cpu().numpy() for n, t in zip(_onnx_in_names, a)}")
+                builder.appendLine("        _out = _sess.run(None, _feed)")
+                builder.appendLine("        if len(_out) == 1:")
+                builder.appendLine("            return torch.from_numpy(_out[0])")
+                builder.appendLine("        return tuple(torch.from_numpy(o) for o in _out)")
+                builder.appendLine("    chained = _onnx_call")
+                "torch.onnx.export"
             }
             else -> {
                 // torch.compile（默认）
