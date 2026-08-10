@@ -1,0 +1,258 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-014-cumprod-grid-2d-axis0",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD gridDim.y overflow: 2D axis=0, shape[1] >= 65536 → grid y=65536 > CUDA limit",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 0}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 2,
+          "shape": [{"$any": true}, {"$gte": 65536}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-2d-axis1",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD gridDim.y overflow: 2D axis=1, shape[0] >= 65536 → grid y=65536 > CUDA limit",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 1}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 2,
+          "shape": [{"$gte": 65536}, {"$any": true}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis0-a",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=0, shape[1] >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 0}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$any": true}, {"$gte": 65536}, {"$any": true}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis0-b",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=0, shape[2] >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 0}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$any": true}, {"$any": true}, {"$gte": 65536}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis0-ab",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=0, shape[1] >= 256 AND shape[2] >= 256 → product >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 0}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$any": true}, {"$gte": 256}, {"$gte": 256}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis1-a",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=1, shape[0] >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 1}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$gte": 65536}, {"$any": true}, {"$any": true}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis1-b",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=1, shape[2] >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 1}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$any": true}, {"$any": true}, {"$gte": 65536}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis1-ab",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=1, shape[0] >= 256 AND shape[2] >= 256 → product >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 1}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$gte": 256}, {"$any": true}, {"$gte": 256}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis2-a",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=2, shape[0] >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 2}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$gte": 65536}, {"$any": true}, {"$any": true}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis2-b",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=2, shape[1] >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 2}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$any": true}, {"$gte": 65536}, {"$any": true}],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-014-cumprod-grid-3d-axis2-ab",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "CUMPROD grid overflow: 3D axis=2, shape[0] >= 256 AND shape[1] >= 256 → product >= 65536",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node", "id": "n0", "op": "CUMPROD",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"],
+          "attrs": {"axis": 2}
+        }
+      ],
+      "values": [
+        {
+          "match": "value", "id": "v_in",
+          "ndim": 3,
+          "shape": [{"$gte": 256}, {"$gte": 256}, {"$any": true}],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

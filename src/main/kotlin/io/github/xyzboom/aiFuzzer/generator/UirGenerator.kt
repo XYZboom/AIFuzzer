@@ -80,6 +80,18 @@ data class GeneratorConfig(
     val dedup: DedupConfig = DedupConfig(),
     /** 变异配置 */
     val mutationConfig: io.github.xyzboom.aiFuzzer.config.MutationConfig = io.github.xyzboom.aiFuzzer.config.MutationConfig(),
+    /**
+     * 无兼容输入时的回退策略：生成常量+形状保持链的概率。
+     * 0.0 = 始终用原有适配（从已有值中随便选一个，ShapeAdapter 适配）
+     * 1.0 = 始终生成所需形状的常量，插入形状保持算子链
+     * 默认 0.3 = 30% 概率走常量策略，70% 走原有适配
+     */
+    val fallbackConstProbability: Double = 0.3,
+    /**
+     * 常量策略中形状保持算子链的长度范围（随机取）。
+     * 例如 0..3 表示插入 0-3 个形状保持算子。
+     */
+    val shapePreservingChainRange: IntRange = 0..3,
 )
 
 /** 去重配置 */
@@ -489,7 +501,8 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     val shape = valueShapes[vid]
                     shape != null && shape.dims.size == 4
                 }
-                if (hasValidInput) return candidate
+                // 策略b：无兼容输入时可仍然选择，由 generateNode 生成常量+形状保持链
+                if (hasValidInput || config.fallbackConstProbability > 0) return candidate
                 continue
             }
 
@@ -499,7 +512,9 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     val shape = valueShapes[vid]
                     shape != null && ShapeConstraints.isApplicable(candidate, listOf(shape))
                 }
+                // 策略b：无兼容输入时可仍然选择，由 generateNode 生成常量+形状保持链
                 if (hasValidInput) return candidate
+                if (config.fallbackConstProbability > 0) return candidate
                 continue  // No valid input for this op, retry
             }
             
@@ -604,8 +619,33 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         }
         
         // 5. 形状适配：检查输入形状是否满足算子约束，必要时插入 wrapper
+        // 策略b：若需要适配且配置了 fallbackConstProbability，则生成常量+形状保持链
+        val currentInputShapes = inputValueRefs.map { valueShapes[it.valueId]!! }
+        val needsAdaptation = !ShapeConstraints.isApplicable(op, currentInputShapes)
+        var preAdaptedInputRefs = inputValueRefs
+        
+        if (needsAdaptation) {
+            if (rand.nextDouble() < config.fallbackConstProbability) {
+                // 策略b：生成常量+形状保持链，替代所有不兼容的输入
+                log.debug { "节点 $nodeIndex: 触发策略b (fallbackConstProbability=${config.fallbackConstProbability})" }
+                // 为每个输入生成独立的常量+形状保持链
+                preAdaptedInputRefs = inputValueRefs.mapIndexed { idx, _ ->
+                    val newValueId = generateConstWithShapePreservingChain(op, conversionNodes)
+                    val newShape = valueShapes[newValueId]!!
+                    buildValueRef {
+                        this.valueId = newValueId
+                        this.type = buildTensorType {
+                            this.typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
+                            this.shape = newShape
+                            this.dtype = mkDataType()
+                        }
+                    }
+                }
+            }
+        }
+        
         val adaptResult = ShapeAdapter.adaptInputs(
-            op, inputValueRefs, valueShapes, valueCounter, nodeCounter, attributes
+            op, preAdaptedInputRefs, valueShapes, valueCounter, nodeCounter, attributes
         )
         
         // 记录适配信息
@@ -1016,8 +1056,23 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     validValues.isNotEmpty() && tipValue != null && tipValue in validValues -> listOf(tipValue)
                     validValues.isNotEmpty() -> listOf(validValues.random(rand))
                     // No valid values satisfy constraint — fall back to any value (ShapeAdapter will try to fix)
-                    tipValue != null && tipValue in availableValues -> listOf(tipValue)
-                    else -> availableValues.shuffled(rand).take(1)
+                    tipValue != null && tipValue in availableValues -> {
+                        if (rand.nextDouble() < config.fallbackConstProbability) {
+                            // 策略b：生成常量 + 形状保持链
+                            val chainResult = generateConstWithShapePreservingChain(op, nodeList)
+                            listOf(chainResult)
+                        } else {
+                            listOf(tipValue)
+                        }
+                    }
+                    else -> {
+                        if (rand.nextDouble() < config.fallbackConstProbability) {
+                            val chainResult = generateConstWithShapePreservingChain(op, nodeList)
+                            listOf(chainResult)
+                        } else {
+                            availableValues.shuffled(rand).take(1)
+                        }
+                    }
                 }
             }
             else -> availableValues.shuffled(rand).take(numInputs)
@@ -1330,4 +1385,92 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
     
     // generateBroadcastCompatibleShape removed — no longer needed since
     // ShapeAdapter handles all shape adaptation (expand dims, broadcast, reshape).
+    
+    /**
+     * 策略b：无兼容输入时，生成所需形状的常量，插入若干形状保持算子，输出作为输入。
+     *
+     * 流程：
+     * 1. 获取 op 的 ndim 约束，生成随机形状
+     * 2. 创建 FULL 常量节点（所需形状，随机值 0.5-1.5）
+     * 3. 插入 0~N 个随机形状保持算子（如 RELU, SIGMOID 等）
+     * 4. 返回最终输出 ref
+     *
+     * 这样得到的输入天然满足形状要求，不需要 ShapeAdapter 做任何适配。
+     */
+    private fun generateConstWithShapePreservingChain(
+            targetOp: UirOpKind,
+            nodeList: MutableList<UirNode>
+        ): String {
+            // 1. 获取 ndim 要求
+            val constraint = ShapeConstraints.getConstraint(targetOp)
+            val minNdim = maxOf(1, constraint.minNdim)
+            val maxNdimDefault = minOf(4, config.maxNdim)
+            val maxNdim = constraint.maxNdim ?: maxNdimDefault
+            val targetShape = generateRandomShape(minNdim, maxOf(minNdim, maxNdim))
+        
+            // 2. 生成常量节点
+            val constValueId = newValueId()
+            valueShapes[constValueId] = targetShape
+            log.trace { "策略b: 生成常量 shape=$targetShape (op=$targetOp)" }
+        
+            val constOutputRef = buildValueRef {
+                this.valueId = constValueId
+                this.type = buildTensorType {
+                    this.typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
+                    this.shape = targetShape
+                    this.dtype = mkDataType()
+                }
+            }
+        
+            val constNode = buildNode {
+                name = "fallback_const_${randomIdSuffix()}"
+                op = UirOpKind.FULL
+                attributes["fill_value"] = buildStringAttr { value = "0.5" }
+                attributes["shape"] = buildStringAttr { value = "(${targetShape.dims.joinToString { "${it.valueOrNull() ?: 1}" }})" }
+                attributes["dtype"] = buildStringAttr { value = config.dtype }
+                outputs.add(constOutputRef)
+            }
+            nodeList.add(constNode)
+        
+            // 3. 插入随机数量的形状保持算子
+            val chainLen = rand.nextInt(config.shapePreservingChainRange.first, config.shapePreservingChainRange.last + 1)
+            var currentValueId = constValueId
+            var currentShape = targetShape
+        
+            for (i in 0 until chainLen) {
+                val shapeOp = UirOpKind.shapePreservingOps.toList().random(rand)
+                val outValueId = newValueId()
+                valueShapes[outValueId] = currentShape  // 形状不变
+            
+                val outputRef = buildValueRef {
+                    this.valueId = outValueId
+                    this.type = buildTensorType {
+                        this.typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
+                        this.shape = currentShape
+                        this.dtype = mkDataType()
+                    }
+                }
+            
+                val inputRef = buildValueRef {
+                    this.valueId = currentValueId
+                    this.type = buildTensorType {
+                        this.typeKind = io.github.xyzboom.aiFuzzer.ir.UirTypeKind.TENSOR
+                        this.shape = currentShape
+                        this.dtype = mkDataType()
+                    }
+                }
+            
+                val node = buildNode {
+                    name = "fallback_${shapeOp.name.lowercase()}_${randomIdSuffix()}"
+                    op = shapeOp
+                    inputs.add(inputRef)
+                    outputs.add(outputRef)
+                }
+                nodeList.add(node)
+                currentValueId = outValueId
+            }
+        
+            // 4. 返回最终的 value ID
+            return currentValueId
+        }
 }

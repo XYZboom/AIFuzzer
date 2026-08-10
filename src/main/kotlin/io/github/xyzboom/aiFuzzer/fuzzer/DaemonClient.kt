@@ -169,6 +169,55 @@ open class DaemonClient(
     }
 
     /**
+     * 发送 run 请求并等待结果（含输出 tensor）。
+     *
+     * 使用 /run_with_output 端点，返回输出 tensor 和序列化模型 bytes，
+     * 用于转换测试和差分测试。
+     */
+    fun sendAndWaitWithOutput(source: String): DaemonResult {
+        ensureRunning()
+        log.debug { "发送请求(含输出): source.length=${source.length}" }
+
+        val requestBody = json.encodeToString(RunRequestBody(source = source))
+
+        return runBlocking {
+            try {
+                val response: HttpResponse = httpClient().post("$baseUrl/run_with_output") {
+                    contentType(ContentType.Application.Json)
+                    setBody(requestBody)
+                }
+
+                val body = response.bodyAsText()
+                val msg = json.decodeFromString<ResultMessageWithOutput>(body)
+
+                DaemonResult(
+                    success = msg.success,
+                    exitCode = msg.exitCode,
+                    stdout = msg.stdout,
+                    stderr = msg.stderr,
+                    elapsedMs = msg.elapsedMs,
+                    outputs = msg.outputs,
+                    inputs = msg.inputs,
+                    modelsB64 = msg.modelsB64,
+                )
+            } catch (e: io.ktor.client.plugins.HttpRequestTimeoutException) {
+                emergencyRestart()
+                throw DaemonException("Request timed out after ${requestTimeoutMs}ms", e)
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                emergencyRestart()
+                throw DaemonException("Request timed out after ${requestTimeoutMs}ms", e)
+            } catch (e: java.net.ConnectException) {
+                synchronized(this@DaemonClient) { ready = false }
+                throw DaemonException("Daemon connection refused (process died?)", e)
+            } catch (e: DaemonException) {
+                throw e
+            } catch (e: Exception) {
+                throw DaemonException("Failed to send request: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
      * 发送 run 请求并等待结果。
      *
      * 底层使用 runBlocking + Ktor 发送 HTTP POST 请求，
@@ -360,6 +409,29 @@ open class DaemonClient(
         @kotlinx.serialization.SerialName("elapsed_ms")
         val elapsedMs: Long = 0,
     )
+
+    @Serializable
+    data class ResultMessageWithOutput(
+        val success: Boolean = false,
+        @kotlinx.serialization.SerialName("exit_code")
+        val exitCode: Int = -1,
+        val stdout: String = "",
+        val stderr: String = "",
+        @kotlinx.serialization.SerialName("elapsed_ms")
+        val elapsedMs: Long = 0,
+        val outputs: Map<String, OutputData>? = null,
+        @kotlinx.serialization.SerialName("models_b64")
+        val modelsB64: Map<String, String>? = null,
+        val inputs: Map<String, OutputData>? = null,
+    )
+
+    @Serializable
+    data class OutputData(
+        val shape: List<Int> = emptyList(),
+        val dtype: String = "",
+        @kotlinx.serialization.SerialName("data_b64")
+        val dataB64: String = "",
+    )
 }
 
 /**
@@ -420,6 +492,12 @@ data class DaemonResult(
     val stdout: String,
     val stderr: String,
     val elapsedMs: Long,
+    /** 输出 tensor（仅 /run_with_output 端点返回） */
+    val outputs: Map<String, DaemonClient.OutputData>? = null,
+    /** 输入 tensor（仅 /run_with_output 端点返回） */
+    val inputs: Map<String, DaemonClient.OutputData>? = null,
+    /** 序列化后的模型 bytes（仅转换测试时返回） */
+    val modelsB64: Map<String, String>? = null,
 )
 
 /**

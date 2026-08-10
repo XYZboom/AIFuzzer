@@ -49,11 +49,15 @@ class FuzzCommand : CliktCommand(
     private val outputDir by option("--report", "-r")
         .help("Output directory for reports (overrides config)")
 
+    private val frontend by option("--frontend")
+        .help("Frontend: relax (default, direct UIR→Relax) / onnx (via ONNX frontend) / pytorch")
+
     override fun run() = LogUtils.withTrace {
         val config = loadConfig()
         log.info { "描述: ${config.run.description}, 后端: ${config.backends.enabled}" }
         echo("Description: ${config.run.description}")
         echo("Backends: ${config.backends.enabled}")
+        echo("Frontend: ${config.backends.tvm.frontend}")
 
         val seed = config.run.seed?.toLongOrNull() ?: System.currentTimeMillis()
         echo("\nSeed: $seed")
@@ -95,6 +99,7 @@ class FuzzCommand : CliktCommand(
             seedFile?.let { overrides["seed_file"] = it.absolutePath }
             opsStr?.let { overrides["ops"] = it }
             outputDir?.let { overrides["report"] = it }
+            frontend?.let { overrides["backends.tvm.frontend"] = it }
             log.info { "加载配置: ${configPath!!.absolutePath}" }
             echo("Loading config from: ${configPath!!.absolutePath}")
             return ConfigLoader.load(configPath!!.absolutePath, overrides)
@@ -106,6 +111,7 @@ class FuzzCommand : CliktCommand(
         seedFile?.let { c.run.seedFile = it.absolutePath }
         opsStr?.let { c.generator.ops.includeAll = false; c.generator.ops.include = it.split(",").map(String::trim) }
         outputDir?.let { c.run.outputDir = it }
+        frontend?.let { c.backends.tvm.frontend = it }
         echo("Using default config")
         return c
     }

@@ -13,6 +13,8 @@ class OnnxDaemonBackend(
     pythonPath: String = "python3",
     daemonScriptPath: String = "daemon/onnx_daemon.py",
     private val opsetVersion: Int = 21,
+    override val frontend: String = "onnx",
+    override val defaultFrontend: String = "onnx",
     private val differentialTesting: Boolean = false,
     workDir: File = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
     requestTimeoutMs: Long = 120_000,
@@ -35,6 +37,7 @@ class OnnxDaemonBackend(
     constructor(config: OnnxConfig) : this(
         pythonPath = config.python,
         opsetVersion = config.opsetVersion,
+        frontend = config.frontend,
         differentialTesting = config.differentialTesting,
         workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_onnx_daemon"),
         requestTimeoutMs = (config.timeoutSeconds * 1000L).coerceIn(5000, 300_000),
@@ -45,9 +48,13 @@ class OnnxDaemonBackend(
     override val translator: OnnxTranslator = OnnxTranslator(opsetVersion = opsetVersion, differentialTesting = differentialTesting)
 
     override fun createCopy(): Backend<OnnxResult> {
-        return OnnxDaemonBackend(pythonPath, daemonScriptPath, opsetVersion, differentialTesting,
-            File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"),
-            requestTimeoutMs, remoteConfig)
+        return OnnxDaemonBackend(
+            pythonPath = pythonPath, daemonScriptPath = daemonScriptPath,
+            opsetVersion = opsetVersion, frontend = frontend,
+            differentialTesting = differentialTesting,
+            workDir = File(workDir.parent, "${workDir.name}_thread_${Thread.currentThread().id}"),
+            requestTimeoutMs = requestTimeoutMs, remoteConfig = remoteConfig,
+        )
     }
 
     override fun checkEnvironment(): Boolean {

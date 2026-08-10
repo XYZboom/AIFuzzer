@@ -20,6 +20,20 @@ interface Backend<T : BackendResult> : AutoCloseable {
     /** 后端名称，用于标识和日志 */
     val name: String
 
+    /**
+     * 前端导入方式：
+     * - "relax"（默认）：直接翻译 UIR→Relax 脚本（现有行为）
+     * - "onnx"：翻译 UIR→ONNX 模型，通过该编译器的 ONNX frontend 导入
+     * - "pytorch"：翻译 UIR→PyTorch 模型，通过该编译器的 PyTorch frontend 导入
+     */
+    val frontend: String
+
+    /** 该后端的自然前端（默认导入方式），用于判断是否需要转换测试 */
+    val defaultFrontend: String
+
+    /** 是否需要转换测试（frontend 不是自然前端） */
+    fun needsConversionTest(): Boolean = frontend != defaultFrontend
+
     /** 临时工作目录 */
     val workDir: java.io.File
 

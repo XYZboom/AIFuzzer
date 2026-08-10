@@ -88,7 +88,7 @@ class AllPatternsTest {
 
     @Test
     fun `load all patterns from resources`() {
-        assertEquals(27, allPatterns.size)
+        assertEquals(38, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
@@ -886,6 +886,59 @@ class AllPatternsTest {
             listOf(shapeOf(6, 6, 6)), listOf(shapeOf(6, 6)),
             mapOf("axis" to -1, "keepdims" to 0))
         assertNull(matcher.onNodeGenerated(m1_3d, resolverOf(m1_3d)), "tvm-20061 3D input on first node")
+    }
+
+    @Test
+    fun `tvm-014 cumprod grid y overflow`() {
+        val matcher = PatternMatcher(PatternDatabase(patterns = allPatterns), "tvm", "cuda")
+
+        // 正例-2D axis=1: [65536, 1] → non-axis product = 65536 → 崩溃
+        val pos2d = mockNode("cumprod", UirOpKind.CUMPROD,
+            listOf(shapeOf(65536, 1)), listOf(shapeOf(65536, 1)),
+            mapOf("axis" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos2d, resolverOf(pos2d)), "tvm-014 2D [65536,1] axis=1")
+
+        // 正例-2D axis=0: [1, 65536] → non-axis product = 65536
+        matcher.reset()
+        val pos2d_a0 = mockNode("cumprod", UirOpKind.CUMPROD,
+            listOf(shapeOf(1, 65536)), listOf(shapeOf(1, 65536)),
+            mapOf("axis" to 0))
+        assertNotNull(matcher.onNodeGenerated(pos2d_a0, resolverOf(pos2d_a0)), "tvm-014 2D [1,65536] axis=0")
+
+        // 正例-3D axis=2: [256, 256, 1] → non-axis product = 256*256 = 65536
+        matcher.reset()
+        val pos3d = mockNode("cumprod", UirOpKind.CUMPROD,
+            listOf(shapeOf(256, 256, 1)), listOf(shapeOf(256, 256, 1)),
+            mapOf("axis" to 2))
+        assertNotNull(matcher.onNodeGenerated(pos3d, resolverOf(pos3d)), "tvm-014 3D [256,256,1] axis=2")
+
+        // 正例-3D axis=1: [65536, 4, 1] → non-axis product = 65536*1
+        matcher.reset()
+        val pos3d_a1 = mockNode("cumprod", UirOpKind.CUMPROD,
+            listOf(shapeOf(65536, 4, 1)), listOf(shapeOf(65536, 4, 1)),
+            mapOf("axis" to 1))
+        assertNotNull(matcher.onNodeGenerated(pos3d_a1, resolverOf(pos3d_a1)), "tvm-014 3D [65536,4,1] axis=1")
+
+        // 反例-2D axis=1: [65535, 1] → non-axis product = 65535 (安全边界)
+        matcher.reset()
+        val neg2d = mockNode("cumprod", UirOpKind.CUMPROD,
+            listOf(shapeOf(65535, 1)), listOf(shapeOf(65535, 1)),
+            mapOf("axis" to 1))
+        assertNull(matcher.onNodeGenerated(neg2d, resolverOf(neg2d)), "tvm-014 2D [65535,1] axis=1 (safe boundary)")
+
+        // 反例-2D axis=1: [100, 100] → non-axis product = 100 (安全)
+        matcher.reset()
+        val neg2d_small = mockNode("cumprod", UirOpKind.CUMPROD,
+            listOf(shapeOf(100, 100)), listOf(shapeOf(100, 100)),
+            mapOf("axis" to 1))
+        assertNull(matcher.onNodeGenerated(neg2d_small, resolverOf(neg2d_small)), "tvm-014 2D [100,100] axis=1 (safe)")
+
+        // 反例-不同算子: CUMPROD → CUMSUM (不同 op 不应匹配)
+        matcher.reset()
+        val diffOp = mockNode("cumsum", UirOpKind.CUMSUM,
+            listOf(shapeOf(65536, 1)), listOf(shapeOf(65536, 1)),
+            mapOf("axis" to 1))
+        assertNull(matcher.onNodeGenerated(diffOp, resolverOf(diffOp)), "tvm-014 CUMSUM (different op)")
     }
 
     @Test

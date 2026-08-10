@@ -168,6 +168,18 @@ enum class UirOpKind {
             LAYER_NORM, BATCH_NORM,
         )
 
+        /**
+         * 形状保持算子：输出形状与输入形状完全相同（逐元素或归一化）。
+         * 用于"常量 + 形状保持链"策略：生成所需形状常量后，插入若干形状保持算子，
+         * 输出形状不变，从而得到所需形状的输入，且不需要任何形状适配。
+         */
+        val shapePreservingOps = setOf(
+            RELU, LEAKY_RELU, ELU, SELU, MISH, HARDTANH, SIGMOID, TANH, GELU, SILU,
+            NEG, ABS, SIGN, EXP, LOG, LOG2, SQRT, RSQRT, RECIPROCAL, CEIL, FLOOR, ROUND, CLAMP,
+            SOFTMAX, LOG_SOFTMAX, CAST,
+            LAYER_NORM, BATCH_NORM,
+        )
+
         /** 适配算子（由 ShapeAdapter 插入，不参与逻辑图生成） */
         val adapterOps = setOf(EXPAND_DIMS, SQUEEZE, BROADCAST_TO, CONCAT, SPLIT, MATMUL)
     }

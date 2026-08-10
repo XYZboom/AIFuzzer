@@ -22,6 +22,8 @@ class TvmBackend(
 ) : Backend<TvmBackend.TvmResult> {
 
     override val name = "TVM Relax"
+    override val frontend = config?.frontend ?: "relax"
+    override val defaultFrontend = "relax"
     override val workDir = workDir.also { it.mkdirs() }
 
     private val translator = if (config != null) {
