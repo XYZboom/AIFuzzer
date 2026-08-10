@@ -804,7 +804,7 @@ class TvmRelaxTranslator(
                     val reps = targetShape.dims.mapIndexed { i, outDim ->
                         val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
                         val outVal = outDim.value ?: 1
-                        if (inVal > 0) outVal / inVal else 1
+                        if (inVal > 0) maxOf(1, outVal / inVal) else 1
                     }.joinToString(", ")
                     "relax.op.tile(${inputVars[0]}, [$reps])"
                 }

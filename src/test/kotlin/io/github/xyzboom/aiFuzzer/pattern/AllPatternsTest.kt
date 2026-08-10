@@ -88,11 +88,11 @@ class AllPatternsTest {
 
     @Test
     fun `load all patterns from resources`() {
-        assertEquals(38, allPatterns.size)
+        assertEquals(40, allPatterns.size)
         val ids = allPatterns.map { it.id }.sorted()
         println("Pattern IDs: $ids")
         assertEquals("onnx-8203", ids[0])
-        assertEquals("tvm-20061", ids.last())
+        assertEquals("tvm-frontend-min-dim", ids.last())
     }
 
     @Test

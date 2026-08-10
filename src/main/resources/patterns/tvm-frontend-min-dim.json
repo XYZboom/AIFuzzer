@@ -1,0 +1,69 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-frontend-min-dim",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "TVM from_exported_program does not support min.dim — REDUCE_MIN triggers torch.min(dim=...) which is unsupported",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node",
+          "id": "n0",
+          "op": "REDUCE_MIN",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"]
+        }
+      ],
+      "values": [
+        {
+          "match": "value",
+          "id": "v_in",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value",
+          "id": "v_out",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-frontend-max-dim",
+      "compiler": "tvm",
+      "target": "cuda",
+      "description": "TVM from_exported_program does not support max.dim — REDUCE_MAX triggers torch.max(dim=...) which is unsupported",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node",
+          "id": "n0",
+          "op": "REDUCE_MAX",
+          "inputs": ["v_in"],
+          "outputs": ["v_out"]
+        }
+      ],
+      "values": [
+        {
+          "match": "value",
+          "id": "v_in",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value",
+          "id": "v_out",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}

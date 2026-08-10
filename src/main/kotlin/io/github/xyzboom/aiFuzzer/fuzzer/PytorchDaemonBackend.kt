@@ -122,6 +122,13 @@ class PytorchDaemonBackend(
         val daemonResult = daemon.sendAndWait(source)
         log.debug { "daemon 返回: success=${daemonResult.success}, elapsed=${daemonResult.elapsedMs}ms" }
 
+        // CUDA device-side assert 会污染 daemon 的 CUDA context，导致后续所有测试失败
+        // 检测到此类错误时立即重启 daemon
+        if (daemonResult.stderr.contains("device-side assert") || daemonResult.stderr.contains("AcceleratorError")) {
+            log.warn { "检测到 CUDA device-side assert，daemon CUDA context 已污染，立即重启" }
+            daemon.restart()
+        }
+
         // 保存源码用于 bug 报告
         val sourceFile = File(workDir, "program.py")
         sourceFile.parentFile.mkdirs()

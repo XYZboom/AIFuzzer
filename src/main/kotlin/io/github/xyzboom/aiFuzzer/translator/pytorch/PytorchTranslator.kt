@@ -596,9 +596,11 @@ class PytorchTranslator(
                 } else {
                     // Multi-dim reshape: use -1 for first dim, explicit for rest
                     val restDims = outputShape.dims.drop(1).map { dim ->
-                        dim.value?.toString() ?: "-1"
+                        dim.value?.toString() ?: "1"
                     }.joinToString(", ")
-                    "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, (-1, $restDims))"
+                    // Safe reshape: 1D flatten → reshape with target ndim, compute -1 dim dynamically
+                    val inputVar = valueMap[node.inputs[0].valueId]!!
+                    "($inputVar.reshape(-1).reshape((-1, $restDims)) if $inputVar.numel() % (${restDims.replace("-1", "1").split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" * ") { it }}) == 0 else $inputVar.reshape(-1))"
                 }
             }
             UirOpKind.TRANSPOSE -> {
@@ -718,7 +720,7 @@ UirOpKind.TILE -> {
                     val reps = targetShape.dims.mapIndexed { i, outDim ->
                         val inVal = inputShape.dims.getOrNull(i)?.value ?: 1
                         val outVal = outDim.value ?: 1
-                        if (inVal > 0) outVal / inVal else 1
+                        if (inVal > 0) maxOf(1, outVal / inVal) else 1
                     }
                     // torch.tile requires tuple of ints; 1-element tuple needs trailing comma
                     val repsStr = if (reps.size == 1) "(${reps[0]},)" else "(${reps.joinToString(", ")})"
@@ -915,11 +917,13 @@ UirOpKind.TILE -> {
                 builder.appendLine("    _tvm_vm = relax.VirtualMachine(_tvm_ex, $tvmDevice)")
                 builder.appendLine("    def _tvm_call(*a):")
                 builder.appendLine("        _raw = _tvm_vm[\"main\"](*a)")
-                builder.appendLine("        if hasattr(_raw, 'numpy'):")
-                builder.appendLine("            return torch.from_numpy(_raw.numpy())")
-                builder.appendLine("        else:")
-                builder.appendLine("            import numpy as np")
-                builder.appendLine("            return tuple(torch.from_numpy(o.numpy()) for o in _raw)")
+                builder.appendLine("        def _to_torch(o):")
+                builder.appendLine("            if isinstance(o, torch.Tensor):")
+                builder.appendLine("                return o")
+                builder.appendLine("            return torch.from_numpy(o.numpy())")
+                builder.appendLine("        if isinstance(_raw, (list, tuple)) or not hasattr(_raw, 'numpy'):")
+                builder.appendLine("            return tuple(_to_torch(o) for o in _raw)")
+                builder.appendLine("        return _to_torch(_raw)")
                 builder.appendLine("    chained = _tvm_call")
                 "tvm_frontend"
             }
@@ -927,9 +931,13 @@ UirOpKind.TILE -> {
                 // PyTorch→ONNX export：torch.onnx.export → ONNX Runtime 运行
                 val argNames = allFreshArgs.split(", ").map { "input_$it" }
                 val inputNames = argNames.joinToString(", ") { "\"$it\"" }
-                builder.appendLine("    _torch_model = ChainedModel(nn.ModuleList([$modList])).eval()")
+                // ONNX export 必须在 CPU 上执行，创建 CPU 版的模块实例
+                val modCount = modList.split(",").size
+                val cpuModList = (0 until modCount).joinToString(", ") { "TestModule_$it(device='cpu')" }
+                builder.appendLine("    _torch_model = ChainedModel(nn.ModuleList([$cpuModList])).eval()")
                 builder.appendLine("    _buf = io.BytesIO()")
-                builder.appendLine("    torch.onnx.export(_torch_model, ($allFreshArgs,), _buf, input_names=[$inputNames], opset_version=17)")
+                builder.appendLine("    _torch_inputs = tuple(a.cpu() for a in ($allFreshArgs,))")
+                builder.appendLine("    torch.onnx.export(_torch_model, _torch_inputs, _buf, input_names=[$inputNames], opset_version=17)")
                 builder.appendLine("    _buf.seek(0)")
                 builder.appendLine("    _sess = ort.InferenceSession(_buf.read(), providers=['CPUExecutionProvider'])")
                 builder.appendLine("    _onnx_in_names = [i.name for i in _sess.get_inputs()]")
@@ -937,8 +945,8 @@ UirOpKind.TILE -> {
                 builder.appendLine("        _feed = {n: t.detach().cpu().numpy() for n, t in zip(_onnx_in_names, a)}")
                 builder.appendLine("        _out = _sess.run(None, _feed)")
                 builder.appendLine("        if len(_out) == 1:")
-                builder.appendLine("            return torch.from_numpy(_out[0])")
-                builder.appendLine("        return tuple(torch.from_numpy(o) for o in _out)")
+                builder.appendLine("            return torch.from_numpy(_out[0]).to(device=\"$device\")")
+                builder.appendLine("        return tuple(torch.from_numpy(o).to(device=\"$device\") for o in _out)")
                 builder.appendLine("    chained = _onnx_call")
                 "torch.onnx.export"
             }

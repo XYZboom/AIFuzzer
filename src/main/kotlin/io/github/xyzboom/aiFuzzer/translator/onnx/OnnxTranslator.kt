@@ -496,7 +496,28 @@ class OnnxTranslator(
 
             // CONV2D: ensure weight is 4D (ONNX Conv requires weight ndim == data ndim)
             if (node.op == UirOpKind.CONV2D && inputIds.size >= 2) {
-                val dataId = inputIds[0]
+                // Ensure data input is 4D (ONNX Conv requires data ndim == 4)
+                val dataShape = node.inputs.getOrNull(0)?.type?.shape
+                val dataNdim = dataShape?.dims?.size ?: 4
+                val rawDataId = inputIds[0]
+                val dataId = if (dataNdim < 4) {
+                    val usId = "c${outputId}_dus"
+                    val missing = 4 - dataNdim
+                    val axes = (0 until missing).joinToString(", ")
+                    val nvUs = nextNodeVar()
+                    if (opsetVersion >= 13) {
+                        val usAxId = "c${outputId}_dusax"
+                        tensorInitLines.add("""${usAxId}_t = helper.make_tensor("${usAxId}_v", $INT64, [$missing], [$axes])""")
+                        val nvUsAx = nextNodeVar()
+                        nodeLines.add(NodeLine(nvUsAx, "    $nvUsAx = helper.make_node('Constant', inputs=[], outputs=['$usAxId'], value=${usAxId}_t)"))
+                        nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$rawDataId', '$usAxId'], outputs=['$usId'])"))
+                    } else {
+                        nodeLines.add(NodeLine(nvUs, "    $nvUs = helper.make_node('Unsqueeze', inputs=['$rawDataId'], outputs=['$usId'], axes=[$axes])"))
+                    }
+                    usId
+                } else {
+                    rawDataId
+                }
                 val rawWeightId = inputIds[1]
                 val weightShape = node.inputs.getOrNull(1)?.type?.shape
                 val weightNdim = weightShape?.dims?.size ?: 4

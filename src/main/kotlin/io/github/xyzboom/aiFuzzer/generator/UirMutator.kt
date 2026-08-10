@@ -787,6 +787,27 @@ class UirMutator(
         val oldAxes = axesAttr.value.split(",").mapNotNull { it.trim().toIntOrNull() }
         if (oldAxes.isEmpty()) return
 
+        // 消毒重复 axes: STRIDED_SLICE 不允许重复 axis（如 axes=[0,0]）
+        // 只保留第一次出现的 axis，同步去重 begin/end
+        if (oldAxes.size != oldAxes.distinct().size) {
+            val seen = mutableSetOf<Int>()
+            val keepIndices = oldAxes.mapIndexedNotNull { idx, ax ->
+                if (seen.add(ax)) idx else null
+            }
+            val dedupAxes = keepIndices.map { oldAxes[it] }.joinToString(",")
+            node.attributes["axes"] = buildStringAttr { value = dedupAxes }
+            val begins = beginAttr?.value?.split(",")?.mapNotNull { it.trim().toIntOrNull() }
+                ?: oldAxes.map { 0 }
+            val ends = endAttr?.value?.split(",")?.mapNotNull { it.trim().toIntOrNull() }
+            if (begins.isNotEmpty()) {
+                node.attributes["begin"] = buildStringAttr { value = keepIndices.map { begins[it] }.joinToString(",") }
+            }
+            if (ends != null && ends.isNotEmpty()) {
+                node.attributes["end"] = buildStringAttr { value = keepIndices.map { ends[it] }.joinToString(",") }
+            }
+            log.trace { "strided_slice 重复 axes 去重: ${axesAttr.value} -> $dedupAxes" }
+        }
+
         // 消毒 axes: 超出 ndim 范围的轴取模
         if (oldAxes.any { it >= ndim || it < -ndim }) {
             val fixedAxes = oldAxes.map { Math.floorMod(it, ndim) }.joinToString(",")

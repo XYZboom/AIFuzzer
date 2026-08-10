@@ -993,16 +993,22 @@ class FuzzingPipeline(
         val onnxSource = OnnxTranslator().translate(singleGraphProgram)
 
         // 追加输出/输入捕获代码
+        // 注意：ONNX 翻译器使用 ChainedOnnxModel 包装，结果存储在 `result` 字典中
+        // result 是 dict[valueId -> np.ndarray]，需提取最后一图的输出 valueId
+        val convGraph = singleGraphProgram.graphs.first()
+        val lastOutIds = convGraph.outputs.map { it.valueId }
         val captureCode = buildString {
             appendLine("# === Output capture for conversion test ===")
-            appendLine("if _result_0 is not None:")
-            appendLine("    for _oi, _ov in enumerate(_result_0):")
-            appendLine("        globals()[f'__output_0_{_oi}'] = np.asarray(_ov)")
-            val graph = singleGraphProgram.graphs.first()
-            for (ii in graph.inputs.indices) {
-                val inputId = graph.inputs[ii].valueId
+            // 输出捕获：按 ONNX 模型输出 valueId 命名
+            appendLine("if result is not None:")
+            for ((oi, outId) in lastOutIds.withIndex()) {
+                appendLine("    __output_0_$oi = np.asarray(result.get('$outId'))")
+            }
+            // 输入捕获：直接使用 ONNX 模型输入的名字（valueId），确保 TVM frontend 按名匹配
+            for (ii in convGraph.inputs.indices) {
+                val inputId = convGraph.inputs[ii].valueId
                 appendLine("try:")
-                appendLine("    __input_0_$ii = np.asarray(np_$inputId)")
+                appendLine("    __input_$inputId = np.asarray(np_$inputId)")
                 appendLine("except Exception:")
                 appendLine("    pass")
             }
@@ -1072,7 +1078,24 @@ class FuzzingPipeline(
                 if (tvmFrontend == null) {
                     return FuzzingResult(seed, backendName, object : BackendResult(false, -1, "", "TVM frontend daemon not available", 0) {}, io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "no daemon")
                 }
-                val jsonReq = """{"onnx_b64":"$modelB64","inputs":{}}"""
+                // 构造输入 JSON：将 ONNX daemon 捕获的输入 tensor 传给 TVM frontend，保证两者用相同输入运行
+                val capturedInputs = onnxResult.inputs ?: emptyMap()
+                val inputsJson = buildString {
+                    append('{')
+                    var first = true
+                    for ((rawName, data) in capturedInputs) {
+                        if (!first) append(',')
+                        first = false
+                        val name = rawName.removePrefix("__input_")
+                        append("\"$name\":{")
+                        append("\"shape\":[${data.shape.joinToString(",")}],")
+                        append("\"dtype\":\"${data.dtype}\",")
+                        append("\"data_b64\":\"${data.dataB64}\"")
+                        append('}')
+                    }
+                    append('}')
+                }
+                val jsonReq = "{\"onnx_b64\":\"$modelB64\",\"inputs\":$inputsJson}"
                 try {
                     val response = httpPost("http://127.0.0.1:${tvmFrontend.port}/run_onnx_frontend", jsonReq)
                     val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
