@@ -688,12 +688,19 @@ class PytorchTranslator(
                         // 单值索引：torch.select 移除维度，与 ShapeInferer 对齐
                         "torch.select($inputVar, $axis, ${indices[0]})"
                     } else {
-                        // 多值索引：用切片语法保持维度
-                        val ndim = node.inputs[0].type.shape.dims.size
-                        val slices = (0 until ndim).joinToString(", ") { d ->
-                            if (d == axis) "${indices.first()}:${indices.last() + 1}" else ":"
+                        // 检查索引是否连续（[0,1,2] 连续 → 可用切片保持维度；[0,1,2,4] 非连续 → 必须用 index_select）
+                        val isContiguous = indices.zipWithNext().all { (a, b) -> b == a + 1 }
+                        if (isContiguous) {
+                            // 连续索引：用切片语法，与 ShapeInferer 的 len(indices) 输出一致
+                            val ndim = node.inputs[0].type.shape.dims.size
+                            val slices = (0 until ndim).joinToString(", ") { d ->
+                                if (d == axis) "${indices.first()}:${indices.last() + 1}" else ":"
+                            }
+                            "$inputVar[$slices]"
+                        } else {
+                            // 非连续索引：用 torch.index_select 保持输出形状（axis 维度 = len(indices)）
+                            "torch.index_select($inputVar, $axis, torch.tensor([${indices.joinToString(", ")}], device=$inputVar.device))"
                         }
-                        "$inputVar[$slices]"
                     }
                 } else {
                     "torch.select($inputVar, $axis, 0)"
