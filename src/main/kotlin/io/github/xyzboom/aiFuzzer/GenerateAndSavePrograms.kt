@@ -24,7 +24,7 @@ object GenerateAndSavePrograms {
             try {
                 val gen = UirGenerator(GeneratorConfig(
                     seed = seed,
-                    graphCount = 1..1,
+                    graphCount = 3..5,
                     minNodesPerGraph = 3,
                     maxNodesPerGraph = 6,
                     fallbackConstProbability = 0.3,

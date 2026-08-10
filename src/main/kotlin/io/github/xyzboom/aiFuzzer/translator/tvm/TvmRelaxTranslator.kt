@@ -156,11 +156,8 @@ class TvmRelaxTranslator(
         builder.appendLine("    bb = relax.BlockBuilder()")
         builder.appendLine()
 
-        // 翻译每个图
-        for ((idx, graph) in element.graphs.withIndex()) {
-            log.trace { "翻译图 $idx: ${graph.name}" }
-            translateGraph(builder, graph, idx)
-        }
+        // 翻译：所有图合并为一个 main 函数，子图间用注释分隔
+        translateMergedGraphs(builder, element.graphs)
 
         builder.appendLine("    mod = bb.get()")
         builder.appendLine("    return mod")
@@ -189,135 +186,86 @@ class TvmRelaxTranslator(
             builder.appendLine("vm = relax.VirtualMachine(ex, tvm.$device())")
         }
 
-        // 计算"已生产"的 valueId（来自前图输出的值不再生成随机输入）
-        val tvmProducedIds = mutableSetOf<String>()
-        for ((gIdx, graph) in element.graphs.withIndex()) {
-            // 生成不来自前图的随机输入
-            val freshInputs = graph.inputs.filter { it.valueId !in tvmProducedIds }
-            if (freshInputs.isNotEmpty()) {
-                builder.appendLine()
-                builder.appendLine("# Generate fresh inputs for ${graph.name}")
-                for (input in freshInputs) {
-                    val shape = input.type.shape
-                    val shapeStr = shape.dims.joinToString(", ") { dim ->
-                        when (dim.dimKind) {
-                            UirDimKind.CONSTANT -> dim.value?.toString() ?: shapeRank.toString()
-                            else -> shapeRank.toString()
-                        }
+        // ===== 收集所有 fresh 输入（不被任何节点产出的输入）=====
+        val allNodeOutputIds = element.graphs.flatMap { graph ->
+            graph.nodes.flatMap { node -> node.outputs.map { it.valueId } }
+        }.toSet()
+        val freshInputRefs = element.graphs.flatMap { it.inputs }
+            .filter { it.valueId !in allNodeOutputIds }
+            .distinctBy { it.valueId }
+        val freshInputIds = freshInputRefs.map { it.valueId }
+
+        // 生成所有 fresh 输入（合并到一个 main 函数，只需一次生成）
+        if (freshInputRefs.isNotEmpty()) {
+            builder.appendLine()
+            builder.appendLine("# Generate all fresh inputs for merged main")
+            for (input in freshInputRefs) {
+                val shape = input.type.shape
+                val shapeStr = shape.dims.joinToString(", ") { dim ->
+                    when (dim.dimKind) {
+                        UirDimKind.CONSTANT -> dim.value?.toString() ?: shapeRank.toString()
+                        else -> shapeRank.toString()
                     }
-                    builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
-                    if (crossTargetDifferential) {
-                        builder.appendLine("${input.valueId}_cpu = tvm.runtime.tensor(np_${input.valueId})")
-                        builder.appendLine("${input.valueId}_gpu = tvm.runtime.tensor(np_${input.valueId}, device=tvm.cuda())")
+                }
+                builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
+                if (crossTargetDifferential) {
+                    builder.appendLine("${input.valueId}_cpu = tvm.runtime.tensor(np_${input.valueId})")
+                    builder.appendLine("${input.valueId}_gpu = tvm.runtime.tensor(np_${input.valueId}, device=tvm.cuda())")
+                } else {
+                    if (device != "cpu") {
+                        builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId}, device=tvm.$device())")
                     } else {
-                        if (device != "cpu") {
-                            builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId}, device=tvm.$device())")
-                        } else {
-                            builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId})")
-                        }
+                        builder.appendLine("${input.valueId} = tvm.runtime.tensor(np_${input.valueId})")
                     }
-                    tvmProducedIds.add(input.valueId)
                 }
             }
+        }
 
-            if (crossTargetDifferential) {
-                // 差分模式：分别在 CPU 和 GPU 上执行，比较输出
-                val funcName = graph.name.ifBlank { "func_$gIdx" }
-                val cpuArgs = graph.inputs.joinToString(", ") { it.valueId + "_cpu" }
-                val gpuArgs = graph.inputs.joinToString(", ") { it.valueId + "_gpu" }
+        // 合并后的 main 函数只有一个，直接调用
+        val allInputArgs = freshInputIds.joinToString(", ")
 
-                if (gIdx > 0) {
-                    val prevGraph = element.graphs[gIdx - 1]
-                    val prevOutputIds = prevGraph.outputs.map { it.valueId }
-                    if (prevOutputIds.isNotEmpty()) {
-                        builder.appendLine()
-                        builder.appendLine("# Chained: ${prevGraph.name} -> ${graph.name}")
-                        val prevCpuVar = "tvm_result_cpu_${gIdx - 1}"
-                        val prevGpuVar = "tvm_result_gpu_${gIdx - 1}"
-                        if (prevOutputIds.size > 1) {
-                            builder.appendLine("_prev_cpu = $prevCpuVar")
-                            builder.appendLine("_prev_gpu = $prevGpuVar")
-                            for ((i, outId) in prevOutputIds.withIndex()) {
-                                builder.appendLine("${outId}_cpu = _prev_cpu[$i]")
-                                builder.appendLine("${outId}_gpu = _prev_gpu[$i]")
-                            }
-                        } else {
-                            builder.appendLine("${prevOutputIds[0]}_cpu = $prevCpuVar")
-                            builder.appendLine("${prevOutputIds[0]}_gpu = $prevGpuVar")
-                        }
-                    }
-                }
-
-                builder.appendLine()
-                builder.appendLine("# CPU execution")
-                builder.appendLine("tvm_result_cpu_$gIdx = vm_cpu[\"$funcName\"]($cpuArgs)")
-                builder.appendLine("# GPU execution")
-                builder.appendLine("tvm_result_gpu_$gIdx = vm_gpu[\"$funcName\"]($gpuArgs)")
-
-                // 比较输出
-                builder.appendLine("# Compare CPU vs GPU outputs")
-                builder.appendLine("_cpu_val = tvm_result_cpu_$gIdx")
-                builder.appendLine("_gpu_val = tvm_result_gpu_$gIdx")
-                builder.appendLine("if hasattr(_cpu_val, 'numpy'):")
-                builder.appendLine("    _cpu_arr = _cpu_val.numpy()")
-                builder.appendLine("    _gpu_arr = _gpu_val.numpy()")
-                builder.appendLine("    if _cpu_arr.shape != _gpu_arr.shape:")
-                builder.appendLine("        print(f'[DIFF-MISMATCH] ${graph.name}: shape mismatch CPU={list(_cpu_arr.shape)} GPU={list(_gpu_arr.shape)}')")
-                builder.appendLine("    else:")
-                builder.appendLine("        _max_diff = float(np.max(np.abs(_cpu_arr.astype(np.float64) - _gpu_arr.astype(np.float64))))")
-                builder.appendLine("        if _max_diff > 1e-3:")
-                builder.appendLine("            print(f'[DIFF-MISMATCH] ${graph.name}: CPU vs GPU mismatch, max_diff={_max_diff}')")
-                builder.appendLine("        else:")
-                builder.appendLine("            print(f'[TVM-OUT] ${graph.name}: shape={list(_cpu_arr.shape)} (CPU=GPU match)')")
-                builder.appendLine("else:")
-                builder.appendLine("    # tvm.runtime.Array (multi-output container)")
-                builder.appendLine("    for _ci in range(len(_cpu_val)):")
-                builder.appendLine("        _cpu_arr = _cpu_val[_ci].numpy()")
-                builder.appendLine("        _gpu_arr = _gpu_val[_ci].numpy()")
-                builder.appendLine("        if _cpu_arr.shape != _gpu_arr.shape:")
-                builder.appendLine("            print(f'[DIFF-MISMATCH] ${graph.name}[{_ci}]: shape mismatch CPU={list(_cpu_arr.shape)} GPU={list(_gpu_arr.shape)}')")
-                builder.appendLine("        else:")
-                builder.appendLine("            _max_diff = float(np.max(np.abs(_cpu_arr.astype(np.float64) - _gpu_arr.astype(np.float64))))")
-                builder.appendLine("            if _max_diff > 1e-3:")
-                builder.appendLine("                print(f'[DIFF-MISMATCH] ${graph.name}[{_ci}]: CPU vs GPU mismatch, max_diff={_max_diff}')")
-
-                // 为后续图标记输出
-                graph.outputs.forEach { tvmProducedIds.add(it.valueId) }
-            } else {
-                // 普通模式：单后端执行
-                val funcName = graph.name.ifBlank { "func_$gIdx" }
-                val resultVar = "tvm_result_$gIdx"
-                val inputArgs = graph.inputs.joinToString(", ") { it.valueId }
-
-                if (gIdx > 0) {
-                    builder.appendLine()
-                    builder.appendLine("# Chained: ${element.graphs[gIdx - 1].name} -> ${graph.name}")
-                    val prevGraph = element.graphs[gIdx - 1]
-                    val prevOutputIds = prevGraph.outputs.map { it.valueId }
-                    val prevResultVar = "tvm_result_${gIdx - 1}"
-                    if (prevOutputIds.size > 1) {
-                        builder.appendLine("_prev_out = $prevResultVar if not hasattr($prevResultVar, 'numpy') else [$prevResultVar]")
-                        for ((i, outId) in prevOutputIds.withIndex()) {
-                            builder.appendLine("$outId = _prev_out[$i]")
-                        }
-                    } else {
-                        builder.appendLine("${prevOutputIds[0]} = $prevResultVar")
-                    }
-                }
-                builder.appendLine()
-                builder.appendLine("$resultVar = vm[\"$funcName\"]($inputArgs)")
-
-                graph.outputs.forEach { tvmProducedIds.add(it.valueId) }
-
-                builder.appendLine("# Print output")
-                builder.appendLine("if hasattr($resultVar, 'numpy'):")
-                builder.appendLine("    _arr = $resultVar.numpy()")
-                builder.appendLine("    print(f\"[TVM-OUT] graph_${gIdx}: shape={list(_arr.shape)}\")")
-                builder.appendLine("else:")
-                builder.appendLine("    for _tvmi in range(len($resultVar)):")
-                builder.appendLine("        _arr = $resultVar[_tvmi].numpy()")
-                builder.appendLine("        print(f\"[TVM-OUT] graph_${gIdx}[{_tvmi}]: shape={list(_arr.shape)}\")")
-            }
+        if (crossTargetDifferential) {
+            builder.appendLine()
+            builder.appendLine("# Cross-target differential: CPU vs GPU (merged)")
+            builder.appendLine("tvm_result_cpu = vm_cpu[\"main\"](${freshInputIds.joinToString(", ") { it + "_cpu" }})")
+            builder.appendLine("tvm_result_gpu = vm_gpu[\"main\"](${freshInputIds.joinToString(", ") { it + "_gpu" }})")
+            builder.appendLine("_cpu_val = tvm_result_cpu")
+            builder.appendLine("_gpu_val = tvm_result_gpu")
+            builder.appendLine("if hasattr(_cpu_val, 'numpy'):")
+            builder.appendLine("    _cpu_arr = _cpu_val.numpy()")
+            builder.appendLine("    _gpu_arr = _gpu_val.numpy()")
+            builder.appendLine("    if _cpu_arr.shape != _gpu_arr.shape:")
+            builder.appendLine("        print(f'[DIFF-MISMATCH] main: shape mismatch CPU={list(_cpu_arr.shape)} GPU={list(_gpu_arr.shape)}')")
+            builder.appendLine("    else:")
+            builder.appendLine("        _max_diff = float(np.max(np.abs(_cpu_arr.astype(np.float64) - _gpu_arr.astype(np.float64))))")
+            builder.appendLine("        if _max_diff > 1e-3:")
+            builder.appendLine("            print(f'[DIFF-MISMATCH] main: CPU vs GPU mismatch, max_diff={_max_diff}')")
+            builder.appendLine("        else:")
+            builder.appendLine("            print(f'[TVM-OUT] main: shape={list(_cpu_arr.shape)} (CPU=GPU match)')")
+            builder.appendLine("else:")
+            builder.appendLine("    # tvm.runtime.Array (multi-output)")
+            builder.appendLine("    for _ci in range(len(_cpu_val)):")
+            builder.appendLine("        _cpu_arr = _cpu_val[_ci].numpy()")
+            builder.appendLine("        _gpu_arr = _gpu_val[_ci].numpy()")
+            builder.appendLine("        if _cpu_arr.shape != _gpu_arr.shape:")
+            builder.appendLine("            print(f'[DIFF-MISMATCH] main[{_ci}]: shape mismatch CPU={list(_cpu_arr.shape)} GPU={list(_gpu_arr.shape)}')")
+            builder.appendLine("        else:")
+            builder.appendLine("            _max_diff = float(np.max(np.abs(_cpu_arr.astype(np.float64) - _gpu_arr.astype(np.float64))))")
+            builder.appendLine("            if _max_diff > 1e-3:")
+            builder.appendLine("                print(f'[DIFF-MISMATCH] main[{_ci}]: CPU vs GPU mismatch, max_diff={_max_diff}')")
+        } else {
+            builder.appendLine()
+            builder.appendLine("# Execute merged main function")
+            builder.appendLine("tvm_result = vm[\"main\"]($allInputArgs)")
+            builder.appendLine()
+            builder.appendLine("# Print output")
+            builder.appendLine("if hasattr(tvm_result, 'numpy'):")
+            builder.appendLine("    _arr = tvm_result.numpy()")
+            builder.appendLine("    print(f\"[TVM-OUT] main: shape={list(_arr.shape)}\")")
+            builder.appendLine("else:")
+            builder.appendLine("    for _tvmi in range(len(tvm_result)):")
+            builder.appendLine("        _arr = tvm_result[_tvmi].numpy()")
+            builder.appendLine("        print(f\"[TVM-OUT] main[{_tvmi}]: shape={list(_arr.shape)}\")")
         }
 
         builder.appendLine("print(\"Execution: OK\")")
@@ -328,37 +276,51 @@ class TvmRelaxTranslator(
     }
 
     /**
-     * 翻译单个计算图。
+     * 翻译所有图：合并为一个 main 函数。
+     * 所有子图按 IR 顺序排列在同一个 main 函数中，子图间用注释分隔。
+     * 跨子图数据流通过共享 valueMap 自动串联（前图产出变量被后图直接引用）。
+     * 函数参数 = 所有 fresh 输入（不被任何节点产出）；输出 = 最后一个图的输出。
      */
-    private fun translateGraph(builder: StringBuilder, graph: UirGraph, graphIdx: Int) {
-        val funcName = graph.name.ifBlank { "func_$graphIdx" }
+    private fun translateMergedGraphs(builder: StringBuilder, graphs: List<UirGraph>) {
+        // 计算所有被节点产出的 valueId
+        val allNodeOutputIds = graphs.flatMap { graph ->
+            graph.nodes.flatMap { node -> node.outputs.map { it.valueId } }
+        }.toSet()
+
+        // fresh 输入 = 出现在图输入、但从未被任何节点产出的变量
+        val freshInputs = graphs.flatMap { it.inputs }
+            .filter { it.valueId !in allNodeOutputIds }
+            .distinctBy { it.valueId }
 
         // 生成输入变量的 relax.Var
-        for (input in graph.inputs) {
+        for (input in freshInputs) {
             val varName = "${input.valueId}_var"
             val shapeExpr = generateShapeExpr(input.type.shape)
             builder.appendLine("    $varName = relax.Var(\"${input.valueId}\", relax.TensorStructInfo(shape=$shapeExpr, dtype=\"$dtype\"))")
         }
 
-        // 开始函数定义
-        val params = graph.inputs.map { "${it.valueId}_var" }.joinToString(", ")
-        builder.appendLine("    with bb.function(\"$funcName\", [$params]):")
+        // 开始 main 函数定义
+        val params = freshInputs.map { "${it.valueId}_var" }.joinToString(", ")
+        builder.appendLine("    with bb.function(\"main\", [$params]):")
 
-        // 值映射：valueId -> Python 变量名
+        // 值映射：valueId -> Python 变量名（跨子图共享）
         val valueMap = mutableMapOf<String, String>()
-
-        // 图输入映射
-        for (input in graph.inputs) {
+        for (input in freshInputs) {
             valueMap[input.valueId] = "${input.valueId}_var"
         }
 
-        // 翻译每个节点
-        for (node in graph.nodes) {
-            translateNode(builder, node, valueMap)
+        // 按 IR 顺序排列所有子图，用注释分隔
+        for ((gIdx, graph) in graphs.withIndex()) {
+            log.trace { "合并翻译子图 $gIdx: ${graph.name}" }
+            builder.appendLine("        # === Subgraph $gIdx: ${graph.name} ===")
+            for (node in graph.nodes) {
+                translateNode(builder, node, valueMap)
+            }
         }
 
-        // 生成函数输出
-        val outputVars = graph.outputs.map { output ->
+        // 生成函数输出：最后一个图的输出
+        val lastGraph = graphs.last()
+        val outputVars = lastGraph.outputs.map { output ->
             valueMap[output.valueId] ?: "${output.valueId}_var"
         }
 
