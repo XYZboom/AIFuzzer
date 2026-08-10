@@ -197,6 +197,8 @@ data class BackendsConfig(
 
 data class TvmConfig(
     var python: String = "python3",
+    /** 前端：relax（默认，直接UIR→Relax）/ onnx（通过ONNX frontend导入） */
+    var frontend: String = "relax",
     /**
      * 执行模式。
      *
@@ -225,6 +227,7 @@ data class TvmConfig(
 
 data class OnnxConfig(
     var python: String = "python3",
+    var frontend: String = "onnx",
     var timeoutSeconds: Int = 60,
     var opsetVersion: Int = 21,
     var irVersion: Int = 8,

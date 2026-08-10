@@ -11,9 +11,13 @@ import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
 import io.github.xyzboom.aiFuzzer.reducer.AutoReducer
 import io.github.xyzboom.aiFuzzer.reducer.PropertyChecker
 import io.github.xyzboom.aiFuzzer.translator.UirTranslator
+import io.github.xyzboom.aiFuzzer.translator.onnx.OnnxTranslator
 import io.github.xyzboom.aiFuzzer.translator.pytorch.PytorchTranslator
 import io.github.xyzboom.aiFuzzer.translator.tvm.TvmRelaxTranslator
 import java.io.File
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -71,6 +75,32 @@ class FuzzingPipeline(
         } else {
             null
         }
+    }
+
+    /** 转换测试：ONNX 参考 daemon（lazy，仅当有后端需要时创建） */
+    private val conversionOnnxDaemon: DaemonClient? by lazy {
+        if (backends.any { it.needsConversionTest() }) {
+            val python = (backends.find { it is OnnxDaemonBackend } as? OnnxDaemonBackend)?.pythonPath ?: "python3"
+            DaemonClient(pythonPath = python, daemonScriptPath = "daemon/onnx_daemon.py").also { it.start() }
+        } else null
+    }
+
+    /** 转换测试：TVM ONNX frontend daemon（lazy） */
+    private val conversionTvmFrontendDaemon: DaemonClient? by lazy {
+        if (backends.any { it is TvmDaemonBackend && it.needsConversionTest() }) {
+            val python = (backends.find { it is TvmDaemonBackend } as? TvmDaemonBackend)?.let { it.pythonPath }
+                ?: "python3"
+            DaemonClient(pythonPath = python, daemonScriptPath = "daemon/tvm_onnx_frontend_daemon.py").also { it.start() }
+        } else null
+    }
+
+    /** 转换测试：PyTorch daemon（lazy） */
+    private val conversionPytorchDaemon: DaemonClient? by lazy {
+        if (backends.any { it is PytorchDaemonBackend && it.needsConversionTest() }) {
+            val python = (backends.find { it is PytorchDaemonBackend } as? PytorchDaemonBackend)?.let { it.pythonPath }
+                ?: "python3"
+            DaemonClient(pythonPath = python, daemonScriptPath = "daemon/pytorch_daemon.py").also { it.start() }
+        } else null
     }
 
     /** 变异配置（从 generatorConfig 派生） */
@@ -248,6 +278,13 @@ class FuzzingPipeline(
         }
 
         log.trace { "程序: ${program.graphs.size} 个图 (种子池: ${mutator?.seedCount ?: 0})" }
+
+        // 检查是否有后端需要转换测试（frontend 不是自然前端）
+        val conversionBackends = backends.filter { it.needsConversionTest() }
+        if (conversionBackends.isNotEmpty()) {
+            return runConversionTest(program, seed)
+        }
+
         return backends.map { backend ->
             runOnBackend(program, backend, seed)
         }
@@ -461,6 +498,11 @@ class FuzzingPipeline(
         backendPool.forEach { backendList ->
             backendList.forEach { it.close() }
         }
+
+        // 关闭转换测试 daemon
+        conversionOnnxDaemon?.close()
+        conversionTvmFrontendDaemon?.close()
+        conversionPytorchDaemon?.close()
 
         // 输出 pattern 匹配统计
         val totalMatches = patternMatchCount["TOTAL_MATCHES"] ?: 0
@@ -928,5 +970,157 @@ class FuzzingPipeline(
             }
         }
         return parts.joinToString(" | ")
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // 转换测试（frontend ≠ default）
+    // ────────────────────────────────────────────────────────────────
+
+    /**
+     * 运行转换测试：将 UIR 翻译为 ONNX，在 ONNX Runtime 上跑参考，
+     * 然后通过 TVM frontend 导入运行，比较输出。
+     */
+    private fun runConversionTest(program: UirProgram, seed: Long): List<FuzzingResult> {
+        val onnxDaemon = conversionOnnxDaemon ?: return emptyList()
+        val tvmFrontend = conversionTvmFrontendDaemon
+
+        // 翻译 UIR→ONNX（强制单图）
+        val genConfig = generatorConfig.copy(seed = seed, graphCount = 1..1)
+        val singleGraphProgram = UirGenerator(genConfig).generate()
+        val onnxSource = OnnxTranslator().translate(singleGraphProgram)
+
+        // 追加输出/输入捕获代码
+        val captureCode = buildString {
+            appendLine("# === Output capture for conversion test ===")
+            appendLine("if _result_0 is not None:")
+            appendLine("    for _oi, _ov in enumerate(_result_0):")
+            appendLine("        globals()[f'__output_0_{_oi}'] = np.asarray(_ov)")
+            val graph = singleGraphProgram.graphs.first()
+            for (ii in graph.inputs.indices) {
+                val inputId = graph.inputs[ii].valueId
+                appendLine("try:")
+                appendLine("    __input_0_$ii = np.asarray(np_$inputId)")
+                appendLine("except Exception:")
+                appendLine("    pass")
+            }
+        }
+        val fullSource = onnxSource + "\n" + captureCode
+
+        // 在 ONNX daemon 上运行参考
+        val onnxResult = try {
+            onnxDaemon.sendAndWaitWithOutput(fullSource)
+        } catch (e: Exception) {
+            return backends.map { b ->
+                FuzzingResult(seed, b.name, object : BackendResult(false, -1, "", "ONNX daemon: ${e.message}", 0) {}, io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "ONNX daemon error")
+            }
+        }
+
+        if (!onnxResult.success) {
+            return backends.map { b ->
+                FuzzingResult(seed, b.name, object : BackendResult(false, -1, onnxResult.stdout, onnxResult.stderr, onnxResult.elapsedMs) {}, io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, onnxResult.stderr.take(200))
+            }
+        }
+
+        // 提取 ONNX 模型 bytes
+        val modelB64 = onnxResult.modelsB64?.values?.firstOrNull()
+        if (modelB64 == null) {
+            return backends.map { b ->
+                FuzzingResult(seed, b.name, object : BackendResult(false, -1, "", "No ONNX model in daemon output", 0) {}, io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "no model")
+            }
+        }
+
+        // 对每个需要转换的后端，通过 frontend 导入运行
+        return backends.map { backend ->
+            if (!backend.needsConversionTest()) {
+                // 不需要转换的后端用现有逻辑
+                runOnBackend(program, backend, seed)
+            } else {
+                val result = runConversionOnBackend(backend, modelB64, onnxResult, seed)
+                // 收集转换测试失败的 bug
+                if (!result.backendResult.success) {
+                    BugCollector.collect(
+                        result = result.backendResult,
+                        seed = seed,
+                        backendName = result.backendName,
+                        program = singleGraphProgram,
+                        sourceCode = fullSource,
+                    )
+                }
+                result
+            }
+        }
+    }
+
+    /**
+     * 在单个转换测试后端上运行。
+     * 目前支持 TVM frontend=onnx。
+     */
+    private fun runConversionOnBackend(
+        backend: Backend<*>,
+        modelB64: String,
+        onnxResult: DaemonResult,
+        seed: Long,
+    ): FuzzingResult {
+        val backendName = backend.name
+
+        when {
+            backend is TvmDaemonBackend && backend.frontend == "onnx" -> {
+                val tvmFrontend = conversionTvmFrontendDaemon
+                if (tvmFrontend == null) {
+                    return FuzzingResult(seed, backendName, object : BackendResult(false, -1, "", "TVM frontend daemon not available", 0) {}, io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "no daemon")
+                }
+                val jsonReq = """{"onnx_b64":"$modelB64","inputs":{}}"""
+                try {
+                    val response = httpPost("http://127.0.0.1:${tvmFrontend.port}/run_onnx_frontend", jsonReq)
+                    val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                    val msg = json.decodeFromString<DaemonClient.ResultMessageWithOutput>(response)
+
+                    // 比较输出
+                    val sourceOutputs = onnxResult.outputs ?: emptyMap()
+                    val targetOutputs = msg.outputs ?: emptyMap()
+                    val normalizedSource = sourceOutputs
+                        .filterKeys { it.startsWith("__output_0_") }
+                        .mapKeys { "output_" + it.key.removePrefix("__output_0_") }
+
+                    val match = if (normalizedSource.isEmpty() || targetOutputs.isEmpty()) false
+                    else normalizedSource.keys == targetOutputs.keys &&
+                         normalizedSource.all { (k, v) ->
+                             val t = targetOutputs[k]
+                             t != null && v.shape == t.shape && v.dtype == t.dtype
+                         }
+
+                    val stderr = msg.stderr
+                    val stdout = msg.stdout + "\n" +
+                        if (match) "[CONVERSION] PASS: outputs match"
+                        else "[CONVERSION] FAIL: output mismatch (source=${normalizedSource.keys}, target=${targetOutputs.keys})"
+
+                    return FuzzingResult(seed, "$backendName (frontend=onnx)",
+                        object : BackendResult(match, if (match) 0 else 1, stdout, stderr, msg.elapsedMs) {},
+                        if (match) io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.NONE else io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN,
+                        if (match) "conversion PASS" else "conversion FAIL: output mismatch")
+                } catch (e: Exception) {
+                    return FuzzingResult(seed, "$backendName (frontend=onnx)",
+                        object : BackendResult(false, -1, "", "TVM frontend request failed: ${e.message}", 0) {},
+                        io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "TVM frontend error")
+                }
+            }
+            else -> {
+                return FuzzingResult(seed, backendName,
+                    object : BackendResult(false, -1, "", "unsupported conversion: ${backend.name} frontend=${backend.frontend}", 0) {},
+                    io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "unsupported conversion")
+            }
+        }
+    }
+
+    /** HTTP POST 辅助 */
+    private fun httpPost(url: String, jsonBody: String): String {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.doOutput = true
+        conn.connectTimeout = 5000
+        conn.readTimeout = 120_000
+        OutputStreamWriter(conn.outputStream).use { it.write(jsonBody) }
+        return conn.inputStream.bufferedReader().readText()
     }
 }

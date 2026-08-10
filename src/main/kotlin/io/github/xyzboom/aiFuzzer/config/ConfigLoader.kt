@@ -135,6 +135,7 @@ object ConfigLoader {
 
             (backendMap["tvm"] as? Map<String, Any>)?.let { tvmMap ->
                 config.backends.tvm.python = tvmMap["python"] as? String ?: config.backends.tvm.python
+                config.backends.tvm.frontend = tvmMap["frontend"] as? String ?: config.backends.tvm.frontend
                 config.backends.tvm.timeoutSeconds = tvmMap["timeout_seconds"] as? Int ?: config.backends.tvm.timeoutSeconds
                 config.backends.tvm.keepArtifacts = tvmMap["keep_artifacts"] as? Boolean ?: config.backends.tvm.keepArtifacts
                 config.backends.tvm.workDir = tvmMap["work_dir"] as? String ?: config.backends.tvm.workDir

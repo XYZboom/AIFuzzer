@@ -28,6 +28,8 @@ class PytorchDaemonBackend(
     private val dtype: String = "float32",
     private val device: String = "cpu",
     private val compileMode: String = "default",
+    override val frontend: String = "pytorch",
+    override val defaultFrontend: String = "pytorch",
     val crossTargetDifferential: Boolean = false,
     override val workDir: File = File(
         System.getProperty("java.io.tmpdir") ?: "/tmp",

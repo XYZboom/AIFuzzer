@@ -280,13 +280,23 @@ class PytorchTranslator(
         builder.appendLine("            return x")
         builder.appendLine()
         val modList = element.graphs.indices.joinToString(", ") { "model_$it" }
-        builder.appendLine("    chained = torch.compile(ChainedModel(nn.ModuleList([$modList])), mode=\"$compileMode\")")
+        val allFreshArgs = freshInputIds.joinToString(", ")
+        val compileLabel = if (compileMode == "jit") "torch.jit" else "torch.compile"
+        if (compileMode == "jit") {
+            // TorchScript JIT：trace → freeze → optimize_for_inference（与 torch.compile 是不同编译路径）
+            // 注意：torch.jit.freeze 要求模块处于 eval 模式，因此先 .eval()
+            builder.appendLine("    _jit_model = ChainedModel(nn.ModuleList([$modList])).eval()")
+            builder.appendLine("    chained = torch.jit.trace(_jit_model, ($allFreshArgs,))")
+            builder.appendLine("    chained = torch.jit.freeze(chained)")
+            builder.appendLine("    chained = torch.jit.optimize_for_inference(chained)")
+        } else {
+            builder.appendLine("    chained = torch.compile(ChainedModel(nn.ModuleList([$modList])), mode=\"$compileMode\")")
+        }
         builder.appendLine("except Exception as e:")
-        builder.appendLine("    print(f'torch.compile failed: {e}')")
+        builder.appendLine("    print(f'$compileLabel failed: {e}')")
         builder.appendLine("    raise")
         builder.appendLine()
         builder.appendLine("with torch.no_grad():")
-        val allFreshArgs = freshInputIds.joinToString(", ")
         builder.appendLine("    cmp_output = chained($allFreshArgs)")
         builder.appendLine()
 
