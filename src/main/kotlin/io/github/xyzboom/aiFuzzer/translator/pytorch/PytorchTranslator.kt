@@ -221,35 +221,32 @@ class PytorchTranslator(
         }
         builder.appendLine()
 
-        // === Eager 模式执行（图间串联）===
+        // === 定义 ChainedModel（串联所有子图）===
+        builder.appendLine("# Define ChainedModel (wraps all sub-modules)")
+        generateChainedModelClass(builder, freshInputIds, element.graphs, indent = 0)
+        builder.appendLine()
+
+        // === Eager 模式执行（ground truth，通过 ChainedModel 串联）===
+        val modList = element.graphs.indices.joinToString(", ") { "model_$it" }
+        val allFreshArgs = freshInputIds.joinToString(", ")
         builder.appendLine("# Chained eager execution (ground truth)")
         builder.appendLine("with torch.no_grad():")
-        val eagerOutputVars = mutableListOf<String>()  // track what vars are in scope
-        eagerOutputVars.addAll(freshInputIds)
-        for ((gIdx, graph) in element.graphs.withIndex()) {
-            val inputArgs = graph.inputs.joinToString(", ") { it.valueId }
-            val resultVar = "ref_out_$gIdx"
-            builder.appendLine("    $resultVar = model_$gIdx($inputArgs)")
-            // 解包输出
-            if (graph.outputs.size > 1) {
-                val outNames = graph.outputs.joinToString(", ") { it.valueId }
-                builder.appendLine("    $outNames = $resultVar")
-            } else {
-                builder.appendLine("    ${graph.outputs[0].valueId} = $resultVar")
-            }
-            graph.outputs.forEach { eagerOutputVars.add(it.valueId) }
+        val lastGraph = element.graphs.last()
+        val finalRefVar = if (lastGraph.outputs.size == 1) {
+            val singleOut = lastGraph.outputs[0].valueId
+            builder.appendLine("    $singleOut = ChainedModel(nn.ModuleList([$modList]))($allFreshArgs)")
+            singleOut
+        } else {
+            val outNames = lastGraph.outputs.joinToString(", ") { it.valueId }
+            builder.appendLine("    _eager_result = ChainedModel(nn.ModuleList([$modList]))($allFreshArgs)")
+            builder.appendLine("    $outNames = _eager_result")
+            "_eager_result"
         }
         builder.appendLine()
-        val lastGraph = element.graphs.last()
-        val finalRefVar = lastGraph.outputs.singleOrNull()?.valueId ?: "ref_out_${element.graphs.size - 1}"
 
         // === Compiled 模式执行（整条链编译，后端自动融合跨图算子）===
         builder.appendLine("# Chained compiled execution (entire pipeline compiled together)")
         builder.appendLine("try:")
-        generateChainedModelClass(builder, freshInputIds, element.graphs)
-        builder.appendLine()
-        val modList = element.graphs.indices.joinToString(", ") { "model_$it" }
-        val allFreshArgs = freshInputIds.joinToString(", ")
         val compileLabel = generateCompileCall(builder, compileMode, modList, allFreshArgs, device)
         builder.appendLine("except Exception as e:")
         builder.appendLine("    print(f'$compileLabel failed: {e}')")
@@ -850,37 +847,40 @@ UirOpKind.TILE -> {
         builder: StringBuilder,
         freshInputIds: List<String>,
         graphs: List<UirGraph>,
+        indent: Int = 0,
     ) {
+        val indentStr = " ".repeat(indent)
+        val bodyIndent = indentStr + "        "  // 8 spaces: class body(4) + method body(4)
         val forwardParams = freshInputIds.joinToString(", ")
-        builder.appendLine("    class ChainedModel(nn.Module):")
-        builder.appendLine("        def __init__(self, mods):")
-        builder.appendLine("            super().__init__()")
-        builder.appendLine("            self._mods = mods")
-        builder.appendLine("        def forward(self, $forwardParams):")
+        builder.appendLine("${indentStr}class ChainedModel(nn.Module):")
+        builder.appendLine("${indentStr}    def __init__(self, mods):")
+        builder.appendLine("${indentStr}        super().__init__()")
+        builder.appendLine("${indentStr}        self._mods = mods")
+        builder.appendLine("${indentStr}    def forward(self, $forwardParams):")
         var prevGraphOutputIds = emptySet<String>()
         for ((gIdx, graph) in graphs.withIndex()) {
             if (gIdx == 0) {
                 val moduleInputs = graph.inputs.indices.joinToString(", ") { i ->
                     if (i < freshInputIds.size) freshInputIds[i] else graph.inputs[i].valueId
                 }
-                builder.appendLine("            x = self._mods[0]($moduleInputs)")
+                builder.appendLine("${bodyIndent}x = self._mods[0]($moduleInputs)")
             } else {
                 val chainInputIds = graph.inputs.filter { it.valueId in prevGraphOutputIds }
                 val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in prevGraphOutputIds }
                 val callArgs = mutableListOf<String>()
                 if (chainInputIds.size > 1) {
                     val chainNames = chainInputIds.map { "ch_${it.valueId}" }.joinToString(", ")
-                    builder.appendLine("            $chainNames = x if isinstance(x, tuple) else (x,)")
+                    builder.appendLine("${bodyIndent}$chainNames = x if isinstance(x, tuple) else (x,)")
                     chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
                 } else {
                     callArgs.add("x")
                 }
                 freshInputIdsForGraph.forEach { callArgs.add(it.valueId) }
-                builder.appendLine("            x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
+                builder.appendLine("${bodyIndent}x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
             }
             prevGraphOutputIds = graph.outputs.map { it.valueId }.toSet()
         }
-        builder.appendLine("            return x")
+        builder.appendLine("${bodyIndent}return x")
     }
 
     /**
