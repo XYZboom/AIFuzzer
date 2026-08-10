@@ -51,90 +51,123 @@ class OnnxTranslator(
             translateGraph(builder, graph, idx)
         }
 
-        // === 生成链式执行代码 ===
-        builder.appendLine("# Chained execution")
+        // === 生成执行代码（ChainedOnnxModel 包装，与 PyTorch 多 module 模式一致）===
+        builder.appendLine("# Execution (via ChainedOnnxModel)")
         builder.appendLine("np.random.seed(42)")
         builder.appendLine()
 
-        val onnxProducedIds = mutableSetOf<String>()
-        for ((gIdx, _) in element.graphs.withIndex()) {
-            if (differentialTesting) {
-                builder.appendLine("_sess_opt_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])")
-                builder.appendLine("_so_ref_$gIdx = ort.SessionOptions()")
-                builder.appendLine("_so_ref_${gIdx}.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL")
-                builder.appendLine("_sess_ref_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'], sess_options=_so_ref_$gIdx)")
+        // 收集所有图的 fresh 输入（不被任何节点产出的输入）
+        val allNodeOutputIds = element.graphs.flatMap { graph ->
+            graph.nodes.flatMap { node -> node.outputs.map { it.valueId } }
+        }.toSet()
+        val freshInputRefs = element.graphs.flatMap { it.inputs }
+            .filter { it.valueId !in allNodeOutputIds }
+            .distinctBy { it.valueId }
+
+        // 生成 fresh 输入
+        for (input in freshInputRefs) {
+            val shape = input.type.shape
+            val shapeStr = shapeToPythonList(shape)
+            builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
+        }
+        builder.appendLine()
+
+        // 定义 ChainedOnnxModel
+        builder.appendLine("class ChainedOnnxModel:")
+        builder.appendLine("    def __init__(self):")
+        if (differentialTesting) {
+            builder.appendLine("        so_ref = ort.SessionOptions()")
+            builder.appendLine("        so_ref.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL")
+            builder.appendLine("        self.opt_sessions = [")
+            for (gIdx in element.graphs.indices) {
+                builder.appendLine("            ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider']),")
+            }
+            builder.appendLine("        ]")
+            builder.appendLine("        self.ref_sessions = [")
+            for (gIdx in element.graphs.indices) {
+                builder.appendLine("            ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'], sess_options=so_ref),")
+            }
+            builder.appendLine("        ]")
+        } else {
+            builder.appendLine("        self.sessions = [")
+            for (gIdx in element.graphs.indices) {
+                builder.appendLine("            ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider']),")
+            }
+            builder.appendLine("        ]")
+        }
+        builder.appendLine("        self.input_ids = [")
+        for (graph in element.graphs) {
+            builder.appendLine("            [${graph.inputs.joinToString(", ") { "'${it.valueId}'" }}],")
+        }
+        builder.appendLine("        ]")
+        builder.appendLine("        self.output_ids = [")
+        for (graph in element.graphs) {
+            builder.appendLine("            [${graph.outputs.joinToString(", ") { "'${it.valueId}'" }}],")
+        }
+        builder.appendLine("        ]")
+        builder.appendLine("    def __call__(self, feed):")
+        if (differentialTesting) {
+            builder.appendLine("        opt_feed = dict(feed)")
+            builder.appendLine("        for _gi, _sess in enumerate(self.opt_sessions):")
+            builder.appendLine("            _fd = {_k: opt_feed[_k] for _k in self.input_ids[_gi]}")
+            builder.appendLine("            _res = _sess.run(None, _fd)")
+            builder.appendLine("            for _oi, _oid in enumerate(self.output_ids[_gi]):")
+            builder.appendLine("                opt_feed[_oid] = np.asarray(_res[_oi])")
+            builder.appendLine("        ref_feed = dict(feed)")
+            builder.appendLine("        for _gi, _sess in enumerate(self.ref_sessions):")
+            builder.appendLine("            _fd = {_k: ref_feed[_k] for _k in self.input_ids[_gi]}")
+            builder.appendLine("            _res = _sess.run(None, _fd)")
+            builder.appendLine("            for _oi, _oid in enumerate(self.output_ids[_gi]):")
+            builder.appendLine("                ref_feed[_oid] = np.asarray(_res[_oi])")
+            builder.appendLine("        return opt_feed, ref_feed")
+        } else {
+            builder.appendLine("        for _gi, _sess in enumerate(self.sessions):")
+            builder.appendLine("            _fd = {_k: feed[_k] for _k in self.input_ids[_gi]}")
+            builder.appendLine("            _res = _sess.run(None, _fd)")
+            builder.appendLine("            for _oi, _oid in enumerate(self.output_ids[_gi]):")
+            builder.appendLine("                feed[_oid] = np.asarray(_res[_oi])")
+            builder.appendLine("        return feed")
+        }
+        builder.appendLine()
+
+        // 实例化 + 执行
+        val feedDict = freshInputRefs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
+        val lastGraph = element.graphs.last()
+        val lastOutIds = lastGraph.outputs.map { it.valueId }
+        val lastFn = lastGraph.name.ifBlank { "graph_${element.graphs.size - 1}" }
+
+        if (differentialTesting) {
+            builder.appendLine("chained = ChainedOnnxModel()")
+            builder.appendLine("opt_result, ref_result = chained({$feedDict})")
+            builder.appendLine("for _oid in [${lastOutIds.joinToString(", ") { "'$it'" }}]:")
+            builder.appendLine("    _a = opt_result[_oid]")
+            builder.appendLine("    _b = ref_result[_oid]")
+            builder.appendLine("    _nan_a = np.isnan(_a)")
+            builder.appendLine("    _nan_b = np.isnan(_b)")
+            builder.appendLine("    if not np.array_equal(_nan_a, _nan_b):")
+            builder.appendLine("        print(f\"[ONNX-DIFF] {_oid}: NaN mismatch! opt_nan_count={np.sum(_nan_a)} ref_nan_count={np.sum(_nan_b)}\", file=sys.stderr)")
+            builder.appendLine("        sys.exit(2)")
+            builder.appendLine("    _mask = ~_nan_a")
+            builder.appendLine("    if np.any(_mask) and not np.allclose(_a[_mask], _b[_mask], atol=0.5, rtol=0.1):")
+            builder.appendLine("        print(f\"[ONNX-DIFF] {_oid}: opt={_a.flatten()[:5]} ref={_b.flatten()[:5]}\", file=sys.stderr)")
+            builder.appendLine("        sys.exit(2)")
+            if (lastOutIds.size == 1) {
+                builder.appendLine("print(f\"[ONNX-OUT] $lastFn: shape={list(opt_result['${lastOutIds[0]}'].shape)}\")")
             } else {
-                builder.appendLine("_sess_$gIdx = ort.InferenceSession(_model_$gIdx.SerializeToString(), providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])")
+                builder.appendLine("for _i, _oid in enumerate([${lastOutIds.joinToString(", ") { "'$it'" }}]):")
+                builder.appendLine("    print(f\"[ONNX-OUT] $lastFn[{_i}]: shape={list(opt_result[_oid].shape)}\")")
+            }
+        } else {
+            builder.appendLine("chained = ChainedOnnxModel()")
+            builder.appendLine("result = chained({$feedDict})")
+            if (lastOutIds.size == 1) {
+                builder.appendLine("print(f\"[ONNX-OUT] $lastFn: shape={list(result['${lastOutIds[0]}'].shape)}\")")
+            } else {
+                builder.appendLine("for _i, _oid in enumerate([${lastOutIds.joinToString(", ") { "'$it'" }}]):")
+                builder.appendLine("    print(f\"[ONNX-OUT] $lastFn[{_i}]: shape={list(result[_oid].shape)}\")")
             }
         }
-
-        for ((gIdx, graph) in element.graphs.withIndex()) {
-            val funcName = graph.name.ifBlank { "graph_$gIdx" }
-            val freshInputs = graph.inputs.filter { it.valueId !in onnxProducedIds }
-
-            // 生成新鲜输入
-            for (input in freshInputs) {
-                val shape = input.type.shape
-                val shapeStr = shapeToPythonList(shape)
-                builder.appendLine("np_${input.valueId} = np.random.uniform(0.0, 1.0, size=($shapeStr)).astype(np.float32)")
-                onnxProducedIds.add(input.valueId)
-            }
-
-            // 如果是链入图，解包上一图输出
-            if (gIdx > 0) {
-                val prevGraph = element.graphs[gIdx - 1]
-                val prevOutputIds = prevGraph.outputs.map { it.valueId }
-                val prevResultVar = if (differentialTesting) "_result_opt_${gIdx - 1}" else "_result_${gIdx - 1}"
-                if (prevOutputIds.size > 1) {
-                    for ((i, outId) in prevOutputIds.withIndex()) {
-                        builder.appendLine("np_$outId = np.asarray($prevResultVar[$i])")
-                    }
-                } else {
-                    builder.appendLine("np_${prevOutputIds[0]} = np.asarray($prevResultVar[0])")
-                }
-            }
-
-            if (differentialTesting) {
-                val feedEntries = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
-                builder.appendLine("_result_opt_$gIdx = _sess_opt_$gIdx.run(None, {$feedEntries})")
-                builder.appendLine("_result_ref_$gIdx = _sess_ref_$gIdx.run(None, {$feedEntries})")
-                // 比较所有输出
-                builder.appendLine("for _diff_i in range(len(_result_opt_$gIdx)):")
-                builder.appendLine("    _a = np.asarray(_result_opt_${gIdx}[_diff_i])")
-                builder.appendLine("    _b = np.asarray(_result_ref_${gIdx}[_diff_i])")
-                builder.appendLine("    # both NaN is OK; only flag if one is NaN and the other isn't, or values differ")
-                builder.appendLine("    _nan_a = np.isnan(_a)")
-                builder.appendLine("    _nan_b = np.isnan(_b)")
-                builder.appendLine("    if not np.array_equal(_nan_a, _nan_b):")
-                builder.appendLine("        print(f\"[ONNX-DIFF] $funcName[{_diff_i}]: NaN mismatch! opt_nan_count={np.sum(_nan_a)} ref_nan_count={np.sum(_nan_b)}\", file=sys.stderr)")
-                builder.appendLine("        sys.exit(2)")
-                builder.appendLine("    _mask = ~_nan_a")
-                builder.appendLine("    if np.any(_mask) and not np.allclose(_a[_mask], _b[_mask], atol=0.5, rtol=0.1):")
-                builder.appendLine("        print(f\"[ONNX-DIFF] $funcName[{_diff_i}]: opt={_a.flatten()[:5]} ref={_b.flatten()[:5]}\", file=sys.stderr)")
-                builder.appendLine("        sys.exit(2)")
-                // 打印输出
-                builder.appendLine("if len(_result_opt_$gIdx) == 1:")
-                builder.appendLine("    print(f\"[ONNX-OUT] $funcName: shape={list(np.asarray(_result_opt_${gIdx}[0]).shape)}\")")
-                builder.appendLine("else:")
-                builder.appendLine("    for _i, _r in enumerate(_result_opt_${gIdx}):")
-                builder.appendLine("        print(f\"[ONNX-OUT] $funcName[{_i}]: shape={list(np.asarray(_r).shape)}\")")
-            } else {
-                // 构建 feed dict
-                val feedEntries = graph.inputs.joinToString(", ") { "'${it.valueId}': np_${it.valueId}" }
-                builder.appendLine("_result_$gIdx = _sess_$gIdx.run(None, {$feedEntries})")
-
-                // 打印输出
-                builder.appendLine("if len(_result_$gIdx) == 1:")
-                builder.appendLine("    print(f\"[ONNX-OUT] $funcName: shape={list(_result_${gIdx}[0].shape)}\")")
-                builder.appendLine("else:")
-                builder.appendLine("    for _i, _r in enumerate(_result_${gIdx}):")
-                builder.appendLine("        print(f\"[ONNX-OUT] $funcName[{_i}]: shape={list(_r.shape)}\")")
-            }
-            builder.appendLine()
-
-            graph.outputs.forEach { onnxProducedIds.add(it.valueId) }
-        }
-
+        builder.appendLine()
         builder.appendLine("print('Execution: OK')")
 
         val elapsed = System.currentTimeMillis() - startTime

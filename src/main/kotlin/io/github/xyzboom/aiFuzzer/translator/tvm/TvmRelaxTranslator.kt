@@ -168,25 +168,12 @@ class TvmRelaxTranslator(
         builder.appendLine("print('Module built successfully')")
         builder.appendLine("# print(mod)")
         builder.appendLine()
-        // ===== 执行编译后的TVM模块（图间串联）=====
+        // ===== 执行编译后的TVM模块（通过 ChainedTvmModel 包装，与 PyTorch 多 module 模式一致）=====
         builder.appendLine()
-        builder.appendLine("# === Execute compiled module (chained graphs) ===")
+        builder.appendLine("# === Execute compiled module (via ChainedTvmModel) ===")
         builder.appendLine("np.random.seed(42)")
 
-        if (crossTargetDifferential) {
-            // 差分测试模式：分别构建 CPU (llvm) 和 GPU (cuda) 版本，比较输出
-            builder.appendLine()
-            builder.appendLine("# === Cross-target differential mode: CPU vs GPU ===")
-            builder.appendLine("ex_cpu = relax.build(mod, target=\"llvm\")")
-            builder.appendLine("vm_cpu = relax.VirtualMachine(ex_cpu, tvm.cpu())")
-            builder.appendLine("ex_gpu = relax.build(mod, target=\"cuda\")")
-            builder.appendLine("vm_gpu = relax.VirtualMachine(ex_gpu, tvm.cuda())")
-        } else {
-            builder.appendLine("ex = relax.build(mod, target=\"$target\")")
-            builder.appendLine("vm = relax.VirtualMachine(ex, tvm.$device())")
-        }
-
-        // ===== 收集所有 fresh 输入（不被任何节点产出的输入）=====
+        // 收集所有 fresh 输入（不被任何节点产出的输入）
         val allNodeOutputIds = element.graphs.flatMap { graph ->
             graph.nodes.flatMap { node -> node.outputs.map { it.valueId } }
         }.toSet()
@@ -195,7 +182,7 @@ class TvmRelaxTranslator(
             .distinctBy { it.valueId }
         val freshInputIds = freshInputRefs.map { it.valueId }
 
-        // 生成所有 fresh 输入（合并到一个 main 函数，只需一次生成）
+        // 生成所有 fresh 输入
         if (freshInputRefs.isNotEmpty()) {
             builder.appendLine()
             builder.appendLine("# Generate all fresh inputs for merged main")
@@ -220,15 +207,24 @@ class TvmRelaxTranslator(
                 }
             }
         }
+        builder.appendLine()
 
-        // 合并后的 main 函数只有一个，直接调用
-        val allInputArgs = freshInputIds.joinToString(", ")
-
+        // 定义 ChainedTvmModel
         if (crossTargetDifferential) {
+            builder.appendLine("# ChainedTvmModel (CPU vs GPU differential)")
+            builder.appendLine("class ChainedTvmModel:")
+            builder.appendLine("    def __init__(self):")
+            builder.appendLine("        ex_cpu = relax.build(mod, target=\"llvm\")")
+            builder.appendLine("        self.vm_cpu = relax.VirtualMachine(ex_cpu, tvm.cpu())")
+            builder.appendLine("        ex_gpu = relax.build(mod, target=\"cuda\")")
+            builder.appendLine("        self.vm_gpu = relax.VirtualMachine(ex_gpu, tvm.cuda())")
+            builder.appendLine("    def __call__(self, cpu_inputs, gpu_inputs):")
+            builder.appendLine("        return self.vm_cpu[\"main\"](*cpu_inputs), self.vm_gpu[\"main\"](*gpu_inputs)")
             builder.appendLine()
-            builder.appendLine("# Cross-target differential: CPU vs GPU (merged)")
-            builder.appendLine("tvm_result_cpu = vm_cpu[\"main\"](${freshInputIds.joinToString(", ") { it + "_cpu" }})")
-            builder.appendLine("tvm_result_gpu = vm_gpu[\"main\"](${freshInputIds.joinToString(", ") { it + "_gpu" }})")
+            builder.appendLine("chained = ChainedTvmModel()")
+            val cpuArgs = freshInputIds.joinToString(", ") { it + "_cpu" }
+            val gpuArgs = freshInputIds.joinToString(", ") { it + "_gpu" }
+            builder.appendLine("tvm_result_cpu, tvm_result_gpu = chained([$cpuArgs], [$gpuArgs])")
             builder.appendLine("_cpu_val = tvm_result_cpu")
             builder.appendLine("_gpu_val = tvm_result_gpu")
             builder.appendLine("if hasattr(_cpu_val, 'numpy'):")
@@ -254,9 +250,17 @@ class TvmRelaxTranslator(
             builder.appendLine("            if _max_diff > 1e-3:")
             builder.appendLine("                print(f'[DIFF-MISMATCH] main[{_ci}]: CPU vs GPU mismatch, max_diff={_max_diff}')")
         } else {
+            builder.appendLine("# ChainedTvmModel")
+            builder.appendLine("class ChainedTvmModel:")
+            builder.appendLine("    def __init__(self):")
+            builder.appendLine("        ex = relax.build(mod, target=\"$target\")")
+            builder.appendLine("        self.vm = relax.VirtualMachine(ex, tvm.$device())")
+            builder.appendLine("    def __call__(self, *inputs):")
+            builder.appendLine("        return self.vm[\"main\"](*inputs)")
             builder.appendLine()
-            builder.appendLine("# Execute merged main function")
-            builder.appendLine("tvm_result = vm[\"main\"]($allInputArgs)")
+            val allInputArgs = freshInputIds.joinToString(", ")
+            builder.appendLine("chained = ChainedTvmModel()")
+            builder.appendLine("tvm_result = chained($allInputArgs)")
             builder.appendLine()
             builder.appendLine("# Print output")
             builder.appendLine("if hasattr(tvm_result, 'numpy'):")
