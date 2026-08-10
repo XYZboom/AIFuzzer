@@ -276,52 +276,132 @@ class TvmRelaxTranslator(
     }
 
     /**
-     * 翻译所有图：合并为一个 main 函数。
-     * 所有子图按 IR 顺序排列在同一个 main 函数中，子图间用注释分隔。
-     * 跨子图数据流通过共享 valueMap 自动串联（前图产出变量被后图直接引用）。
-     * 函数参数 = 所有 fresh 输入（不被任何节点产出）；输出 = 最后一个图的输出。
+     * 翻译单个子图为独立的 relax 函数（函数名 = subgraph_$idx）。
+     * 子图的 inputs 全部作为函数参数。
      */
-    private fun translateMergedGraphs(builder: StringBuilder, graphs: List<UirGraph>) {
-        // 计算所有被节点产出的 valueId
-        val allNodeOutputIds = graphs.flatMap { graph ->
-            graph.nodes.flatMap { node -> node.outputs.map { it.valueId } }
-        }.toSet()
-
-        // fresh 输入 = 出现在图输入、但从未被任何节点产出的变量
-        val freshInputs = graphs.flatMap { it.inputs }
-            .filter { it.valueId !in allNodeOutputIds }
-            .distinctBy { it.valueId }
+    private fun translateGraph(builder: StringBuilder, graph: UirGraph, graphIdx: Int) {
+        val funcName = "subgraph_$graphIdx"
 
         // 生成输入变量的 relax.Var
-        for (input in freshInputs) {
+        for (input in graph.inputs) {
             val varName = "${input.valueId}_var"
             val shapeExpr = generateShapeExpr(input.type.shape)
             builder.appendLine("    $varName = relax.Var(\"${input.valueId}\", relax.TensorStructInfo(shape=$shapeExpr, dtype=\"$dtype\"))")
         }
 
-        // 开始 main 函数定义
-        val params = freshInputs.map { "${it.valueId}_var" }.joinToString(", ")
-        builder.appendLine("    with bb.function(\"main\", [$params]):")
+        // 开始函数定义
+        val params = graph.inputs.map { "${it.valueId}_var" }.joinToString(", ")
+        builder.appendLine("    with bb.function(\"$funcName\", [$params]):")
 
-        // 值映射：valueId -> Python 变量名（跨子图共享）
+        // 值映射：valueId -> Python 变量名
         val valueMap = mutableMapOf<String, String>()
-        for (input in freshInputs) {
+        for (input in graph.inputs) {
             valueMap[input.valueId] = "${input.valueId}_var"
         }
 
-        // 按 IR 顺序排列所有子图，用注释分隔
-        for ((gIdx, graph) in graphs.withIndex()) {
-            log.trace { "合并翻译子图 $gIdx: ${graph.name}" }
-            builder.appendLine("        # === Subgraph $gIdx: ${graph.name} ===")
-            for (node in graph.nodes) {
-                translateNode(builder, node, valueMap)
+        // 翻译每个节点
+        for (node in graph.nodes) {
+            translateNode(builder, node, valueMap)
+        }
+
+        // 生成函数输出
+        val outputVars = graph.outputs.map { output ->
+            valueMap[output.valueId] ?: "${output.valueId}_var"
+        }
+
+        if (outputVars.size == 1) {
+            builder.appendLine("        bb.emit_func_output(${outputVars[0]})")
+        } else {
+            builder.appendLine("        bb.emit_func_output((${outputVars.joinToString(", ")}))")
+        }
+
+        builder.appendLine()
+    }
+
+    /**
+     * 翻译所有子图为独立函数，并生成 main 函数串联调用它们。
+     *
+     * 结构：
+     *   subgraph_0(inputs...) -> outputs
+     *   subgraph_1(inputs...) -> outputs
+     *   ...
+     *   main(fresh_inputs...):
+     *       _r0 = subgraph_0(args)
+     *       _r1 = subgraph_1(args)
+     *       ...
+     *       return final_output
+     *
+     * main 的参数 = 所有 fresh 输入（不被任何节点产出的变量）。
+     * main 内部按 IR 顺序调用各子图，把前子图输出传给后子图输入。
+     */
+    private fun translateMergedGraphs(builder: StringBuilder, graphs: List<UirGraph>) {
+        // 1. 生成所有子图为独立 relax 函数
+        for ((idx, graph) in graphs.withIndex()) {
+            log.trace { "翻译子图 $idx: ${graph.name}" }
+            translateGraph(builder, graph, idx)
+        }
+
+        // 2. 提取模块，获取每个子图的 GlobalVar
+        builder.appendLine("    # 提取子图 GlobalVar")
+        builder.appendLine("    _mod_for_gv = bb.get()")
+        for (idx in graphs.indices) {
+            builder.appendLine("    gv_$idx = _mod_for_gv.get_global_var(\"subgraph_$idx\")")
+        }
+        builder.appendLine()
+
+        // 3. 生成 main 函数（大图，内部依次调用子图）
+        // 计算所有被节点产出的 valueId
+        val allNodeOutputIds = graphs.flatMap { graph ->
+            graph.nodes.flatMap { node -> node.outputs.map { it.valueId } }
+        }.toSet()
+        // fresh 输入 = 出现在图输入、但从未被任何节点产出的变量
+        val freshInputs = graphs.flatMap { it.inputs }
+            .filter { it.valueId !in allNodeOutputIds }
+            .distinctBy { it.valueId }
+
+        // main 参数 = fresh 输入的 relax.Var
+        for (input in freshInputs) {
+            val varName = "${input.valueId}_var"
+            val shapeExpr = generateShapeExpr(input.type.shape)
+            builder.appendLine("    $varName = relax.Var(\"${input.valueId}\", relax.TensorStructInfo(shape=$shapeExpr, dtype=\"$dtype\"))")
+        }
+        val mainParams = freshInputs.map { "${it.valueId}_var" }.joinToString(", ")
+        builder.appendLine("    with bb.function(\"main\", [$mainParams]):")
+
+        // 值解析映射：valueId -> main 作用域里的变量名
+        val resolved = mutableMapOf<String, String>()
+        for (input in freshInputs) {
+            resolved[input.valueId] = "${input.valueId}_var"
+        }
+
+        // 按 IR 顺序调用每个子图
+        for ((idx, graph) in graphs.withIndex()) {
+            builder.appendLine("        # === 调用子图 $idx: ${graph.name} ===")
+            // 该子图的输入参数
+            val args = graph.inputs.map { input ->
+                resolved[input.valueId]
+                    ?: throw IllegalStateException("子图 $idx 输入 ${input.valueId} 无法解析")
+            }
+            val argsStr = args.joinToString(", ")
+            builder.appendLine("        _sub_${idx}_res = bb.emit(relax.Call(gv_$idx, [$argsStr], None, None))")
+
+            // 将子图输出 valueId 映射到结果变量
+            val outputs = graph.outputs
+            if (outputs.size == 1) {
+                resolved[outputs[0].valueId] = "_sub_${idx}_res"
+            } else {
+                // 多输出：用 TupleGetItem 逐项解包
+                for ((oi, out) in outputs.withIndex()) {
+                    builder.appendLine("        _sub_${idx}_out_$oi = bb.emit(relax.TupleGetItem(_sub_${idx}_res, $oi))")
+                    resolved[out.valueId] = "_sub_${idx}_out_$oi"
+                }
             }
         }
 
-        // 生成函数输出：最后一个图的输出
+        // main 输出：最后一个子图的输出
         val lastGraph = graphs.last()
         val outputVars = lastGraph.outputs.map { output ->
-            valueMap[output.valueId] ?: "${output.valueId}_var"
+            resolved[output.valueId] ?: "${output.valueId}_var"
         }
 
         if (outputVars.size == 1) {
