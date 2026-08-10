@@ -18,6 +18,9 @@ import java.io.File
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -1075,24 +1078,34 @@ class FuzzingPipeline(
                     val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
                     val msg = json.decodeFromString<DaemonClient.ResultMessageWithOutput>(response)
 
-                    // 比较输出
+                    // 比较输出：先检查 shape/dtype，再检查数值（allclose）
                     val sourceOutputs = onnxResult.outputs ?: emptyMap()
                     val targetOutputs = msg.outputs ?: emptyMap()
                     val normalizedSource = sourceOutputs
                         .filterKeys { it.startsWith("__output_0_") }
                         .mapKeys { "output_" + it.key.removePrefix("__output_0_") }
 
-                    val match = if (normalizedSource.isEmpty() || targetOutputs.isEmpty()) false
+                    val shapeDtypeMatch = if (normalizedSource.isEmpty() || targetOutputs.isEmpty()) false
                     else normalizedSource.keys == targetOutputs.keys &&
                          normalizedSource.all { (k, v) ->
                              val t = targetOutputs[k]
                              t != null && v.shape == t.shape && v.dtype == t.dtype
                          }
 
+                    val (numericalMatch, maxDiff) = if (shapeDtypeMatch && normalizedSource.all { it.value.dataB64.isNotEmpty() }) {
+                        allcloseWithMaxDiff(normalizedSource, targetOutputs)
+                    } else {
+                        Pair(shapeDtypeMatch, -1.0)
+                    }
+                    val match = if (shapeDtypeMatch) numericalMatch else false
+
                     val stderr = msg.stderr
                     val stdout = msg.stdout + "\n" +
-                        if (match) "[CONVERSION] PASS: outputs match"
-                        else "[CONVERSION] FAIL: output mismatch (source=${normalizedSource.keys}, target=${targetOutputs.keys})"
+                        when {
+                            !shapeDtypeMatch -> "[CONVERSION] FAIL: shape/dtype mismatch (source=${normalizedSource.keys}, target=${targetOutputs.keys})"
+                            numericalMatch -> "[CONVERSION] PASS: outputs match"
+                            else -> "[CONVERSION] FAIL: numerical mismatch, max_diff=$maxDiff"
+                        }
 
                     return FuzzingResult(seed, "$backendName (frontend=onnx)",
                         object : BackendResult(match, if (match) 0 else 1, stdout, stderr, msg.elapsedMs) {},
@@ -1122,5 +1135,49 @@ class FuzzingPipeline(
         conn.readTimeout = 120_000
         OutputStreamWriter(conn.outputStream).use { it.write(jsonBody) }
         return conn.inputStream.bufferedReader().readText()
+    }
+
+    /**
+     * 数值比较（allclose）：解码 base64 tensor 数据，逐元素比较。
+     *
+     * @return (是否匹配, 最大绝对差)；无法解码时返回 (false, -1)
+     */
+    private fun allcloseWithMaxDiff(
+        source: Map<String, DaemonClient.OutputData>,
+        target: Map<String, DaemonClient.OutputData>,
+        rtol: Double = 1e-3,
+        atol: Double = 1e-5,
+    ): Pair<Boolean, Double> {
+        if (source.keys != target.keys) return Pair(false, -1.0)
+        var maxDiff = 0.0
+        for ((key, src) in source) {
+            val tgt = target[key] ?: return Pair(false, -1.0)
+            if (src.shape != tgt.shape || src.dtype != tgt.dtype) return Pair(false, -1.0)
+            val a = decodeFloatArray(src.dataB64) ?: return Pair(false, -1.0)
+            val b = decodeFloatArray(tgt.dataB64) ?: return Pair(false, -1.0)
+            if (a.size != b.size) return Pair(false, -1.0)
+            for (i in a.indices) {
+                val av = a[i].toDouble()
+                val bv = b[i].toDouble()
+                if (av.isNaN() && bv.isNaN()) continue
+                val diff = kotlin.math.abs(av - bv)
+                if (diff > maxDiff) maxDiff = diff
+                if (diff > atol + rtol * kotlin.math.abs(bv)) return Pair(false, maxDiff)
+            }
+        }
+        return Pair(true, maxDiff)
+    }
+
+    /** 解码 base64 → FloatArray（小端 float32）。失败返回 null。 */
+    private fun decodeFloatArray(dataB64: String): FloatArray? {
+        return try {
+            val bytes = Base64.getDecoder().decode(dataB64)
+            val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            val out = FloatArray(bytes.size / 4)
+            for (i in out.indices) out[i] = buf.getFloat()
+            out
+        } catch (_: Exception) {
+            null
+        }
     }
 }
