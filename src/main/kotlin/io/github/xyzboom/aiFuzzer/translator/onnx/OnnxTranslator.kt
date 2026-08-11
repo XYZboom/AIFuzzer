@@ -39,6 +39,10 @@ class OnnxTranslator(
         if (sourceTag != null) {
             builder.appendLine("# Source: $sourceTag")
         }
+        val dedupTag = element.metadata["dedup"]
+        if (dedupTag != null) {
+            builder.appendLine("# Dedup: $dedupTag")
+        }
         builder.appendLine()
         builder.appendLine("from onnx import helper, TensorProto")
         builder.appendLine("import onnxruntime as ort")
