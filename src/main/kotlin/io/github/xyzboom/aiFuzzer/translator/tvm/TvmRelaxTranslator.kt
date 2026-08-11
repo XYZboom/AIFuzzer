@@ -146,6 +146,10 @@ class TvmRelaxTranslator(
         if (sourceTag != null) {
             builder.appendLine("# Source: $sourceTag")
         }
+        val dedupTag = element.metadata["dedup"]
+        if (dedupTag != null) {
+            builder.appendLine("# Dedup: $dedupTag")
+        }
         builder.appendLine()
         builder.appendLine("import tvm")
         builder.appendLine("from tvm import relax")

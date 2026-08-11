@@ -366,6 +366,7 @@ data class PatternDef(
     val id: String,
     val compiler: String,          // "tvm", "pytorch", "onnx"
     val target: String? = null,    // "cuda", "llvm", null = any
+    val frontend: String? = null,  // "relax", "pytorch", "onnx", null = any
     val description: String? = null,
     val severity: String? = null,  // "crash", "silent_correctness", "error"
     val nodes: List<PatternNodeDef>,
@@ -386,11 +387,13 @@ data class PatternDatabase(
     /**
      * 按 compiler 和 target 筛选 pattern。
      */
-    fun filter(compiler: String? = null, target: String? = null): List<PatternDef> {
+    fun filter(compiler: String? = null, target: String? = null, frontend: String? = null): List<PatternDef> {
         val effectiveTarget = if (target.isNullOrBlank()) null else target
+        val effectiveFrontend = if (frontend.isNullOrBlank()) null else frontend
         return patterns.filter { p ->
             (compiler == null || p.compiler == compiler) &&
-            (effectiveTarget == null || p.target == null || p.target == effectiveTarget)
+            (effectiveTarget == null || p.target == null || p.target == effectiveTarget) &&
+            (effectiveFrontend == null || p.frontend == null || p.frontend == effectiveFrontend)
         }
     }
 }

@@ -146,6 +146,7 @@ data class FuzzerGenConfig(
                 patternDatabase = patternDb,
                 compiler = dedup.compiler,
                 target = dedup.target,
+                frontend = dedup.frontend,
                 maxRetries = 10,
                 valueRangeAnalysis = dedup.valueRangeAnalysis,
             ),
@@ -328,6 +329,8 @@ data class PipelineConfig(
         var compiler: String = "tvm",
         /** 编译目标，用于筛选 pattern */
         var target: String = "llvm",
+        /** 前端，用于筛选 pattern（relax/pytorch/onnx，null=any） */
+        var frontend: String? = null,
         /** 去重模式：builtin / custom / both */
         var patternMode: PatternMode = PatternMode.BUILTIN,
         /** 值域分析开关：启用后 pattern 可匹配值的范围 */
@@ -348,6 +351,7 @@ data class PipelineConfig(
                 enabled = dedup.enabled,
                 compiler = dedup.compiler,
                 target = dedup.target,
+                frontend = dedup.frontend,
                 patternDir = dedup.patternDir,
                 patternMode = if (dedup.patternDir.isNotBlank() && dedup.patternMode == PatternMode.BUILTIN) {
                     // 如果指定了 patternDir 但模式是 BUILTIN，自动切换到 BOTH

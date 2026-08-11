@@ -43,6 +43,7 @@ object PatternParser {
         val id = obj["id"]?.jsonPrimitive?.content ?: error("Missing pattern id")
         val compiler = obj["compiler"]?.jsonPrimitive?.content ?: error("Missing pattern compiler")
         val target = obj["target"]?.jsonPrimitive?.contentOrNull
+        val frontend = obj["frontend"]?.jsonPrimitive?.contentOrNull
         val description = obj["description"]?.jsonPrimitive?.contentOrNull
         val severity = obj["severity"]?.jsonPrimitive?.contentOrNull
 
@@ -55,6 +56,7 @@ object PatternParser {
             id = id,
             compiler = compiler,
             target = target,
+            frontend = frontend,
             description = description,
             severity = severity,
             nodes = nodes,

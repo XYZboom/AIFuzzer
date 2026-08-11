@@ -245,7 +245,18 @@ object ConfigLoader {
                 config.pipeline.dedup.enabled = dedupMap["enabled"] as? Boolean ?: config.pipeline.dedup.enabled
                 config.pipeline.dedup.patternDir = dedupMap["pattern_dir"] as? String ?: config.pipeline.dedup.patternDir
                 config.pipeline.dedup.compiler = dedupMap["compiler"] as? String ?: config.pipeline.dedup.compiler
-                config.pipeline.dedup.target = dedupMap["target"] as? String ?: config.pipeline.dedup.target
+                // 如果 dedup 中没有显式设置 target，则从 backends.tvm.target 继承
+                if (dedupMap.containsKey("target")) {
+                    config.pipeline.dedup.target = dedupMap["target"] as? String ?: config.pipeline.dedup.target
+                } else {
+                    config.pipeline.dedup.target = config.backends.tvm.target
+                }
+                // 如果 dedup 中没有显式设置 frontend，则从 backends.tvm.frontend 继承
+                if (dedupMap.containsKey("frontend")) {
+                    config.pipeline.dedup.frontend = dedupMap["frontend"] as? String ?: config.pipeline.dedup.frontend
+                } else {
+                    config.pipeline.dedup.frontend = config.backends.tvm.frontend
+                }
                 // 解析 pattern_mode: "builtin" / "custom" / "both"，不区分大小写
                 val modeStr = (dedupMap["pattern_mode"] as? String)?.lowercase()
                 if (modeStr != null) {

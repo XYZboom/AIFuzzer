@@ -100,6 +100,7 @@ data class DedupConfig(
     val patternDatabase: io.github.xyzboom.aiFuzzer.pattern.PatternDatabase? = null,
     val compiler: String = "tvm",
     val target: String? = "llvm",
+    val frontend: String? = null,
     val maxRetries: Int = 10,
     /** 值域分析开关：启用后 pattern 可匹配值的范围（如含有零、负数等） */
     val valueRangeAnalysis: Boolean = false,
@@ -134,6 +135,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 config.dedup.patternDatabase!!,
                 config.dedup.compiler,
                 config.dedup.target,
+                config.dedup.frontend,
             )
         } else null
 

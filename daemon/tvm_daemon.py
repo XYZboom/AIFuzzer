@@ -248,13 +248,7 @@ def main():
     signal.signal(signal.SIGINT, sig_handler)
 
     try:
-        while True:
-            try:
-                server.handle_request()
-            except TimeoutError:
-                pass  # socket 超时，继续循环
-            except OSError:
-                break
+        server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

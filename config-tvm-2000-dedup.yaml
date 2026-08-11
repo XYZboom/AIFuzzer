@@ -1,0 +1,38 @@
+run:
+  description: "2000轮全量 - TVM relax前端 + TVM后端, CPU(llvm), 无变异无缩减, 开dedup"
+  seed: "42"
+  output_dir: "./reports/tvm-2000-dedup"
+  log_level: "info"
+
+generator:
+  min_nodes_per_graph: 3
+  max_nodes_per_graph: 8
+  min_inputs: 1
+  max_inputs: 3
+  min_input_ndim: 2
+  max_input_ndim: 4
+  graph_count: 3
+  shape_tier: "tiny"
+  avoid_nan_inf: true
+  avoid_extreme_ops: true
+  mutation:
+    enabled: false
+
+backends:
+  enabled: ["tvm"]
+  tvm:
+    mode: "daemon"
+    timeout_seconds: 60
+    target: "llvm"
+    device: "cpu"
+
+pipeline:
+  workers: 1
+  batch_size: 2000
+  report_interval: 10
+  run_timeout_seconds: 120
+  fail_fast: false
+  reducer:
+    enabled: false
+  dedup:
+    enabled: true

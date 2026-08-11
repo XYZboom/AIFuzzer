@@ -5,6 +5,7 @@
       "id": "tvm-frontend-min-dim",
       "compiler": "tvm",
       "target": "cuda",
+      "frontend": "pytorch",
       "description": "TVM from_exported_program does not support min.dim — REDUCE_MIN triggers torch.min(dim=...) which is unsupported",
       "severity": "crash",
       "nodes": [
@@ -37,6 +38,7 @@
       "id": "tvm-frontend-max-dim",
       "compiler": "tvm",
       "target": "cuda",
+      "frontend": "pytorch",
       "description": "TVM from_exported_program does not support max.dim — REDUCE_MAX triggers torch.max(dim=...) which is unsupported",
       "severity": "crash",
       "nodes": [

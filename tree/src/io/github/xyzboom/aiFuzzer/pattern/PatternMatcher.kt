@@ -22,9 +22,10 @@ class PatternMatcher(
     private val database: PatternDatabase,
     compiler: String? = null,
     target: String? = null,
+    frontend: String? = null,
 ) {
     private val activePatterns = mutableMapOf<PatternDef, ActivePattern>()
-    private val patterns: List<PatternDef> = database.filter(compiler, target)
+    private val patterns: List<PatternDef> = database.filter(compiler, target, frontend)
     private val singleOpPatterns: Map<String, List<PatternDef>> =
         patterns.filter { it.nodes.size == 1 }.groupBy { it.nodes[0].op }
     private val multiOpPatterns: List<PatternDef> =

@@ -20,7 +20,7 @@ generator:
     include_all: true
 
   mutation:
-    enabled: true
+    enabled: false  # 🐛 BUG: mutator shape传播不一致，待修复后启用
     rate: 0.4
     max_mutations: 5
     max_seeds: 100

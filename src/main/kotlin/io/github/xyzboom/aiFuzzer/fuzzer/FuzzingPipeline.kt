@@ -53,6 +53,7 @@ class FuzzingPipeline(
             val enabled: Boolean = false,
             val compiler: String = "tvm",
             val target: String = "llvm",
+            val frontend: String? = null,
             val patternDir: String = "",
             val patternMode: PipelineConfig.PatternMode = PipelineConfig.PatternMode.BUILTIN,
             val valueRangeAnalysis: Boolean = false,
@@ -72,7 +73,7 @@ class FuzzingPipeline(
             UirMutator(
                 config = mutationConfig,
                 patternMatcher = if (config.dedup.enabled) patternDatabase?.let { db ->
-                    io.github.xyzboom.aiFuzzer.pattern.PatternMatcher(db, config.dedup.compiler, dedupTarget)
+                    io.github.xyzboom.aiFuzzer.pattern.PatternMatcher(db, config.dedup.compiler, dedupTarget, config.dedup.frontend)
                 } else null,
             )
         } else {
@@ -227,6 +228,7 @@ class FuzzingPipeline(
                     patternDatabase = patternDatabase,
                     compiler = config.dedup.compiler,
                     target = dedupTarget,
+                    frontend = config.dedup.frontend,
                     maxRetries = 10,
                     valueRangeAnalysis = config.dedup.valueRangeAnalysis,
                 )
@@ -234,6 +236,12 @@ class FuzzingPipeline(
         }
         val generator = UirGenerator(genConfig)
         val originalProgram = generator.generate()
+
+        // 标记程序是否经过 dedup 触发（pattern 匹配导致重试）。
+        // 使用独立 key "dedup"，避免与变异器的 "source" 标签互相覆盖。
+        if (config.dedup.enabled && generator.dedupPreventedCount > 0) {
+            originalProgram.metadata["dedup"] = "true"
+        }
 
         // 收集 pattern 匹配统计
         generator.patternMatcher?.let { pm ->
@@ -609,6 +617,7 @@ class FuzzingPipeline(
                                 patternDatabase = generatorConfig.dedup.patternDatabase,
                                 compiler = config.dedup.compiler,
                                 target = dedupTarget,
+                                frontend = config.dedup.frontend,
                                 maxRetries = 10,
                                 valueRangeAnalysis = config.dedup.valueRangeAnalysis,
                             )
@@ -616,6 +625,10 @@ class FuzzingPipeline(
                     } else generatorConfig.copy(seed = seed)
                     val generatorDedup = io.github.xyzboom.aiFuzzer.generator.UirGenerator(genConfigDedup)
                     val genDedup = generatorDedup.generate()
+
+                    // 标记 dedup 程序：独立 key "dedup"，避免与变异器 "source" 标签冲突
+                    genDedup.metadata["dedup"] = "true"
+                    genNoDedup.metadata["dedup"] = "false"
 
                     // 3. 检查 dedup 是否阻止了生成（pattern 匹配导致重试）
                     val dedupTriggered = generatorDedup.dedupPreventedCount > 0
