@@ -1,5 +1,6 @@
 package io.github.xyzboom.aiFuzzer.generator
 
+import io.github.xyzboom.aiFuzzer.generator.adapter.ShapeAdapter
 import io.github.xyzboom.aiFuzzer.ir.UirDimKind
 import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import io.github.xyzboom.aiFuzzer.ir.UirTypeKind
