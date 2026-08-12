@@ -8,7 +8,6 @@ import io.github.xyzboom.aiFuzzer.ir.builder.*
 import io.github.xyzboom.aiFuzzer.ir.types.*
 import io.github.xyzboom.aiFuzzer.ir.types.builder.*
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
-import io.github.xyzboom.aiFuzzer.generator.adapter.ShapeAdapter
 import kotlin.random.Random
 
 private val log = KotlinLogging.logger {}
@@ -472,7 +471,7 @@ class UirMutator(
                 // 不满足：调用 ShapeAdapter 修复
                 val result = ShapeAdapter.adaptInputs(
                     node.op, node.inputs, valueShapes,
-                    valueCounter, nodeCounter, node.attributes, rng
+                    valueCounter, nodeCounter, node.attributes
                 )
 
                 // 更新节点输入
@@ -642,7 +641,7 @@ class UirMutator(
                 try {
                     val result = ShapeAdapter.adaptInputs(
                         node.op, node.inputs, valueShapes,
-                        valueCounter, nodeCounter, node.attributes, rng
+                        valueCounter, nodeCounter, node.attributes
                     )
                     node.inputs.clear()
                     node.inputs.addAll(result.adaptedRefs)
