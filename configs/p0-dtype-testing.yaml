@@ -52,5 +52,4 @@ pipeline:
 
 bug_collector:
   enabled: true
-  ignore_patterns: []
   output_dir: "./reports/p0"

@@ -58,12 +58,6 @@ backends:
 
 bug_collector:
   enabled: true
-  ignore_patterns:
-    - "SyntaxError"
-    - "IndentationError"
-    - "ImportError"
-    - "ModuleNotFoundError"
-    - "AttributeError"
   output_dir: "./reports"
 
 pipeline:

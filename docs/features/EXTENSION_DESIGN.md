@@ -94,13 +94,6 @@ oracle:
 # Bug 收集
 bug_collector:
   enabled: true
-  ignore_patterns:
-    - "SyntaxError"
-    - "IndentationError"
-    - "ImportError"
-    - "ModuleNotFoundError"
-    - "AttributeError"
-    - "OpNotImplemented"
   output_dir: "./reports"
 
 # Fuzzing 流水线
@@ -250,10 +243,6 @@ data class OracleConfig(
 
 data class BugCollectorConfig(
     val enabled: Boolean = true,
-    val ignorePatterns: List<String> = listOf(
-        "SyntaxError", "IndentationError", "ImportError",
-        "ModuleNotFoundError", "AttributeError", "OpNotImplemented",
-    ),
     val outputDir: String = "./reports",
 )
 

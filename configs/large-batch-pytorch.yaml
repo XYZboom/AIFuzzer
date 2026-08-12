@@ -35,7 +35,6 @@ backends:
 
 bug_collector:
   enabled: true
-  ignore_patterns: []
   output_dir: "./reports"
 
 pipeline:

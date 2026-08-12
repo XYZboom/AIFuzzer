@@ -225,7 +225,6 @@ object ConfigLoader {
         // 解析 bug_collector 部分
         (rawMap["bug_collector"] as? Map<String, Any>)?.let { bcMap ->
             config.bugCollector.enabled = bcMap["enabled"] as? Boolean ?: config.bugCollector.enabled
-            config.bugCollector.ignorePatterns = (bcMap["ignore_patterns"] as? List<*>)?.filterIsInstance<String>() ?: config.bugCollector.ignorePatterns
             config.bugCollector.outputDir = bcMap["output_dir"] as? String ?: config.bugCollector.outputDir
         }
 

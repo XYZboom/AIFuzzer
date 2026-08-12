@@ -289,10 +289,6 @@ data class RemoteSshConfig(
 
 data class BugCollectorConfig(
     var enabled: Boolean = true,
-    var ignorePatterns: List<String> = listOf(
-        "SyntaxError", "IndentationError", "ImportError",
-        "ModuleNotFoundError", "AttributeError", "OpNotImplemented",
-    ),
     var outputDir: String = "./reports",
 )
 
