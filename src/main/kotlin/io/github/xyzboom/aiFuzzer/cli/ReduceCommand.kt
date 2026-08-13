@@ -194,6 +194,15 @@ class ReduceCommand : CliktCommand(
                     val keyFragment = origMsg.take(80)
                     return currentStderr.contains("AttributeError") && currentStderr.contains(keyFragment)
                 }
+                // For AssertionError (both bare and with message), match the assert expression content
+                if (originalErrorType == "AssertionError" || originalErrorType.startsWith("AssertionError:")) {
+                    val assertLine = originalStderr.lines().map { it.trim() }.lastOrNull { it.startsWith("assert ") }
+                    if (assertLine != null) {
+                        return currentStderr.contains(assertLine)
+                    }
+                    // Fallback: no assert statement found, match by type name only
+                    return currentStderr.contains(originalErrorType)
+                }
                 // For other errors, exact line match
                 if (currentStderr.contains(originalErrorType)) return true
             }

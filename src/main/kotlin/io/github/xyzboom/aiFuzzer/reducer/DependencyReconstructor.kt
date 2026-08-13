@@ -51,10 +51,19 @@ class DependencyReconstructor(
                             }
                         }
                     }
+                    // wire-aroundable 算子：同图消费者已通过 WIRE_AROUND 重定向，
+                    // 无需 DEFAULT_VALUE 节点；仅跨图引用仍需 FULL 节点替代
+                    if (hasCrossRef) {
+                        repairs.add(RepairAction(
+                            type = RepairType.DEFAULT_VALUE,
+                            oldValueId = outputRef.valueId,
+                            oldType = outputRef.type,
+                            survivingConsumers = survivingConsumers,
+                        ))
+                    }
                 }
-                // 只要有跨图引用或同图消费者，就创建 ZEROS 替代
-                // wire-around 只修复同图消费者，跨图引用需要 ZEROS 节点
-                if (hasCrossRef || survivingConsumers.isNotEmpty()) {
+                // 非 wire-aroundable 算子：有消费者（或跨图引用）时创建 FULL 节点替代
+                else if (hasCrossRef || survivingConsumers.isNotEmpty()) {
                     repairs.add(RepairAction(
                         type = RepairType.DEFAULT_VALUE,
                         oldValueId = outputRef.valueId,

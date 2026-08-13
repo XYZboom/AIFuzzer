@@ -56,6 +56,8 @@ class IrDdminReducer(
             val repairPlan = reconstructor.prepare(removedNodes)
             graph.nodes.removeAll(removedNodes)
             reconstructor.apply(repairPlan)
+            // 依赖重建后可能存在死代码（如 wire-around 残留的节点），清理之
+            DeadCodeEliminator.eliminateToFixpoint(graph)
 
             // 更新跨图 inputs
             for (repair in repairPlan.repairs) {
@@ -114,6 +116,8 @@ class IrDdminReducer(
             val repairPlan = reconstructor.prepare(copyRemovedNodes)
             copyGraph.nodes.removeAll(copyRemovedNodes)
             reconstructor.apply(repairPlan)
+            // 测试副本中也清理死代码，保持与实际缩减逻辑一致
+            DeadCodeEliminator.eliminateToFixpoint(copyGraph)
 
             // 跨图引用修复
             for (repair in repairPlan.repairs) {
