@@ -64,12 +64,36 @@ class DependencyReconstructor(
                 }
                 // 非 wire-aroundable 算子：有消费者（或跨图引用）时创建 FULL 节点替代
                 else if (hasCrossRef || survivingConsumers.isNotEmpty()) {
-                    repairs.add(RepairAction(
-                        type = RepairType.DEFAULT_VALUE,
-                        oldValueId = outputRef.valueId,
-                        oldType = outputRef.type,
-                        survivingConsumers = survivingConsumers,
-                    ))
+                    // shape 变换算子且输入直接来自 graph input → 吸收 shape 到图边界
+                    if (!hasCrossRef && removedNode.op in SHAPE_TRANSFORM_OPS
+                        && removedNode.inputs.isNotEmpty()
+                        && removedNode.inputs[0].valueId in graph.inputs.map { it.valueId }
+                    ) {
+                        repairs.add(RepairAction(
+                            type = RepairType.SHAPE_ABSORB,
+                            oldValueId = outputRef.valueId,
+                            oldType = outputRef.type,
+                            survivingConsumers = survivingConsumers,
+                            targetInputValueId = removedNode.inputs[0].valueId,
+                        ))
+                    }
+                    // 常量算子（FULL/ZEROS/ONES/ARANGE）且无跨图引用 → 提升为 graph input
+                    else if (!hasCrossRef && removedNode.op in CONSTANT_OPS) {
+                        repairs.add(RepairAction(
+                            type = RepairType.CONSTANT_TO_INPUT,
+                            oldValueId = outputRef.valueId,
+                            oldType = outputRef.type,
+                            survivingConsumers = survivingConsumers,
+                            newInputValueId = "${outputRef.valueId}_as_input",
+                        ))
+                    } else {
+                        repairs.add(RepairAction(
+                            type = RepairType.DEFAULT_VALUE,
+                            oldValueId = outputRef.valueId,
+                            oldType = outputRef.type,
+                            survivingConsumers = survivingConsumers,
+                        ))
+                    }
                 }
             }
         }
@@ -97,6 +121,45 @@ class DependencyReconstructor(
                             if (input.valueId == repair.oldValueId) {
                                 input.valueId = zerosOutput.valueId
                                 input.type = zerosOutput.type
+                            }
+                        }
+                    }
+                }
+                RepairType.SHAPE_ABSORB -> {
+                    val targetId = repair.targetInputValueId
+                    if (targetId != null && repair.oldType != null) {
+                        // 1. 修改 graph input 的 shape 为 shape 变换后的形状
+                        for (graphInput in graph.inputs) {
+                            if (graphInput.valueId == targetId) {
+                                graphInput.type = repair.oldType
+                            }
+                        }
+                        // 2. 重连消费者：指向 graph input（现在 shape 已匹配）
+                        for (consumer in repair.survivingConsumers ?: emptyList()) {
+                            for (consumerInput in consumer.inputs) {
+                                if (consumerInput.valueId == repair.oldValueId) {
+                                    consumerInput.valueId = targetId
+                                    consumerInput.type = repair.oldType
+                                }
+                            }
+                        }
+                    }
+                }
+                RepairType.CONSTANT_TO_INPUT -> {
+                    val newInputId = repair.newInputValueId
+                    if (newInputId != null && repair.oldType != null) {
+                        // 1. 新增 graph input（形状与被删常量一致）
+                        graph.inputs.add(buildValueRef {
+                            valueId = newInputId
+                            type = repair.oldType
+                        })
+                        // 2. 重连消费者：指向新 graph input
+                        for (consumer in repair.survivingConsumers ?: emptyList()) {
+                            for (consumerInput in consumer.inputs) {
+                                if (consumerInput.valueId == repair.oldValueId) {
+                                    consumerInput.valueId = newInputId
+                                    consumerInput.type = repair.oldType
+                                }
                             }
                         }
                     }
@@ -156,6 +219,11 @@ class DependencyReconstructor(
             UirOpKind.CEIL, UirOpKind.FLOOR, UirOpKind.ROUND, UirOpKind.CLAMP,
         )
 
+        val SHAPE_TRANSFORM_OPS = setOf(
+            UirOpKind.EXPAND_DIMS,
+            UirOpKind.SQUEEZE,
+        )
+
         val CONSTANT_OPS = setOf(
             UirOpKind.ONES, UirOpKind.ZEROS, UirOpKind.FULL, UirOpKind.ARANGE,
         )
@@ -178,9 +246,15 @@ data class RepairAction(
     val newType: UirTensorType? = null,
     val oldType: UirTensorType? = null,
     val survivingConsumers: List<UirNode>? = null,
+    /** SHAPE_ABSORB 专用：需要改 shape 的 graph input 的 valueId */
+    val targetInputValueId: String? = null,
+    /** CONSTANT_TO_INPUT 专用：新增 graph input 的 valueId */
+    val newInputValueId: String? = null,
 )
 
 enum class RepairType {
     WIRE_AROUND,
     DEFAULT_VALUE,
+    SHAPE_ABSORB,
+    CONSTANT_TO_INPUT,
 }

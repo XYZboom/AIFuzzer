@@ -147,12 +147,12 @@ class ReducerTest {
         val newNodes = reconstructor.apply(plan)
         graph.nodes.removeAll { it.name == "zeros_src" }
 
-        assertTrue(newNodes.any { it.op == UirOpKind.FULL && it.name.startsWith("default_") })
-        val defaultValue = newNodes.first { it.op == UirOpKind.FULL }.attributes["fill_value"]
-        assertEquals("0.5", (defaultValue as? UirStringAttr)?.value)
+        // ZEROS 是常量算子 → CONSTANT_TO_INPUT：提升为 graph input，而非创建 FULL 节点
+        assertTrue(newNodes.isEmpty())
         val addNode = graph.nodes.find { it.name == "add" }
         assertNotNull(addNode)
-        assertTrue(addNode!!.inputs[0].valueId.endsWith("_default"))
+        assertTrue(graph.inputs.any { it.valueId == "v_1_as_input" })
+        assertTrue(addNode!!.inputs[0].valueId == "v_1_as_input")
     }
 
     // =====================================================
