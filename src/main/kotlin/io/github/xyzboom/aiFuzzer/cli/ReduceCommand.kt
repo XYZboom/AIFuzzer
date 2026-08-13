@@ -62,13 +62,15 @@ class ReduceCommand : CliktCommand(
         val reducer = AutoReducer()
         for (irFile in irFiles) {
             echo("Processing: ${irFile.name}")
+            var daemonToClose: DaemonClient? = null
             try {
                 val jsonl = irFile.readText()
                 val originalProgram = UirSerializer.fromJsonl(jsonl)
                 val originalNodeCount = originalProgram.graphs.sumOf { it.nodes.size }
                 echo("  Original nodes: $originalNodeCount")
 
-                val (translator, daemon) = createDaemonForBackend(backendChoice, pythonPath, configFile)
+                val (translator, daemon) = createDaemonForBackend(backendChoice, pythonPath, configFile).also { daemonToClose = it.second }
+                // 首次执行原始程序，实际报什么错就以什么为 bug 签名
                 val originalSource = translator(originalProgram)
                 val originalResult = daemon.sendAndWait(originalSource)
                 val originalError = originalResult.stderr
@@ -105,12 +107,16 @@ class ReduceCommand : CliktCommand(
 
                     try {
                         val (minTranslator, minDaemon) = createDaemonForBackend(backendChoice, pythonPath, configFile)
-                        val minSource = minTranslator(result.minifiedProgram)
-                        File(outDir, "${baseName}_minimal_source.py").writeText(minSource)
-                        val runResult = minDaemon.sendAndWait(minSource)
-                        File(outDir, "${baseName}_minimal_stderr.log").writeText(
-                            "=== STDOUT ===\n${runResult.stdout}\n=== STDERR ===\n${runResult.stderr}"
-                        )
+                        try {
+                            val minSource = minTranslator(result.minifiedProgram)
+                            File(outDir, "${baseName}_minimal_source.py").writeText(minSource)
+                            val runResult = minDaemon.sendAndWait(minSource)
+                            File(outDir, "${baseName}_minimal_stderr.log").writeText(
+                                "=== STDOUT ===\n${runResult.stdout}\n=== STDERR ===\n${runResult.stderr}"
+                            )
+                        } finally {
+                            try { minDaemon.close() } catch (_: Exception) {}
+                        }
                     } catch (e: Exception) { log.warn { "保存缩减后源码失败: ${e.message}" } }
 
                     val summaryFile = File(outDir, "${baseName}_reduction_summary.txt")
@@ -135,6 +141,8 @@ class ReduceCommand : CliktCommand(
             } catch (e: Exception) {
                 echo("  ✗ Error: ${e.message}")
                 log.warn(e) { "缩减 ${irFile.name} 失败" }
+            } finally {
+                try { daemonToClose?.close() } catch (_: Exception) {}
             }
             echo()
         }
@@ -171,7 +179,7 @@ class ReduceCommand : CliktCommand(
             // 所有已知 Python 异常类型
             val knownErrorPrefixes = listOf(
                 "RuntimeError:", "tvm.error.", "AttributeError:", "TypeError:",
-                "torch._inductor.exc.InductorError:", "AssertionError:",
+                "torch._inductor.exc.InductorError:", "AssertionError",
                 "IndexError:", "KeyError:", "ValueError:", "ZeroDivisionError:",
                 "onnxruntime.capi.onnxruntime_pybind11_state.",
                 "tvm.s_tir.schedule.schedule.ScheduleError:", "ScheduleError:",

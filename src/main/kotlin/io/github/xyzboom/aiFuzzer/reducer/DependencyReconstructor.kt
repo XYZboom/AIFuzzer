@@ -94,7 +94,7 @@ class DependencyReconstructor(
                 }
             }
         }
-        graph.nodes.addAll(newNodes)
+        graph.nodes.addAll(0, newNodes)
         return newNodes
     }
 
@@ -117,7 +117,10 @@ class DependencyReconstructor(
         }
         return buildNode {
             name = "default_${originalValueId}"
-            op = UirOpKind.ZEROS
+            op = UirOpKind.FULL
+            attributes["fill_value"] = buildStringAttr {
+                value = "0.5"
+            }
             attributes["shape"] = buildStringAttr {
                 value = originalType.shape.dims.map { it.value?.toString() ?: "?" }.joinToString(",")
             }

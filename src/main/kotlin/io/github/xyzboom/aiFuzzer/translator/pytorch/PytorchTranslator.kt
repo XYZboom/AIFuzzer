@@ -752,7 +752,8 @@ UirOpKind.TILE -> {
                 val outputShape = node.outputs[0].type.shape
                 val outputDtype = node.outputs[0].type.dtype.name
                 val shapeStr = shapeToPython(outputShape)
-                "$pytorchFunc(($shapeStr), 0.0, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=self.device)"
+                val fillVal = (node.attributes["fill_value"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.0
+                "$pytorchFunc(($shapeStr), $fillVal, dtype=${dtypeMapping[outputDtype] ?: "torch.float32"}, device=self.device)"
             }
             UirOpKind.ONES -> {
                 val outputShape = node.outputs[0].type.shape

@@ -844,7 +844,8 @@ class TvmRelaxTranslator(
                         else -> shapeRank.toString()  // 未知维度用默认值
                     }
                 }.joinToString(", ")
-                "relax.op.full(relax.ShapeExpr([$shapeStr]), relax.const(0, dtype=\"$dtype\"))"
+                val fillVal = (attributes["fill_value"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 0.0
+                "relax.op.full(relax.ShapeExpr([$shapeStr]), relax.const($fillVal, dtype=\"$dtype\"))"
             }
 
             UirOpKind.ONES -> {

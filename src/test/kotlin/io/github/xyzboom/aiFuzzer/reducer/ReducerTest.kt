@@ -122,7 +122,7 @@ class ReducerTest {
     }
 
     @Test
-    fun `DependencyReconstructor should create ZEROS for removed non-wire-aroundable node`() {
+    fun `DependencyReconstructor should create FULL half fill for removed non-wire-aroundable node`() {
         val graph = buildGraph {
             name = "test_graph"
             inputs.add(buildValueRef { valueId = "v_0"; type = tensorType(16) })
@@ -147,7 +147,9 @@ class ReducerTest {
         val newNodes = reconstructor.apply(plan)
         graph.nodes.removeAll { it.name == "zeros_src" }
 
-        assertTrue(newNodes.any { it.op == UirOpKind.ZEROS && it.name.startsWith("default_") })
+        assertTrue(newNodes.any { it.op == UirOpKind.FULL && it.name.startsWith("default_") })
+        val defaultValue = newNodes.first { it.op == UirOpKind.FULL }.attributes["fill_value"]
+        assertEquals("0.5", (defaultValue as? UirStringAttr)?.value)
         val addNode = graph.nodes.find { it.name == "add" }
         assertNotNull(addNode)
         assertTrue(addNode!!.inputs[0].valueId.endsWith("_default"))
