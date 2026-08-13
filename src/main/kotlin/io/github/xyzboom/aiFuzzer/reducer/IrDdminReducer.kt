@@ -59,6 +59,12 @@ class IrDdminReducer(
             // 依赖重建后可能存在死代码（如 wire-around 残留的节点），清理之
             DeadCodeEliminator.eliminateToFixpoint(graph)
 
+            // 提升 graph outputs：删除产出 graph output 的节点后，其输出值
+            // 必须由替代来源（wire-around 源 / FULL 替代 / 上游输入）重新声明为 output，
+            // 否则图变成无输出，依赖 bug 的调度 pass 不再触发，导致缩减被错误回滚
+            val outputValueIdsBefore = outputsBackup.map { it.valueId }.toSet()
+            repairGraphOutputs(graph, removedNodes, repairPlan, outputValueIdsBefore)
+
             // 更新跨图 inputs
             for (repair in repairPlan.repairs) {
                 val newValueId = when (repair.type) {
@@ -118,6 +124,10 @@ class IrDdminReducer(
             reconstructor.apply(repairPlan)
             // 测试副本中也清理死代码，保持与实际缩减逻辑一致
             DeadCodeEliminator.eliminateToFixpoint(copyGraph)
+
+            // 提升 graph outputs（与实际缩减路径保持一致）
+            val outputValueIdsBefore = copyGraph.outputs.map { it.valueId }.toSet()
+            repairGraphOutputs(copyGraph, copyRemovedNodes, repairPlan, outputValueIdsBefore)
 
             // 跨图引用修复
             for (repair in repairPlan.repairs) {
@@ -179,5 +189,50 @@ class IrDdminReducer(
         graph.inputs.removeAll { it.valueId !in usedValueIds }
         val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
         graph.outputs.removeAll { it.valueId !in producedByNodes }
+    }
+
+    /**
+     * 修复图输出：删除产出 graph output 的节点后，将其替代值提升为新的 graph output。
+     * 否则图变成无输出，依赖 bug 的调度 pass 不再触发，导致缩减被错误回滚。
+     *
+     * 替代值来源优先级：
+     *   1. WIRE_AROUND 修复 → 输入源（newValueId）
+     *   2. DEFAULT_VALUE 修复 → FULL 节点输出（${oldValueId}_default）
+     *   3. 无修复（graph output 无消费者）→ 被删节点的第一个输入
+     */
+    private fun repairGraphOutputs(
+        graph: UirGraph,
+        removedNodes: Set<UirNode>,
+        repairPlan: DependencyRepairPlan,
+        outputValueIdsBefore: Set<String>,
+    ) {
+        val repairByOldValue = repairPlan.repairs.groupBy { it.oldValueId }
+        for (removedNode in removedNodes) {
+            for (out in removedNode.outputs) {
+                if (out.valueId !in outputValueIdsBefore) continue
+                val repairs = repairByOldValue[out.valueId].orEmpty()
+                val replacement: Pair<String, io.github.xyzboom.aiFuzzer.ir.types.UirTensorType>? = when {
+                    repairs.any { it.type == RepairType.WIRE_AROUND } -> {
+                        val r = repairs.first { it.type == RepairType.WIRE_AROUND }
+                        val newId = r.newValueId
+                        if (newId == null) null else (newId to (r.newType ?: out.type))
+                    }
+                    repairs.any { it.type == RepairType.DEFAULT_VALUE } -> {
+                        val r = repairs.first { it.type == RepairType.DEFAULT_VALUE }
+                        "${r.oldValueId}_default" to (r.oldType ?: out.type)
+                    }
+                    removedNode.inputs.isNotEmpty() -> {
+                        removedNode.inputs[0].valueId to removedNode.inputs[0].type
+                    }
+                    else -> null
+                }
+                if (replacement != null) {
+                    val (newId, newType) = replacement
+                    if (graph.outputs.none { it.valueId == newId }) {
+                        graph.outputs.add(buildValueRef { valueId = newId; type = newType })
+                    }
+                }
+            }
+        }
     }
 }
