@@ -5,6 +5,7 @@ import io.github.xyzboom.aiFuzzer.ir.UirGraph
 import io.github.xyzboom.aiFuzzer.ir.UirNode
 import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import io.github.xyzboom.aiFuzzer.ir.UirTypeKind
+import io.github.xyzboom.aiFuzzer.ir.UirValueRef
 import io.github.xyzboom.aiFuzzer.ir.builder.buildNode
 import io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef
 import io.github.xyzboom.aiFuzzer.ir.types.UirTensorType
@@ -37,7 +38,11 @@ class DependencyReconstructor(
                 if (survivingConsumers.isEmpty() && !hasCrossRef) continue
 
                 if (removedNode.inputs.isNotEmpty() && isWireAroundable(removedNode.op)) {
-                    val sourceRef = removedNode.inputs[0]
+                    // 找输入链上第一个"不在被删集合中"的幸存值（producer 输出或 graph input）。
+                    // 否则若 sourceRef 的 producer 也在 nodesToRemove（链式删除），
+                    // WIRE_AROUND 指向的替代值本身断链 → validateGraph 失败。
+                    val sourceRef = findSurvivingWireSource(removedNode, nodesToRemove)
+                        ?: removedNode.inputs[0]
                     for (consumer in survivingConsumers) {
                         for (input in consumer.inputs) {
                             if (input.valueId == outputRef.valueId) {
@@ -219,6 +224,26 @@ class DependencyReconstructor(
                 type = outputType
             })
         }
+    }
+
+    /**
+     * 沿 wire-aroundable 被删节点的输入链向上，找第一个"不在被删集合中"的幸存值。
+     * 解决链式删除（如删 SILU+TRIU+TILE）时 WIRE_AROUND 指向的 producer 也在被删集合
+     * → 替代值本身断链 → validateGraph 失败的问题。
+     * 返回 null 时调用方用 input[0] 兜底（不影响现有行为）。
+     */
+    private fun findSurvivingWireSource(
+        node: UirNode,
+        nodesToRemove: Set<UirNode>,
+    ): UirValueRef? {
+        if (node.inputs.isEmpty()) return null
+        val inputRef = node.inputs[0]
+        // 找该 inputRef 的 producer
+        val producer = graph.nodes.find { it.outputs.any { o -> o.valueId == inputRef.valueId } }
+            ?: return inputRef  // 无 producer → graph input，直接返回
+        if (producer !in nodesToRemove) return inputRef  // producer 幸存 → 用 inputRef
+        // producer 也在被删集合 → 递归向上
+        return findSurvivingWireSource(producer, nodesToRemove)
     }
 
     companion object {
