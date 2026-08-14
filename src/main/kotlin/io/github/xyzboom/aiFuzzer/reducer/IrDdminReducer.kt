@@ -250,7 +250,8 @@ class IrDdminReducer(
      * 替代值来源优先级：
      *   1. WIRE_AROUND 修复 → 输入源（newValueId）
      *   2. DEFAULT_VALUE 修复 → FULL 节点输出（${oldValueId}_default）
-     *   3. 无修复（graph output 无消费者）→ 递归向上查找幸存 producer 或 graph input
+     *   3. CONSTANT_TO_INPUT 修复 → 新 graph input 的 valueId
+     *   4. 无修复（graph output 无消费者）→ 递归向上查找所有输入的幸存 producer 或 graph input
      */
     private fun repairGraphOutputs(
         graph: UirGraph,
@@ -259,7 +260,7 @@ class IrDdminReducer(
         outputValueIdsBefore: Set<String>,
     ) {
         val repairByOldValue = repairPlan.repairs.groupBy { it.oldValueId }
-        // producerMap 必须包含被删节点，findSurvivingSource 才能沿被删链向上递归
+        // producerMap 必须包含被删节点，findSurvivingSources 才能沿被删链向上递归
         val producerMap = (graph.nodes + removedNodes).flatMap { n ->
             n.outputs.map { o -> o.valueId to n }
         }.toMap()
@@ -267,25 +268,24 @@ class IrDdminReducer(
             for (out in removedNode.outputs) {
                 if (out.valueId !in outputValueIdsBefore) continue
                 val repairs = repairByOldValue[out.valueId].orEmpty()
-                val replacement: Pair<String, io.github.xyzboom.aiFuzzer.ir.types.UirTensorType>? = when {
+                val replacements: List<Pair<String, io.github.xyzboom.aiFuzzer.ir.types.UirTensorType>> = when {
                     repairs.any { it.type == RepairType.WIRE_AROUND } -> {
                         val r = repairs.first { it.type == RepairType.WIRE_AROUND }
                         val newId = r.newValueId
-                        if (newId == null) null else (newId to (r.newType ?: out.type))
+                        if (newId == null) emptyList() else listOf(newId to (r.newType ?: out.type))
                     }
                     repairs.any { it.type == RepairType.DEFAULT_VALUE } -> {
                         val r = repairs.first { it.type == RepairType.DEFAULT_VALUE }
-                        "${r.oldValueId}_default" to (r.oldType ?: out.type)
+                        listOf("${r.oldValueId}_default" to (r.oldType ?: out.type))
                     }
                     repairs.any { it.type == RepairType.CONSTANT_TO_INPUT } -> {
                         val r = repairs.first { it.type == RepairType.CONSTANT_TO_INPUT }
                         val newId = r.newInputValueId
-                        if (newId == null) null else (newId to (r.oldType ?: out.type))
+                        if (newId == null) emptyList() else listOf(newId to (r.oldType ?: out.type))
                     }
-                    else -> findSurvivingSource(graph, producerMap, removedNodes, removedNode)
+                    else -> findSurvivingSources(graph, producerMap, removedNodes, removedNode)
                 }
-                if (replacement != null) {
-                    val (newId, newType) = replacement
+                for ((newId, newType) in replacements) {
                     if (graph.outputs.none { it.valueId == newId }) {
                         graph.outputs.add(buildValueRef { valueId = newId; type = newType })
                     }
@@ -295,36 +295,40 @@ class IrDdminReducer(
     }
 
     /**
-     * 从被删节点沿输入链递归向上，找到第一个幸存 producer 的输出，或 graph input。
+     * 从被删节点沿所有输入链递归向上，找到所有幸存 producer 的输出或 graph input。
      * 用于被删节点链整体移除时（如 CONV2D→MAX_POOL2D→TANH→output 全删），
-     * 把最上游幸存值提升为 graph output。
+     * 把所有最上游幸存值提升为 graph output。
+     * 修复：之前只取 node.inputs[0] 漏掉了后续输入（如 mul 有 2 个输入），
+     * 导致依赖修复不完整，删 mul 后只提升了一个输入。
      */
-    private fun findSurvivingSource(
+    private fun findSurvivingSources(
         graph: UirGraph,
         producerMap: Map<String, UirNode>,
         removedNodes: Set<UirNode>,
         node: UirNode,
-    ): Pair<String, io.github.xyzboom.aiFuzzer.ir.types.UirTensorType>? {
-        if (node.inputs.isEmpty()) return null
-        val sourceRef = node.inputs[0]
-        val producer = producerMap[sourceRef.valueId]
-        return when {
-            producer == null -> {
-                // 无 producer → 是 graph input
-                if (sourceRef.valueId in graph.inputs.map { it.valueId }) {
-                    sourceRef.valueId to sourceRef.type
-                } else null
-            }
-            producer !in removedNodes -> {
-                // 幸存 producer → 用它的输出
-                producer.outputs.firstOrNull()?.let {
-                    it.valueId to it.type
+    ): List<Pair<String, io.github.xyzboom.aiFuzzer.ir.types.UirTensorType>> {
+        val results = mutableListOf<Pair<String, io.github.xyzboom.aiFuzzer.ir.types.UirTensorType>>()
+        for (inputRef in node.inputs) {
+            val producer = producerMap[inputRef.valueId]
+            when {
+                producer == null -> {
+                    // 无 producer → 是 graph input
+                    if (inputRef.valueId in graph.inputs.map { it.valueId }) {
+                        results.add(inputRef.valueId to inputRef.type)
+                    }
+                }
+                producer !in removedNodes -> {
+                    // 幸存 producer → 用它的输出
+                    producer.outputs.firstOrNull()?.let {
+                        results.add(it.valueId to it.type)
+                    }
+                }
+                else -> {
+                    // producer 也被删 → 递归向上
+                    results.addAll(findSurvivingSources(graph, producerMap, removedNodes, producer))
                 }
             }
-            else -> {
-                // producer 也被删 → 递归向上
-                findSurvivingSource(graph, producerMap, removedNodes, producer)
-            }
         }
+        return results
     }
 }
