@@ -90,12 +90,17 @@ class DependencyReconstructor(
                             newInputValueId = "${outputRef.valueId}_as_input",
                         ))
                     }
-                    // shape 变换算子无法 SHAPE_ABSORB（输入不贴 graph input）：不生成修复，
-                    // 删除后下游 shape 不匹配 → validateGraph/propertyCheck 失败 → DDMin 回滚。
-                    // 不能用 DEFAULT_VALUE（FULL 常量）替代——UNSQUEEZE 等是升维语义，
-                    // FULL 常量替代后 shape 对不上（2D 常量进 conv2d 会 IndexError）。
+                    // shape 变换算子无法 SHAPE_ABSORB（输入不贴 graph input）：用 DEFAULT_VALUE 修复。
+                    // 之前刻意不生成修复（删除后 validateGraph 失败使 DDMin 放弃该子集），
+                    // 但混合候选 DDMin 需要所有分支都能生成修复，否则 partition 链式断链。
+                    // DEFAULT_VALUE 创建 FULL 常量，shape 从被删节点输出 type 复制，shape 合法。
                     else if (removedNode.op in SHAPE_TRANSFORM_OPS) {
-                        // 不添加修复；删除后该输出无来源，validateGraph 失败使 DDMin 放弃该子集
+                        repairs.add(RepairAction(
+                            type = RepairType.DEFAULT_VALUE,
+                            oldValueId = outputRef.valueId,
+                            oldType = outputRef.type,
+                            survivingConsumers = survivingConsumers,
+                        ))
                     }
                     else {
                         repairs.add(RepairAction(
