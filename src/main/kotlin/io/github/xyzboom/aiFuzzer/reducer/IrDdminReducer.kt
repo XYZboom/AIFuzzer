@@ -22,7 +22,14 @@ class IrDdminReducer(
         graph: UirGraph,
         steps: MutableList<ReductionStep>,
     ): Boolean {
-        cleanupInputsOutputs(graph)
+        // 跨图引用：其他图 outputs 的 valueId。cleanup 时必须保留这些 inputs，
+        // 否则多图链式程序（graph_1 的输入来自 graph_0 输出）在删除内部消费节点后，
+        // 跨图输入被误删 → 图接口改变 → 依赖 bug 的调度不触发 → 缩减被错误回滚。
+        val crossGraphRefs = program.graphs
+            .filter { it !== graph }
+            .flatMap { it.outputs.map { o -> o.valueId } }
+            .toSet()
+        cleanupInputsOutputs(graph, crossGraphRefs)
         val allNodes = graph.nodes.toList()
         if (allNodes.size <= 1) {
             return propertyChecker.check(program)
@@ -52,7 +59,7 @@ class IrDdminReducer(
             val inputsBackup = graph.inputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toMutableList()
             val outputsBackup = graph.outputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toMutableList()
 
-            val reconstructor = DependencyReconstructor(graph)
+            val reconstructor = DependencyReconstructor(graph, crossGraphRefs)
             val repairPlan = reconstructor.prepare(removedNodes)
             graph.nodes.removeAll(removedNodes)
             reconstructor.apply(repairPlan)
@@ -78,16 +85,30 @@ class IrDdminReducer(
                         if (otherGraph === graph) continue
                         for (input in otherGraph.inputs) {
                             if (input.valueId == repair.oldValueId) {
-                                input.valueId = newValueId
+                                // 若 newValueId 已存在于该图 inputs（例如新值与另一个跨图输入同名），
+                                // 删除旧条目避免 forward 参数重复；否则直接改 valueId
+                                if (otherGraph.inputs.any { it.valueId == newValueId }) {
+                                    otherGraph.inputs.remove(input)
+                                } else {
+                                    input.valueId = newValueId
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // 清理 outputs（只保留节点产出的值，以及 graph input 也能是输出）
+            // 清理 outputs（保留节点产出、graph input 直通、以及跨图引用的值）
+            val crossRefs = program.graphs
+                .filter { it !== graph }
+                .flatMap { it.inputs.map { i -> i.valueId } }
+                .toSet()
             val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
-            graph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in graph.inputs.map { i -> i.valueId }.toSet() }
+            graph.outputs.removeAll {
+                it.valueId !in producedByNodes
+                    && it.valueId !in graph.inputs.map { i -> i.valueId }.toSet()
+                    && it.valueId !in crossRefs
+            }
 
             if (validateGraph(graph) && propertyChecker.check(program)) {
                 val removedCount = allNodes.size - bestSubset!!.size
@@ -120,7 +141,12 @@ class IrDdminReducer(
             }.toSet()
             if (copyRemovedNodes.isEmpty()) return false
 
-            val reconstructor = DependencyReconstructor(copyGraph)
+            // 跨图引用：其他图 outputs 的 valueId（传给 reconstructor，防止对跨图 input 做 SHAPE_ABSORB）
+            val copyCrossGraphRefs = copy.graphs
+                .filter { it !== copyGraph }
+                .flatMap { it.outputs.map { o -> o.valueId } }
+                .toSet()
+            val reconstructor = DependencyReconstructor(copyGraph, copyCrossGraphRefs)
             val repairPlan = reconstructor.prepare(copyRemovedNodes)
             copyGraph.nodes.removeAll(copyRemovedNodes)
             reconstructor.apply(repairPlan)
@@ -144,16 +170,26 @@ class IrDdminReducer(
                         if (otherGraph === copyGraph) continue
                         for (input in otherGraph.inputs) {
                             if (input.valueId == repair.oldValueId) {
-                                input.valueId = newValueId
+                                // 若 newValueId 已存在，删除旧条目避免重复参数
+                                if (otherGraph.inputs.any { it.valueId == newValueId }) {
+                                    otherGraph.inputs.remove(input)
+                                } else {
+                                    input.valueId = newValueId
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // 清理 outputs
-            val producedByNodes = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
-            copyGraph.outputs.removeAll { it.valueId !in producedByNodes }
+            // 清理 outputs（保留跨图引用的 output：被其他图 inputs 引用）
+            val crossRefs = copy.graphs
+                .filter { it !== copyGraph }
+                .flatMap { it.inputs.map { i -> i.valueId } }
+                .toSet()
+            val producedByNodes = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
+                copyGraph.inputs.map { it.valueId }.toSet()
+            copyGraph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
 
             if (!validateGraph(copyGraph)) return false
             propertyChecker.check(copy)
@@ -188,9 +224,10 @@ class IrDdminReducer(
         }
     }
 
-    private fun cleanupInputsOutputs(graph: UirGraph) {
+    private fun cleanupInputsOutputs(graph: UirGraph, crossGraphRefs: Set<String> = emptySet()) {
         val usedValueIds = graph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
-        graph.inputs.removeAll { it.valueId !in usedValueIds }
+        // 保留：被节点消费的 input，以及被其他图 outputs 引用的跨图 input（多图链式接口）
+        graph.inputs.removeAll { it.valueId !in usedValueIds && it.valueId !in crossGraphRefs }
         val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
         graph.outputs.removeAll { it.valueId !in producedByNodes }
     }

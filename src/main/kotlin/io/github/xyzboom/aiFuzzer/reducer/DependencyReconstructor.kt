@@ -65,10 +65,13 @@ class DependencyReconstructor(
                 // 非 wire-aroundable 算子：有消费者（或跨图引用）时创建 FULL 节点替代
                 else if (hasCrossRef || survivingConsumers.isNotEmpty()) {
                     // shape 变换算子且输入直接来自 graph input → 吸收 shape 到图边界
-                    if (!hasCrossRef && removedNode.op in SHAPE_TRANSFORM_OPS
-                        && removedNode.inputs.isNotEmpty()
+                    // 注意：输入必须是本图真正的 fresh input（不在跨图引用中）。
+                    // 若输入是跨图 input（来自其他图输出），改 shape 声明只改了本图视角，
+                    // 上游实际产出的 shape 未变 → 运行时 shape 不匹配（IndexError/size mismatch）。
+                    val inputIsFresh = removedNode.inputs.isNotEmpty()
                         && removedNode.inputs[0].valueId in graph.inputs.map { it.valueId }
-                    ) {
+                        && removedNode.inputs[0].valueId !in crossGraphRefs
+                    if (!hasCrossRef && removedNode.op in SHAPE_TRANSFORM_OPS && inputIsFresh) {
                         repairs.add(RepairAction(
                             type = RepairType.SHAPE_ABSORB,
                             oldValueId = outputRef.valueId,
@@ -86,7 +89,15 @@ class DependencyReconstructor(
                             survivingConsumers = survivingConsumers,
                             newInputValueId = "${outputRef.valueId}_as_input",
                         ))
-                    } else {
+                    }
+                    // shape 变换算子无法 SHAPE_ABSORB（输入不贴 graph input）：不生成修复，
+                    // 删除后下游 shape 不匹配 → validateGraph/propertyCheck 失败 → DDMin 回滚。
+                    // 不能用 DEFAULT_VALUE（FULL 常量）替代——UNSQUEEZE 等是升维语义，
+                    // FULL 常量替代后 shape 对不上（2D 常量进 conv2d 会 IndexError）。
+                    else if (removedNode.op in SHAPE_TRANSFORM_OPS) {
+                        // 不添加修复；删除后该输出无来源，validateGraph 失败使 DDMin 放弃该子集
+                    }
+                    else {
                         repairs.add(RepairAction(
                             type = RepairType.DEFAULT_VALUE,
                             oldValueId = outputRef.valueId,
@@ -108,7 +119,9 @@ class DependencyReconstructor(
                     for (input in repair.targetNode!!.inputs) {
                         if (input.valueId == repair.oldValueId) {
                             input.valueId = repair.newValueId!!
-                            input.type = repair.newType!!
+                            // 保留被删节点输出的 type/shape，而非输入的 type/shape：
+                            // 下游消费者期望的是被删节点输出的形状，改成输入形状会导致 size mismatch
+                            input.type = repair.oldType ?: repair.newType!!
                         }
                     }
                 }

@@ -199,7 +199,9 @@ class PytorchTranslator(
         val allOutputIds = mutableSetOf<String>()
         for ((_, graph) in element.graphs.withIndex()) {
             for (input in graph.inputs) {
-                if (input.valueId !in allOutputIds) {
+                // 既要排除来自前图输出的值，也要排除已经收集过的 fresh（跨图修复后
+                // 同一 valueId 可能出现在多个图的 inputs 中，避免 ChainedModel.forward 参数重复）
+                if (input.valueId !in allOutputIds && input.valueId !in freshInputIds) {
                     freshInputIds.add(input.valueId)
                 }
             }
@@ -332,8 +334,8 @@ class PytorchTranslator(
         builder.appendLine("        super().__init__()")
         builder.appendLine("        self.device = device")
 
-        // forward 函数
-        val params = graph.inputs.map { it.valueId }.joinToString(", ")
+        // forward 函数（去重：缩减过程中跨图修复可能产生重复输入，防御性 distinct）
+        val params = graph.inputs.map { it.valueId }.distinct().joinToString(", ")
         builder.appendLine("    def forward(self, $params):")
 
         // 值映射：valueId -> Python 变量名
@@ -875,8 +877,12 @@ UirOpKind.TILE -> {
                 val chainInputIds = graph.inputs.filter { it.valueId in prevGraphOutputIds }
                 val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in prevGraphOutputIds }
                 val callArgs = mutableListOf<String>()
-                if (chainInputIds.size > 1) {
-                    val chainNames = chainInputIds.map { "ch_${it.valueId}" }.joinToString(", ")
+                if (chainInputIds.size > 0) {
+                    // 解包数量必须等于上一图全部 outputs 数量（wire-around 等修复可能提升额外 output，
+                    // 它们不被本图消费但仍在上一图的返回 tuple 中），再从中挑选本图需要的值。
+                    // 否则"上一图输出 7 个值、这里只解包 3 个"会抛 too many values to unpack。
+                    val prevOutputList = prevGraphOutputIds.toList()
+                    val chainNames = prevOutputList.map { "ch_${it}" }.joinToString(", ")
                     builder.appendLine("${bodyIndent}$chainNames = x if isinstance(x, tuple) else (x,)")
                     chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
                 } else {

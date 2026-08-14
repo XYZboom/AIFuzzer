@@ -85,8 +85,7 @@ class ReduceCommand : CliktCommand(
                         if (!result) {
                             log.warn {
                                 "属性检查失败: success=${daemonResult.success}, matched=$matched\n" +
-                                "  daemon stderr (前200): ${daemonResult.stderr.take(200)}\n" +
-                                "  original stderr (前200): ${originalError.take(200)}"
+                                "  daemon stderr (前200): ${daemonResult.stderr.take(200)}"
                             }
                         }
                         result
