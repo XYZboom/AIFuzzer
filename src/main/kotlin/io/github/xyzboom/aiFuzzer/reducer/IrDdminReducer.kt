@@ -51,6 +51,7 @@ class IrDdminReducer(
         ddmin.execute(allNodes)
 
         if (bestSubset != null && bestSubset!!.size < allNodes.size) {
+            // ... DDMin 找到了可删子集，应用删除
             val removedNodes = allNodes.filter { it !in bestSubset!! }.toSet()
             val snapshots = graph.nodes.map {
                 InputSnapshot(it, it.inputs.map { ref -> buildValueRef { valueId = ref.valueId; type = ref.type } })
@@ -191,7 +192,10 @@ class IrDdminReducer(
                 copyGraph.inputs.map { it.valueId }.toSet()
             copyGraph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
 
-            if (!validateGraph(copyGraph)) return false
+            if (!validateGraph(copyGraph)) {
+                log.warn { "testSubset: validateGraph 失败 (graph=${copyGraph.name}, 尝试删除 ${copyRemovedNodes.size} 节点)" }
+                return false
+            }
             propertyChecker.check(copy)
         } catch (e: Exception) {
             log.debug { "DDMin 测试异常: ${e.message}" }
@@ -229,7 +233,14 @@ class IrDdminReducer(
         // 保留：被节点消费的 input，以及被其他图 outputs 引用的跨图 input（多图链式接口）
         graph.inputs.removeAll { it.valueId !in usedValueIds && it.valueId !in crossGraphRefs }
         val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
-        graph.outputs.removeAll { it.valueId !in producedByNodes }
+        val graphInputIds = graph.inputs.map { it.valueId }.toSet()
+        // 保留：被节点产生的 output、graph input 直通 output，以及被其他图 inputs 引用的跨图 output（下游图接口依赖）。
+        // 后两者即使本图内部无 producer 也必须保留，否则下游图 input 断链 → 参数错乱 → shape 越界。
+        val crossDownstreamRefs = program.graphs
+            .filter { it !== graph }
+            .flatMap { it.inputs.map { i -> i.valueId } }
+            .toSet()
+        graph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in graphInputIds && it.valueId !in crossDownstreamRefs }
     }
 
     /**

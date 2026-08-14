@@ -83,9 +83,27 @@ class ReduceCommand : CliktCommand(
                         val matched = matchesBugSignature(daemonResult.stderr, originalError)
                         val result = !daemonResult.success && matched
                         if (!result) {
-                            log.warn {
-                                "属性检查失败: success=${daemonResult.success}, matched=$matched\n" +
-                                "  daemon stderr (前200): ${daemonResult.stderr.take(200)}"
+                            val stderr = daemonResult.stderr
+                            val shapeErrorHints = listOf(
+                                "IndexError", "size mismatch", "tuple index out of range",
+                                "The size of tensor", "must match", "out of bounds",
+                                "shape", "Sizes of tensors", "mat1 and mat2",
+                            )
+                            val isShapeError = shapeErrorHints.any { stderr.contains(it) }
+                            if (isShapeError) {
+                                val ts = System.currentTimeMillis()
+                                val failPath = "/tmp/reduce_fail_shape_${ts}.py"
+                                try { File(failPath).writeText(source) } catch (_: Exception) {}
+                                log.warn {
+                                    "形状非法: 中间程序因形状不匹配被拒绝\n" +
+                                    "  daemon stderr: ${stderr.lines().firstOrNull { it.contains("Error") || it.contains("error") }?.take(120) ?: stderr.take(200)}\n" +
+                                    "  失败源码已保存: $failPath"
+                                }
+                            } else {
+                                log.warn {
+                                    "属性检查失败: success=${daemonResult.success}, matched=$matched\n" +
+                                    "  daemon stderr (前200): ${stderr.take(200)}"
+                                }
                             }
                         }
                         result
@@ -215,12 +233,12 @@ class ReduceCommand : CliktCommand(
         ): Pair<(UirProgram) -> String, DaemonClient> {
             val pythonPath = pythonOverride ?: "python3"
             val workDir = File(System.getProperty("java.io.tmpdir") ?: "/tmp", "aiFuzzer_$backend")
+            // Load config if provided, to get target/device/remote/timeout settings
+            val config = configFile?.let {
+                try { ConfigLoader.load(it.absolutePath) } catch (_: Exception) { null }
+            }
             log.info { "缩减 daemon: python=$pythonPath, backend=$backend" }
             if (backend == "tvm") {
-                // Load config if provided, to get target/device/remote settings
-                val config = configFile?.let {
-                    try { ConfigLoader.load(it.absolutePath) } catch (_: Exception) { null }
-                }
                 val target = config?.backends?.tvm?.target ?: "llvm"
                 val device = config?.backends?.tvm?.device ?: "cpu"
                 val remoteConfig = config?.backends?.tvm?.remote
@@ -244,7 +262,7 @@ class ReduceCommand : CliktCommand(
             val b = PytorchDaemonBackend(
                     pythonPath = pythonPath,
                     workDir = workDir,
-                    requestTimeoutMs = 30_000, // reduce 模式下每个测试 30s 足够
+                    requestTimeoutMs = (config?.backends?.pytorch?.timeoutSeconds?.times(1000L)) ?: 120_000L,
                 )
             return Pair(b.translator::translate, b.daemon)
         }
