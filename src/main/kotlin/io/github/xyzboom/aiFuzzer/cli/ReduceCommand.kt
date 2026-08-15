@@ -98,16 +98,21 @@ class ReduceCommand : CliktCommand(
                                 "/tmp/reduce_fail_misc_${ts}.py"
                             }
                             try { File(failPath).writeText(source) } catch (_: Exception) {}
+                            // 同时保存完整 stderr，定位失败根因（shape/权限/daemon 崩溃等）
+                            try { File("$failPath.stderr").writeText(stderr) } catch (_: Exception) {}
                             if (isShapeError) {
+                                val errLine = stderr.lines().firstOrNull { it.contains("IndexError") || it.contains("size mismatch") || it.contains("out of bounds") || it.contains("must match") || it.contains("torch") }
                                 log.warn {
                                     "形状非法: 中间程序因形状不匹配被拒绝\n" +
-                                    "  daemon stderr: ${stderr.lines().firstOrNull { it.contains("Error") || it.contains("error") }?.take(120) ?: stderr.take(200)}\n" +
+                                    "  daemon stderr: ${errLine ?: stderr.lines().firstOrNull { it.contains("Error") }?.take(120) ?: stderr.take(200)}\n" +
                                     "  失败源码已保存: $failPath"
                                 }
                             } else {
+                                val errLine = stderr.lines().firstOrNull { it.contains("Error:") || it.contains("error:") }
+                                    ?: stderr.lines().lastOrNull { it.isNotBlank() }
                                 log.warn {
                                     "属性检查失败: success=${daemonResult.success}, matched=$matched\n" +
-                                    "  daemon stderr (前200): ${stderr.take(200)}\n" +
+                                    "  daemon stderr 错误行: ${errLine?.take(120) ?: stderr.take(200)}\n" +
                                     "  失败源码已保存: $failPath"
                                 }
                             }

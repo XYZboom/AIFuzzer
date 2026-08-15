@@ -835,13 +835,18 @@ UirOpKind.TILE -> {
      * 将 UirShape 转换为 Python 列表字符串。
      */
     private fun shapeToPython(shape: UirShape): String {
-        return shape.dims.map { dim ->
+        val dimStrs = shape.dims.map { dim ->
             when (dim.dimKind) {
                 UirDimKind.CONSTANT -> dim.value?.toString() ?: "1"
                 UirDimKind.SYMBOLIC -> "1"  // 符号维度用 1 代替
                 UirDimKind.UNKNOWN -> "1"
             }
-        }.joinToString(", ")
+        }
+        return if (dimStrs.size == 1) {
+            "${dimStrs[0]},"  // 单元素 tuple 必须加尾逗号，否则 (180) 被 Python 解析为 int
+        } else {
+            dimStrs.joinToString(", ")
+        }
     }
 
     // ─────────────────────────────────────────────────────────────

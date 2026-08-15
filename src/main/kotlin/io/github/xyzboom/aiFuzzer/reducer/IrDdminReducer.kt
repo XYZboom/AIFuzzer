@@ -1,12 +1,17 @@
 package io.github.xyzboom.aiFuzzer.reducer
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.github.xyzboom.aiFuzzer.ir.UirDimKind
 import io.github.xyzboom.aiFuzzer.ir.UirGraph
 import io.github.xyzboom.aiFuzzer.ir.UirNode
+import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import io.github.xyzboom.aiFuzzer.ir.UirProgram
 import io.github.xyzboom.aiFuzzer.ir.UirValueRef
 import io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef
 import io.github.xyzboom.aiFuzzer.ir.serialize.UirSerializer
+import io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr
+import io.github.xyzboom.aiFuzzer.ir.types.UirStringAttr
+import io.github.xyzboom.aiFuzzer.ir.types.builder.buildStringAttr
 
 private val log = KotlinLogging.logger {}
 
@@ -114,26 +119,43 @@ class IrDdminReducer(
                     if (newValueId != null) {
                         for (otherGraph in program.graphs) {
                             if (otherGraph === graph) continue
+                            // 更新下游图 inputs 声明
                             for (input in otherGraph.inputs) {
                                 if (input.valueId == repair.oldValueId) {
                                     if (otherGraph.inputs.any { it.valueId == newValueId }) {
                                         otherGraph.inputs.remove(input)
                                     } else {
                                         input.valueId = newValueId
+                                        // 同步更新 type：上游 graph output 的 type 可能已被修复（如 DEFAULT_VALUE 改 shape），
+                                        // 下游图 input 的 type 如不更新，GATHER 的 IR shape 还是旧值 → fixAllGatherIndices 无法正确裁剪
+                                        input.type = repair.oldType ?: repair.newType ?: input.type
                                     }
                                 }
                             }
-                            // 同时更新下游图的 outputs——如果该图的 return 直通引用了被重命名的 valueId，
-                            // 不改则翻译后代码中变量名不匹配，产生 NameError。
+                            // 更新下游图 outputs 声明（直通引用的 valueId 重命名）
                             for (output in otherGraph.outputs) {
                                 if (output.valueId == repair.oldValueId) {
                                     output.valueId = newValueId
+                                }
+                            }
+                            // 更新下游图内部节点的 input 引用
+                            // 否则即使 inputs 声明已更新，内部节点引用旧 valueId → NameError
+                            for (node in otherGraph.nodes) {
+                                for (nodeInput in node.inputs) {
+                                    if (nodeInput.valueId == repair.oldValueId) {
+                                        nodeInput.valueId = newValueId
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // 跨图修复 GATHER indices：删节点可能改变输入 shape（如上游 RESIZE2D 被删）
+            // 但 GATHER 的 indices 属性仍为原始值，翻译后 index_select 越界 → IndexError
+            log.warn { "fixAllGatherIndices: calling for graph=${graph.name} nodes=${graph.nodes.size}" }
+            fixAllGatherIndices(program)
 
             val crossRefs = program.graphs
                 .filter { it !== graph }
@@ -231,19 +253,33 @@ class IrDdminReducer(
                                         otherGraph.inputs.remove(input)
                                     } else {
                                         input.valueId = newValueId
+                                        // 同步更新 type：上游 graph output 的 type 可能已被修复（如 DEFAULT_VALUE 改 shape），
+                                        // 下游图 input 的 type 如不更新，GATHER 的 IR shape 还是旧值 → fixAllGatherIndices 无法正确裁剪
+                                        input.type = repair.oldType ?: repair.newType ?: input.type
                                     }
                                 }
                             }
-                            // 同时更新下游图的 outputs——直通引用的 valueId 重命名。
+                            // 更新下游图 outputs 声明（直通引用的 valueId 重命名）
                             for (output in otherGraph.outputs) {
                                 if (output.valueId == repair.oldValueId) {
                                     output.valueId = newValueId
+                                }
+                            }
+                            // 更新下游图内部节点的 input 引用
+                            for (node in otherGraph.nodes) {
+                                for (nodeInput in node.inputs) {
+                                    if (nodeInput.valueId == repair.oldValueId) {
+                                        nodeInput.valueId = newValueId
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // 跨图修复 GATHER indices（与 reduceGraph 一致）
+            fixAllGatherIndices(copy)
 
             val crossRefs = copy.graphs
                 .filter { it !== copyGraph }
@@ -401,5 +437,81 @@ class IrDdminReducer(
             }
         }
         return results
+    }
+
+    /**
+     * 跨图修复所有 GATHER 节点的 indices 越界。删节点可能改变输入 shape，
+     * 但 GATHER 的 indices 属性是原始值，翻译后 index_select 越界 → IndexError。
+     * 缩减器职责：在 IR 层裁剪 indices 保证形状合法，不依赖翻译器兜底。
+     */
+    private fun fixAllGatherIndices(program: UirProgram) {
+        var fixed = 0
+        var found = 0
+        // 程序级 producer 映射：valueId → (graph, node)，跨图追踪 GATHER 输入的真实 shape。
+        // GATHER 在 graph_1 的输入可能来自 graph_0 的输出，本图 producerMap 找不到，
+        // 会用 graph_1 声明的 input type——该 type 可能未随上游节点删除更新（残旧大 shape），
+        // 导致 indices 不裁剪、运行时越界。跨图追踪到最上游 producer 才能拿到真实 shape。
+        val producerMap = mutableMapOf<String, Pair<UirGraph, UirNode>>()
+        for (g in program.graphs) {
+            for (n in g.nodes) {
+                for (o in n.outputs) {
+                    producerMap[o.valueId] = g to n
+                }
+            }
+        }
+        for (graph in program.graphs) {
+            for (node in graph.nodes) {
+                if (node.op != UirOpKind.GATHER) continue
+                found++
+                if (node.inputs.isEmpty()) {
+                    log.warn { "fixAllGatherIndices: GATHER ${node.name} in ${graph.name} has no inputs" }
+                    continue
+                }
+                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
+                // 追踪 GATHER 输入的 producer chain，拿最上游的真实 output shape
+                var cursor: Pair<UirGraph, UirNode>? = producerMap[node.inputs[0].valueId]
+                var actualShape: io.github.xyzboom.aiFuzzer.ir.types.UirShape? = null
+                var visited = 0
+                while (cursor != null && visited < 50) {
+                    visited++
+                    val (producerGraph, producerNode) = cursor
+                    val outShape = producerNode.outputs.firstOrNull()?.type?.shape
+                    if (outShape != null) {
+                        actualShape = outShape
+                        // 如果该 producer 的输出 shape 是完整 CONSTANT，停下（已够精确）
+                        if (outShape.dims.all { it.dimKind == UirDimKind.CONSTANT && it.value != null }) break
+                    }
+                    // 否则沿 producer 的第一个输入继续向上
+                    val nextInputId = producerNode.inputs.firstOrNull()?.valueId
+                    cursor = nextInputId?.let { producerMap[it] }
+                }
+                if (actualShape == null) {
+                    // 无 producer chain → graph input，用其 declared type
+                    actualShape = graph.inputs.firstOrNull { it.valueId == node.inputs[0].valueId }?.type?.shape
+                }
+                if (actualShape == null) {
+                    log.warn { "fixAllGatherIndices: GATHER ${node.name} in ${graph.name} no shape found (skip)" }
+                    continue
+                }
+                val axisDim = actualShape.dims.getOrNull(axis)
+                val axisDimValue = axisDim?.value
+                if (axisDim?.dimKind != UirDimKind.CONSTANT || axisDimValue == null) {
+                    log.warn { "fixAllGatherIndices: GATHER ${node.name} in ${graph.name} axis=$axis shape=[${actualShape.dims.map { "d=${it.dimKind}:${it.value}" }.joinToString(",")}] (skip)" }
+                    continue
+                }
+                val indicesAttr = (node.attributes["indices"] as? UirStringAttr)?.value ?: continue
+                val indices = indicesAttr.split(",").map { it.trim().toIntOrNull() ?: 0 }
+                val maxValid = axisDimValue - 1
+                val clipped = indices.map { minOf(it, maxValid) }
+                if (clipped != indices) {
+                    log.warn { "fixAllGatherIndices: ${node.name} in ${graph.name} indices ${indices.joinToString(",")} → ${clipped.joinToString(",")} (max=$maxValid)" }
+                    node.attributes["indices"] = buildStringAttr {
+                        value = clipped.joinToString(",")
+                    }
+                    fixed++
+                }
+            }
+        }
+        if (found > 0) log.warn { "fixAllGatherIndices: found $found GATHER, fixed $fixed in program" }
     }
 }

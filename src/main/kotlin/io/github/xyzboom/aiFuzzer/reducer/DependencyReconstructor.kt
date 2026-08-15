@@ -6,9 +6,12 @@ import io.github.xyzboom.aiFuzzer.ir.UirNode
 import io.github.xyzboom.aiFuzzer.ir.UirOpKind
 import io.github.xyzboom.aiFuzzer.ir.UirTypeKind
 import io.github.xyzboom.aiFuzzer.ir.UirValueRef
+import io.github.xyzboom.aiFuzzer.ir.UirDimKind
 import io.github.xyzboom.aiFuzzer.ir.builder.buildNode
 import io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef
 import io.github.xyzboom.aiFuzzer.ir.types.UirTensorType
+import io.github.xyzboom.aiFuzzer.ir.types.UirIntAttr
+import io.github.xyzboom.aiFuzzer.ir.types.UirStringAttr
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildShape
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDim
 import io.github.xyzboom.aiFuzzer.ir.types.builder.buildDataType
@@ -29,13 +32,19 @@ class DependencyReconstructor(
     fun prepare(nodesToRemove: Set<UirNode>): DependencyRepairPlan {
         val repairs = mutableListOf<RepairAction>()
         val fullGraph = UirDependencyGraph(graph)
+        val graphOutputIds = graph.outputs.map { it.valueId }.toSet()
 
         for (removedNode in nodesToRemove) {
             for (outputRef in removedNode.outputs) {
                 val consumers = fullGraph.consumersOf(outputRef.valueId)
                 val survivingConsumers = consumers.filter { it !in nodesToRemove }
                 val hasCrossRef = outputRef.valueId in crossGraphRefs
-                if (survivingConsumers.isEmpty() && !hasCrossRef) continue
+                // graph output 是图边界：即使本图无消费者、无跨图引用（其他图 outputs），
+                // 只要该值仍被声明为 graph output，删除 producer 后必须创建替代，
+                // 否则翻译出的 return 引用悬空值 → NameError。
+                // 判断只看本图自身，与其他图 inputs 无关。
+                val isGraphOutput = outputRef.valueId in graphOutputIds
+                if (survivingConsumers.isEmpty() && !hasCrossRef && !isGraphOutput) continue
 
                 if (removedNode.inputs.isNotEmpty() && isWireAroundable(removedNode.op)) {
                     // 找输入链上第一个"不在被删集合中"的幸存值（producer 输出或 graph input）。
@@ -57,8 +66,8 @@ class DependencyReconstructor(
                         }
                     }
                     // wire-aroundable 算子：同图消费者已通过 WIRE_AROUND 重定向，
-                    // 无需 DEFAULT_VALUE 节点；仅跨图引用仍需 FULL 节点替代
-                    if (hasCrossRef) {
+                    // 无需 DEFAULT_VALUE 节点；仅 graph output 或跨图引用仍需 FULL 节点替代
+                    if (hasCrossRef || isGraphOutput) {
                         repairs.add(RepairAction(
                             type = RepairType.DEFAULT_VALUE,
                             oldValueId = outputRef.valueId,
@@ -67,8 +76,8 @@ class DependencyReconstructor(
                         ))
                     }
                 }
-                // 非 wire-aroundable 算子：有消费者（或跨图引用）时创建 FULL 节点替代
-                else if (hasCrossRef || survivingConsumers.isNotEmpty()) {
+                // 非 wire-aroundable 算子：有消费者、graph output 或跨图引用时创建 FULL 节点替代
+                else if (hasCrossRef || isGraphOutput || survivingConsumers.isNotEmpty()) {
                     // shape 变换算子且输入直接来自 graph input → 吸收 shape 到图边界
                     // 注意：输入必须是本图真正的 fresh input（不在跨图引用中）。
                     // 若输入是跨图 input（来自其他图输出），改 shape 声明只改了本图视角，
@@ -139,8 +148,13 @@ class DependencyReconstructor(
                     val zerosNode = createZerosNode(repair.oldValueId, repair.oldType!!)
                     newNodes.add(zerosNode)
                     val zerosOutput = zerosNode.outputs[0]
-                    for (consumer in repair.survivingConsumers!!) {
-                        for (input in consumer.inputs) {
+                    // 扫描全图所有仍引用被删 valueId 的 input，重定向到常量替代。
+                    // 不限于 survivingConsumers：链式删除时（如同删 RESIZE2D+GELU），
+                    // 上游的 WIRE_AROUND 会把下游 consumer 指向 RESIZE2D 的输出值Id，
+                    // 该值Id 在 prepare 阶段不是 GELU 的幸存消费者，但 apply 阶段已被引用。
+                    for (candidate in graph.nodes) {
+                        if (candidate === zerosNode) continue
+                        for (input in candidate.inputs) {
                             if (input.valueId == repair.oldValueId) {
                                 input.valueId = zerosOutput.valueId
                                 input.type = zerosOutput.type
@@ -242,8 +256,36 @@ class DependencyReconstructor(
         val producer = graph.nodes.find { it.outputs.any { o -> o.valueId == inputRef.valueId } }
             ?: return inputRef  // 无 producer → graph input，直接返回
         if (producer !in nodesToRemove) return inputRef  // producer 幸存 → 用 inputRef
-        // producer 也在被删集合 → 递归向上
+        // producer 也在被删集合：检查 producer 输入输出 shape 是否兼容。
+        // 如果形状改变（如 RESIZE2D 把 (6,3) 变成 (10,3)），WIRE_AROUND 跳过它会改变下游 shape，
+        // 导致 GATHER indices 越界等形状非法。此时停止递归，返回 producer 的输出值Id，
+        // 后续 DEFAULT_VALUE 修复会创建常量替代（shape 保持），下游引用被重定向到该常量。
+        val producerInputShape = producer.inputs.firstOrNull()?.type?.shape
+        val producerOutputShape = producer.outputs.firstOrNull()?.type?.shape
+        if (producerInputShape != null && producerOutputShape != null &&
+            !shapesCompatible(producerInputShape, producerOutputShape)) {
+            return inputRef  // 停止递归，返回 producer 输出，后续 DEFAULT_VALUE 接管
+        }
+        // producer 形状兼容（RELU 等 shape 保持算子）→ 递归向上
         return findSurvivingWireSource(producer, nodesToRemove)
+    }
+
+    /** 两个 shape 是否兼容：维度数相同且每维 CONSTANT 值相等 */
+    private fun shapesCompatible(
+        a: io.github.xyzboom.aiFuzzer.ir.types.UirShape,
+        b: io.github.xyzboom.aiFuzzer.ir.types.UirShape,
+    ): Boolean {
+        if (a.dims.size != b.dims.size) return false
+        for (i in a.dims.indices) {
+            val da = a.dims[i]
+            val db = b.dims[i]
+            if (da.dimKind != UirDimKind.CONSTANT || db.dimKind != UirDimKind.CONSTANT) {
+                // 任一方非 CONSTANT 时保守认为不兼容（避免运行时 shape 不一致）
+                return false
+            }
+            if (da.value != db.value) return false
+        }
+        return true
     }
 
     companion object {
