@@ -84,16 +84,21 @@ class ReduceCommand : CliktCommand(
                         val result = !daemonResult.success && matched
                         if (!result) {
                             val stderr = daemonResult.stderr
+                            val ts = System.currentTimeMillis()
                             val shapeErrorHints = listOf(
                                 "IndexError", "size mismatch", "tuple index out of range",
                                 "The size of tensor", "must match", "out of bounds",
                                 "shape", "Sizes of tensors", "mat1 and mat2",
                             )
                             val isShapeError = shapeErrorHints.any { stderr.contains(it) }
+                            // 保存所有失败源码，用于分析 DDMin 拒绝原因
+                            val failPath = if (isShapeError) {
+                                "/tmp/reduce_fail_shape_${ts}.py"
+                            } else {
+                                "/tmp/reduce_fail_misc_${ts}.py"
+                            }
+                            try { File(failPath).writeText(source) } catch (_: Exception) {}
                             if (isShapeError) {
-                                val ts = System.currentTimeMillis()
-                                val failPath = "/tmp/reduce_fail_shape_${ts}.py"
-                                try { File(failPath).writeText(source) } catch (_: Exception) {}
                                 log.warn {
                                     "形状非法: 中间程序因形状不匹配被拒绝\n" +
                                     "  daemon stderr: ${stderr.lines().firstOrNull { it.contains("Error") || it.contains("error") }?.take(120) ?: stderr.take(200)}\n" +
@@ -102,7 +107,8 @@ class ReduceCommand : CliktCommand(
                             } else {
                                 log.warn {
                                     "属性检查失败: success=${daemonResult.success}, matched=$matched\n" +
-                                    "  daemon stderr (前200): ${stderr.take(200)}"
+                                    "  daemon stderr (前200): ${stderr.take(200)}\n" +
+                                    "  失败源码已保存: $failPath"
                                 }
                             }
                         }

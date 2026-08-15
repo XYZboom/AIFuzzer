@@ -96,10 +96,13 @@ class IrDdminReducer(
                 val repairPlan = reconstructor.prepare(removedNodes)
                 graph.nodes.removeAll(removedNodes)
                 reconstructor.apply(repairPlan)
-                DeadCodeEliminator.eliminateToFixpoint(graph)
 
+                // 必须在 DeadCodeEliminator 之前调用 repairGraphOutputs：
+                // 新创建的 FULL 节点（DEFAULT_VALUE 修复）如果还没有被 graph output 引用，
+                // 会被 DeadCodeEliminator 当作死代码删除，导致后续翻译产生 NameError。
                 val outputValueIdsBefore = outputsBackup.map { it.valueId }.toSet() - removedOutputIds
                 repairGraphOutputs(graph, removedNodes, repairPlan, outputValueIdsBefore)
+                DeadCodeEliminator.eliminateToFixpoint(graph)
 
                 for (repair in repairPlan.repairs) {
                     val newValueId = when (repair.type) {
@@ -118,6 +121,13 @@ class IrDdminReducer(
                                     } else {
                                         input.valueId = newValueId
                                     }
+                                }
+                            }
+                            // 同时更新下游图的 outputs——如果该图的 return 直通引用了被重命名的 valueId，
+                            // 不改则翻译后代码中变量名不匹配，产生 NameError。
+                            for (output in otherGraph.outputs) {
+                                if (output.valueId == repair.oldValueId) {
+                                    output.valueId = newValueId
                                 }
                             }
                         }
@@ -199,10 +209,11 @@ class IrDdminReducer(
                 val repairPlan = reconstructor.prepare(copyRemovedNodes)
                 copyGraph.nodes.removeAll(copyRemovedNodes)
                 reconstructor.apply(repairPlan)
-                DeadCodeEliminator.eliminateToFixpoint(copyGraph)
-
+                // 必须在 DeadCodeEliminator 之前调用 repairGraphOutputs，
+                // 否则新创建的 FULL 节点被死代码消除误删。
                 val outputValueIdsBefore = copyGraph.outputs.map { it.valueId }.toSet()
                 repairGraphOutputs(copyGraph, copyRemovedNodes, repairPlan, outputValueIdsBefore)
+                DeadCodeEliminator.eliminateToFixpoint(copyGraph)
 
                 for (repair in repairPlan.repairs) {
                     val newValueId = when (repair.type) {
@@ -221,6 +232,12 @@ class IrDdminReducer(
                                     } else {
                                         input.valueId = newValueId
                                     }
+                                }
+                            }
+                            // 同时更新下游图的 outputs——直通引用的 valueId 重命名。
+                            for (output in otherGraph.outputs) {
+                                if (output.valueId == repair.oldValueId) {
+                                    output.valueId = newValueId
                                 }
                             }
                         }
