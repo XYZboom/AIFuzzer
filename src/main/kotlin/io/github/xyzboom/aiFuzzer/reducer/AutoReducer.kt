@@ -113,35 +113,20 @@ class AutoReducer(
                 program.graphs.removeAll { it.nodes.isEmpty() }
             }
 
-            // Stage 2: 节点级别 DDMin（每个保留的图）
-            for (graph in program.graphs) {
-                if (graph.nodes.isEmpty()) continue
-                val nodesBackup = graph.nodes.toList()
-                val inputsBackup = graph.inputs.map { ref ->
-                    io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
-                        valueId = ref.valueId; type = ref.type
-                    }
-                }.toMutableList()
-                val outputsBackup = graph.outputs.map { ref ->
-                    io.github.xyzboom.aiFuzzer.ir.builder.buildValueRef {
-                        valueId = ref.valueId; type = ref.type
-                    }
-                }.toMutableList()
-
-                val preserved = reducer.reduceGraph(graph, steps)
-                if (!preserved) {
-                    graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
-                    graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
-                    graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
-                } else if (graph.nodes.size < nodesBackup.size) {
-                    if (!propertyChecker.check(program)) {
-                        graph.nodes.clear(); graph.nodes.addAll(nodesBackup)
-                        graph.inputs.clear(); graph.inputs.addAll(inputsBackup)
-                        graph.outputs.clear(); graph.outputs.addAll(outputsBackup)
-                    } else {
-                        log.info { "Graph '${graph.name}' 节点缩减: ${nodesBackup.size} → ${graph.nodes.size} 节点" }
+            // Stage 2: 程序级节点 DDMin（整个 program 统一候选集，跨图组合可达）
+            // 不再 per-graph 独立缩减——跨图 input/output 边界阻挡了跨图组合删除。
+            if (program.graphs.flatMap { it.nodes }.isNotEmpty()) {
+                val prevTotal = program.graphs.sumOf { it.nodes.size }
+                val preserved = reducer.reduceProgram(steps)
+                if (preserved) {
+                    val newTotal = program.graphs.sumOf { it.nodes.size }
+                    if (newTotal < prevTotal) {
+                        log.info { "程序级 DDMin: ${prevTotal} → ${newTotal} 总节点" }
                         changed = true
                     }
+                } else {
+                    // reduceProgram 失败时已回滚，保持原样
+                    log.warn { "程序级 DDMin 失败，已回滚" }
                 }
             }
 
