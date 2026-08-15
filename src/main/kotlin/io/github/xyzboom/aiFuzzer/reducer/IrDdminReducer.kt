@@ -174,6 +174,8 @@ class IrDdminReducer(
         val removedNodes = allNodes.filter { it !in keptNodes }.toSet()
         val removedOutputIds = allOutputCandidates.map { it.valueId }.toSet() - keptOutputIds
         if (removedNodes.isEmpty() && removedOutputIds.isEmpty()) return true
+        val removedOps = removedNodes.map { it.op.name }.sorted()
+        val removedNames = removedNodes.map { it.name }.sorted()
         return try {
             val jsonl = UirSerializer.toJsonl(program)
             val copy = UirSerializer.fromJsonl(jsonl)
@@ -235,11 +237,20 @@ class IrDdminReducer(
             copyGraph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
 
             if (!validateGraph(copyGraph)) {
-                val removedNodeNames = removedNodes.map { it.op }.joinToString(",")
-                log.warn { "testSubset: validateGraph 失败 (graph=${copyGraph.name}, 尝试删除 ${removedNodes.size} 节点[$removedNodeNames] + ${removedOutputIds.size} 输出[$removedOutputIds])" }
+                log.warn { "DDMIN_REJECT: validateGraph 失败 (graph=${copyGraph.name}, 尝试删除 ${removedNodes.size} 节点[$removedOps], 输出[$removedOutputIds])" }
                 return false
             }
-            propertyChecker.check(copy)
+            val checkResult = try { 
+                val pcResult = propertyChecker.check(copy)
+                // 记录详细结果——但无法直接获取 success/matched 因为 PropertyChecker 接口只返回 boolean
+                pcResult
+            } catch (e: Exception) { false }
+            if (!checkResult) {
+                log.warn { "DDMIN_REJECT: 属性检查失败 (graph=${copyGraph.name}, 节点[$removedOps], 输出[$removedOutputIds], 剩余节点=${copyGraph.nodes.size})" }
+            } else {
+                log.info { "DDMIN_ACCEPT: 属性保持 (graph=${copyGraph.name}, 节点[$removedOps], 输出[$removedOutputIds], 剩余节点=${copyGraph.nodes.size})" }
+            }
+            checkResult
         } catch (e: Exception) {
             log.debug { "DDMin 测试异常: ${e.message}" }
             false
@@ -272,17 +283,17 @@ class IrDdminReducer(
     }
 
     private fun cleanupInputsOutputs(graph: UirGraph, crossGraphRefs: Set<String> = emptySet()) {
-        val usedValueIds = graph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
-        // 保留：被节点消费的 input，以及被其他图 outputs 引用的跨图 input（多图链式接口）
-        graph.inputs.removeAll { it.valueId !in usedValueIds && it.valueId !in crossGraphRefs }
-        val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
-        val graphInputIds = graph.inputs.map { it.valueId }.toSet()
-        // 保留：被节点产生的 output、graph input 直通 output，以及被其他图 inputs 引用的跨图 output（下游图接口依赖）。
-        // 后两者即使本图内部无 producer 也必须保留，否则下游图 input 断链 → 参数错乱 → shape 越界。
+        // 被下游图 inputs 引用的 valueId——即使本图内部无消费者也必须保留（跨图接口依赖）
         val crossDownstreamRefs = program.graphs
             .filter { it !== graph }
             .flatMap { it.inputs.map { i -> i.valueId } }
             .toSet()
+        val usedValueIds = graph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
+        // 保留：被节点消费的 input、被其他图 outputs 引用的跨图 input、被下游图 inputs 引用的跨图 input
+        graph.inputs.removeAll { it.valueId !in usedValueIds && it.valueId !in crossGraphRefs && it.valueId !in crossDownstreamRefs }
+        val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet()
+        val graphInputIds = graph.inputs.map { it.valueId }.toSet()
+        // 保留：被节点产生的 output、graph input 直通 output、被下游图 inputs 引用的跨图 output
         graph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in graphInputIds && it.valueId !in crossDownstreamRefs }
     }
 
