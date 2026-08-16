@@ -161,7 +161,11 @@ class IrDdminReducer(
 
             // 删节点
             if (removedNodes.isNotEmpty()) {
-                val reconstructor = DependencyReconstructor(graph, crossGraphRefs)
+                val crossGraphConsumedRefs = program.graphs
+                    .filter { it !== graph }
+                    .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                    .toSet()
+                val reconstructor = DependencyReconstructor(graph, crossGraphRefs, crossGraphConsumedRefs)
                 val repairPlan = reconstructor.prepare(removedNodes)
                 graph.nodes.removeAll(removedNodes)
                 reconstructor.apply(repairPlan)
@@ -291,7 +295,11 @@ class IrDdminReducer(
                     .filter { it !== copyGraph }
                     .flatMap { it.outputs.map { o -> o.valueId } }
                     .toSet()
-                val reconstructor = DependencyReconstructor(copyGraph, copyCrossGraphRefs)
+                val copyCrossGraphConsumed = copy.graphs
+                    .filter { it !== copyGraph }
+                    .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                    .toSet()
+                val reconstructor = DependencyReconstructor(copyGraph, copyCrossGraphRefs, copyCrossGraphConsumed)
                 val repairPlan = reconstructor.prepare(copyRemovedNodes)
                 copyGraph.nodes.removeAll(copyRemovedNodes)
                 reconstructor.apply(repairPlan)
@@ -462,6 +470,8 @@ class IrDdminReducer(
         for (graph in program.graphs) {
             graph.outputs.removeAll { it.valueId in removedOutputIds }
         }
+        // 同步删下游图的无用 input/output 引用（否则 ChainedModel 解包数量不匹配 → NameError）
+        cleanupCrossGraphRefs(program, removedOutputIds)
 
         // 图融合：删除跨图 input 边界 = 把上游图合并到本图（与 testProgramSubset 一致）
         if (removedInputRefIds.isNotEmpty()) {
@@ -504,7 +514,11 @@ class IrDdminReducer(
                 .filter { it !== graph }
                 .flatMap { it.outputs.map { o -> o.valueId } }
                 .toSet()
-            val reconstructor = DependencyReconstructor(graph, crossGraphRefs)
+            val crossGraphConsumedRefs = program.graphs
+                .filter { it !== graph }
+                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                .toSet()
+            val reconstructor = DependencyReconstructor(graph, crossGraphRefs, crossGraphConsumedRefs)
             val repairPlan = reconstructor.prepare(gNodes.toSet())
             graph.nodes.removeAll(gNodes.toSet())
             reconstructor.apply(repairPlan)
@@ -552,13 +566,22 @@ class IrDdminReducer(
             }
         }
 
+        // 删除 FULL 等常量节点后，清理下游图不再被内部节点消费的 input/output 引用
+        val removedConstantOutputIds = removedNodes
+            .filter { it.op in listOf(UirOpKind.FULL, UirOpKind.ZEROS, UirOpKind.ONES, UirOpKind.ARANGE) }
+            .flatMap { it.outputs.map { o -> o.valueId } }
+            .toSet()
+        if (removedConstantOutputIds.isNotEmpty()) {
+            cleanupCrossGraphRefs(program, removedConstantOutputIds)
+        }
+
         fixAllGatherIndices(program)
 
         // 清理各图 outputs（与 testSubset 中 copyGraph.outputs.removeAll 一致）
         for (graph in program.graphs) {
             val crossRefs = program.graphs
                 .filter { it !== graph }
-                .flatMap { it.inputs.map { i -> i.valueId } }
+                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
                 .toSet()
             val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
                 graph.inputs.map { it.valueId }.toSet()
@@ -585,6 +608,27 @@ class IrDdminReducer(
         return true
     }
 
+    /** 删除上游图 output 引用后，同步清理下游图的无用 input/output 引用 */
+    private fun cleanupCrossGraphRefs(
+        program: UirProgram,
+        removedOutputIds: Set<String>,
+    ) {
+        if (removedOutputIds.isEmpty()) return
+        for (otherGraph in program.graphs) {
+            val consumedByNodes = otherGraph.nodes.flatMap { it.inputs.map { i -> i.valueId } }.toSet()
+            // 只删不再被本图内部节点消费的 input 声明（否则 validateGraph 失败）
+            val removedInputs = otherGraph.inputs.filter {
+                it.valueId in removedOutputIds && it.valueId !in consumedByNodes
+            }
+            if (removedInputs.isNotEmpty()) {
+                log.warn { "cleanupCrossGraphRefs: 删 ${otherGraph.name} inputs ${removedInputs.map { it.valueId }}" }
+                otherGraph.inputs.removeAll(removedInputs)
+            }
+            // 同步删 output 直通引用（该值不再被上游产出，下游图也不应再返回它）
+            otherGraph.outputs.removeAll { it.valueId in removedOutputIds }
+        }
+    }
+
     /** 程序级 DDMin 测试子集，与 testSubset 逻辑一致，扩展到多图 */
     private fun testProgramSubset(
         allNodes: List<UirNode>,
@@ -608,6 +652,8 @@ class IrDdminReducer(
             for (graph in copy.graphs) {
                 graph.outputs.removeAll { it.valueId in removedOutputIds }
             }
+            // 同步删下游图的无用 input/output 引用（否则 ChainedModel 解包数量不匹配 → NameError）
+            cleanupCrossGraphRefs(copy, removedOutputIds)
             // 图融合：删除跨图 input 边界 = 把上游图合并到本图
             if (removedInputRefIds.isNotEmpty()) {
                 for (valueId in removedInputRefIds) {
@@ -647,7 +693,11 @@ class IrDdminReducer(
                         .filter { it !== copyGraph }
                         .flatMap { it.outputs.map { o -> o.valueId } }
                         .toSet()
-                    val reconstructor = DependencyReconstructor(copyGraph, copyCrossGraphRefs)
+                    val copyCrossGraphConsumed = copy.graphs
+                        .filter { it !== copyGraph }
+                        .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                        .toSet()
+                    val reconstructor = DependencyReconstructor(copyGraph, copyCrossGraphRefs, copyCrossGraphConsumed)
                     val repairPlan = reconstructor.prepare(copyRemovedNodes)
                     copyGraph.nodes.removeAll(copyRemovedNodes)
                     reconstructor.apply(repairPlan)
@@ -695,15 +745,15 @@ class IrDdminReducer(
                 }
             }
             // 对各图做 output 清理（与 testSubset 一致）
-            for (copyGraph in copy.graphs) {
-                val crossRefs = copy.graphs
-                    .filter { it !== copyGraph }
-                    .flatMap { it.inputs.map { i -> i.valueId } }
-                    .toSet()
-                val producedByNodes = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
-                    copyGraph.inputs.map { it.valueId }.toSet()
-                copyGraph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
-            }
+                        for (copyGraph in copy.graphs) {
+                            val crossRefs = copy.graphs
+                                .filter { it !== copyGraph }
+                                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                                .toSet()
+                            val producedByNodes = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
+                                copyGraph.inputs.map { it.valueId }.toSet()
+                            copyGraph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
+                        }
             fixAllGatherIndices(copy)
             copy.graphs.removeAll { it.nodes.isEmpty() }
             checkCached(copy)

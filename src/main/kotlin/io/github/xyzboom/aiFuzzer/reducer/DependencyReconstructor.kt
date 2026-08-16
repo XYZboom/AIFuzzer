@@ -27,6 +27,8 @@ class DependencyReconstructor(
     private val graph: UirGraph,
     /** 跨图引用的 valueId 集合——即使同图没有消费者也要创建 ZEROS */
     private val crossGraphRefs: Set<String> = emptySet(),
+    /** 被其他图内部节点真实消费的 valueId 集合（非纯透传声明）。用于区分"真正跨图引用"和"纯声明透传"。 */
+    private val crossGraphConsumedRefs: Set<String> = emptySet(),
 ) {
 
     fun prepare(nodesToRemove: Set<UirNode>): DependencyRepairPlan {
@@ -94,15 +96,46 @@ class DependencyReconstructor(
                             targetInputValueId = removedNode.inputs[0].valueId,
                         ))
                     }
-                    // 常量算子（FULL/ZEROS/ONES/ARANGE）且无跨图引用 → 提升为 graph input
-                    else if (!hasCrossRef && removedNode.op in CONSTANT_OPS) {
-                        repairs.add(RepairAction(
-                            type = RepairType.CONSTANT_TO_INPUT,
-                            oldValueId = outputRef.valueId,
-                            oldType = outputRef.type,
-                            survivingConsumers = survivingConsumers,
-                            newInputValueId = "${outputRef.valueId}_as_input",
-                        ))
+                    // 形状放大算子（INTERPOLATE/RESIZE2D 等），输入链可追踪到 graph input
+                    // 与 SHAPE_ABSORB 相同语义：改 graph input shape 消除形状变换，只是升降维不同
+                    else if (!hasCrossRef && removedNode.inputs.isNotEmpty() &&
+                        isShapeUpgradingOp(removedNode)) {
+                        val graphInputRef = findGraphInputThroughChain(removedNode, nodesToRemove)
+                        log.warn { "SHAPE_ABSORB-EXT: op=${removedNode.op.name} name=${removedNode.name} graphInputRef=${graphInputRef?.valueId} hasCrossRef=$hasCrossRef insNotEmpty=${removedNode.inputs.isNotEmpty()} isUpgrading=${isShapeUpgradingOp(removedNode)}" }
+                        if (graphInputRef != null) {
+                            repairs.add(RepairAction(
+                                type = RepairType.SHAPE_ABSORB,
+                                oldValueId = outputRef.valueId,
+                                oldType = outputRef.type,
+                                survivingConsumers = survivingConsumers,
+                                targetInputValueId = graphInputRef.valueId,
+                            ))
+                        } else {
+                            // 追踪不到 graph input：用 DEFAULT_VALUE 兜底
+                            repairs.add(RepairAction(
+                                type = RepairType.DEFAULT_VALUE,
+                                oldValueId = outputRef.valueId,
+                                oldType = outputRef.type,
+                                survivingConsumers = survivingConsumers,
+                            ))
+                        }
+                    }
+                    // 常量算子（FULL/ZEROS/ONES/ARANGE）且无跨图真实消费 → 提升为 graph input 或不修复
+                    // 注意：用 crossGraphConsumedRefs 而非 hasCrossRef——纯透传声明（下游图 input/output 声明但无内部节点消费）不算"必须修复"。
+                    else if (!crossGraphConsumedRefs.contains(outputRef.valueId) && removedNode.op in CONSTANT_OPS) {
+                        if (survivingConsumers.isEmpty()) {
+                            // 无消费者、无跨图引用：输出仅有 graph output 身份。
+                            // 不生成修复——CONSTANT_TO_INPUT 只是把常量换成 input，图不缩小。
+                            // 后续 repairGraphOutputs + cleanup 会删掉悬空的 output 声明。
+                        } else {
+                            repairs.add(RepairAction(
+                                type = RepairType.CONSTANT_TO_INPUT,
+                                oldValueId = outputRef.valueId,
+                                oldType = outputRef.type,
+                                survivingConsumers = survivingConsumers,
+                                newInputValueId = "${outputRef.valueId}_as_input",
+                            ))
+                        }
                     }
                     // shape 变换算子无法 SHAPE_ABSORB（输入不贴 graph input）：用 DEFAULT_VALUE 修复。
                     // 之前刻意不生成修复（删除后 validateGraph 失败使 DDMin 放弃该子集），
@@ -288,6 +321,62 @@ class DependencyReconstructor(
         return true
     }
 
+    /**
+     * 判断节点是否是形状放大算子：输出 shape 某维大于输入 shape 对应维。
+     * 用于 SHAPE_ABSORB 扩展——把 graph input 的 shape 提升到被删节点输出 shape，
+     * 从而消除形状链（如 INTERPOLATE scale=2 把 dim2 从 6 放大到 12）。
+     */
+    private fun isShapeUpgradingOp(node: UirNode): Boolean {
+        val inputShape = node.inputs.firstOrNull()?.type?.shape ?: return false
+        val outputShape = node.outputs.firstOrNull()?.type?.shape ?: return false
+        if (inputShape.dims.size != outputShape.dims.size) return false
+        for (i in inputShape.dims.indices) {
+            val id = inputShape.dims[i]
+            val od = outputShape.dims[i]
+            if (id.dimKind != UirDimKind.CONSTANT || od.dimKind != UirDimKind.CONSTANT) continue
+            val idVal = id.value ?: continue
+            val odVal = od.value ?: continue
+            if (odVal > idVal) return true
+        }
+        return false
+    }
+
+    /**
+     * 沿被删节点的输入链向上，追踪到本图的 graph input。
+     * 中间经过的节点可以是任意形状保持算子（即使不在 nodesToRemove 中），
+     * 因为形状保持算子会自适应新的 graph input shape（如 element-wise 算子输入变大输出也变大）。
+     * 但如果中间节点是形状改变算子且不在被删集合中，则停止追踪（不能改它的输入 shape 而不改它的输出）。
+     * 返回 graph input 的 valueRef，如果追踪不到（如输入来自其他图输出）则返回 null。
+     */
+    private fun findGraphInputThroughChain(
+        node: UirNode,
+        nodesToRemove: Set<UirNode>,
+    ): UirValueRef? {
+        if (node.inputs.isEmpty()) return null
+        val inputRef = node.inputs[0]
+        // 如果输入直接是 graph input → 返回
+        if (inputRef.valueId in graph.inputs.map { it.valueId } && inputRef.valueId !in crossGraphRefs) {
+            return inputRef
+        }
+        // 找 producer
+        val producer = graph.nodes.find { it.outputs.any { o -> o.valueId == inputRef.valueId } }
+        if (producer == null) return null  // 跨图输入，不可追踪
+        if (producer !in nodesToRemove) {
+            // producer 不在被删集合中：检查它是否是形状保持算子（element-wise 等）
+            // 形状保持算子的输出会自动适配输入形状变化，所以可以安全地继续追踪
+            if (!isShapePreservingOp(producer)) return null
+        }
+        // 递归向上
+        return findGraphInputThroughChain(producer, nodesToRemove)
+    }
+
+    /** 判断算子是否是形状保持的（element-wise 等，输入 shape 变化时输出 shape 同步变化） */
+    private fun isShapePreservingOp(node: UirNode): Boolean {
+        val inputShape = node.inputs.firstOrNull()?.type?.shape ?: return false
+        val outputShape = node.outputs.firstOrNull()?.type?.shape ?: return false
+        return shapesCompatible(inputShape, outputShape)
+    }
+
     companion object {
         @JvmStatic
         fun isWireAroundable(op: UirOpKind): Boolean = op in WIRE_AROUNDABLE_OPS
@@ -303,6 +392,7 @@ class DependencyReconstructor(
             UirOpKind.SQRT, UirOpKind.RSQRT, UirOpKind.RECIPROCAL,
             UirOpKind.CEIL, UirOpKind.FLOOR, UirOpKind.ROUND, UirOpKind.CLAMP,
             UirOpKind.BATCH_NORM,
+            UirOpKind.TRIU, UirOpKind.TRIL,
         )
 
         val SHAPE_TRANSFORM_OPS = setOf(

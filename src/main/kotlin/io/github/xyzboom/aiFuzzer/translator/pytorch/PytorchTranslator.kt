@@ -887,8 +887,14 @@ UirOpKind.TILE -> {
                     // 它们不被本图消费但仍在上一图的返回 tuple 中），再从中挑选本图需要的值。
                     // 否则"上一图输出 7 个值、这里只解包 3 个"会抛 too many values to unpack。
                     val prevOutputList = prevGraphOutputIds.toList()
-                    val chainNames = prevOutputList.map { "ch_${it}" }.joinToString(", ")
-                    builder.appendLine("${bodyIndent}$chainNames = x if isinstance(x, tuple) else (x,)")
+                    if (prevOutputList.size == 1) {
+                        // 单 output：graph 返回裸 tensor（不是 tuple），直接赋值
+                        builder.appendLine("${bodyIndent}ch_${prevOutputList[0]} = x")
+                    } else {
+                        // 多 output：graph 返回 tuple，用 isinstance 处理
+                        val chainNames = prevOutputList.map { "ch_${it}" }.joinToString(", ")
+                        builder.appendLine("${bodyIndent}$chainNames = x if isinstance(x, tuple) else (x,)")
+                    }
                     chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
                 } else {
                     callArgs.add("x")
