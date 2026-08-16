@@ -46,7 +46,13 @@ class DependencyReconstructor(
                 // 否则翻译出的 return 引用悬空值 → NameError。
                 // 判断只看本图自身，与其他图 inputs 无关。
                 val isGraphOutput = outputRef.valueId in graphOutputIds
-                if (survivingConsumers.isEmpty() && !hasCrossRef && !isGraphOutput) continue
+                if (survivingConsumers.isEmpty() && !hasCrossRef && !isGraphOutput) {
+                    // 整条链删除时（所有消费者都在被删集合中），形状放大算子仍需要修复，
+                    // 否则该算子的输出（最终通过链到达 graph output）会缺失替代。
+                    // 例如删 {leaky,sub,resize2d,tril,avg_pool} 时 resize2d 的消费者 tril 也在被删集合，
+                    // 但 resize2d 的输出 shape 决定了 graph output 的 shape，需要 SHAPE_ABSORB-EXT 处理。
+                    if (!isShapeUpgradingOp(removedNode)) continue
+                }
 
                 if (removedNode.inputs.isNotEmpty() && isWireAroundable(removedNode.op)) {
                     // 找输入链上第一个"不在被删集合中"的幸存值（producer 输出或 graph input）。
@@ -68,8 +74,14 @@ class DependencyReconstructor(
                         }
                     }
                     // wire-aroundable 算子：同图消费者已通过 WIRE_AROUND 重定向，
-                    // 无需 DEFAULT_VALUE 节点；仅 graph output 或跨图引用仍需 FULL 节点替代
-                    if (hasCrossRef || isGraphOutput) {
+                    // 无需 DEFAULT_VALUE 节点；仅 graph output 或跨图引用仍需替代。
+                    // 如果 graph output 的 shape 与 source 兼容（shape-keeping 算子），
+                    // 跳过 DEFAULT_VALUE：repairGraphOutputs 的 WIRE_AROUND 分支会
+                    // 把 source 提升为 graph output，保留原始计算值。
+                    // 否则（shape 不兼容或跨图引用）才创建 FULL 常量替代。
+                    if (hasCrossRef || (isGraphOutput &&
+                        (sourceRef.type?.shape == null || outputRef.type?.shape == null ||
+                            !shapesCompatible(sourceRef.type.shape, outputRef.type.shape)))) {
                         repairs.add(RepairAction(
                             type = RepairType.DEFAULT_VALUE,
                             oldValueId = outputRef.valueId,
@@ -78,8 +90,9 @@ class DependencyReconstructor(
                         ))
                     }
                 }
-                // 非 wire-aroundable 算子：有消费者、graph output 或跨图引用时创建 FULL 节点替代
-                else if (hasCrossRef || isGraphOutput || survivingConsumers.isNotEmpty()) {
+                // 非 wire-aroundable 算子：有消费者、graph output、跨图引用或形状放大算子时创建 FULL 节点替代
+                else if (hasCrossRef || isGraphOutput || survivingConsumers.isNotEmpty()
+                    || (removedNode.inputs.isNotEmpty() && isShapeUpgradingOp(removedNode))) {
                     // shape 变换算子且输入直接来自 graph input → 吸收 shape 到图边界
                     // 注意：输入必须是本图真正的 fresh input（不在跨图引用中）。
                     // 若输入是跨图 input（来自其他图输出），改 shape 声明只改了本图视角，
