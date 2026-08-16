@@ -185,9 +185,29 @@ class PytorchTranslator(
         }
         builder.appendLine()
 
+        // 计算会被翻译器静态化的 CONV2D weight 输入：
+        // CONV2D 的 weight（inputs[1]）如果来自 graph input 且 shape 全 CONSTANT（4D），
+        // 翻译器会直接输出 torch.zeros(dims) 字面量，不再引用该输入变量。
+        // 这些输入应排除在 forward 参数、rand 生成、ChainedModel 调用之外，否则变死输入。
+        val staticizedInputIds = mutableSetOf<String>()
+        for (graph in element.graphs) {
+            val graphInputIds = graph.inputs.map { it.valueId }.toSet()
+            for (node in graph.nodes) {
+                if (node.op == UirOpKind.CONV2D && node.inputs.size == 2) {
+                    val weightRef = node.inputs[1]
+                    if (weightRef.valueId in graphInputIds) {
+                        val ws = weightRef.type.shape
+                        if (ws.dims.size == 4 && ws.dims.all { it.dimKind == UirDimKind.CONSTANT && it.value != null }) {
+                            staticizedInputIds.add(weightRef.valueId)
+                        }
+                    }
+                }
+            }
+        }
+
         // 翻译每个图
         for ((idx, graph) in element.graphs.withIndex()) {
-            translateGraph(builder, graph, idx)
+            translateGraph(builder, graph, idx, staticizedInputIds)
         }
 
         // IMPORTANT: 不要使用 if __name__ == "__main__" 保护，因为 daemon 会直接 exec 脚本
@@ -201,7 +221,9 @@ class PytorchTranslator(
             for (input in graph.inputs) {
                 // 既要排除来自前图输出的值，也要排除已经收集过的 fresh（跨图修复后
                 // 同一 valueId 可能出现在多个图的 inputs 中，避免 ChainedModel.forward 参数重复）
-                if (input.valueId !in allOutputIds && input.valueId !in freshInputIds) {
+                // 还要排除被翻译器静态化的 CONV2D weight 输入（翻译器直接输出字面量，不引用变量）
+                if (input.valueId !in allOutputIds && input.valueId !in freshInputIds
+                    && input.valueId !in staticizedInputIds) {
                     freshInputIds.add(input.valueId)
                 }
             }
@@ -229,7 +251,7 @@ class PytorchTranslator(
 
         // === 定义 ChainedModel（串联所有子图）===
         builder.appendLine("# Define ChainedModel (wraps all sub-modules)")
-        generateChainedModelClass(builder, freshInputIds, element.graphs, indent = 0)
+        generateChainedModelClass(builder, freshInputIds, element.graphs, indent = 0, staticizedInputIds)
         builder.appendLine()
 
         // === Eager 模式执行（ground truth，通过 ChainedModel 串联）===
@@ -238,7 +260,11 @@ class PytorchTranslator(
         builder.appendLine("# Chained eager execution (ground truth)")
         builder.appendLine("with torch.no_grad():")
         val lastGraph = element.graphs.last()
-        val finalRefVar = if (lastGraph.outputs.size == 1) {
+        val finalRefVar = if (lastGraph.outputs.isEmpty()) {
+            // 无输出（所有 output 被 DDMin 删了）：直接调用 ChainedModel，不生成解包行
+            builder.appendLine("    _eager_result = ChainedModel(nn.ModuleList([$modList]))($allFreshArgs)")
+            "_eager_result"
+        } else if (lastGraph.outputs.size == 1) {
             val singleOut = lastGraph.outputs[0].valueId
             builder.appendLine("    $singleOut = ChainedModel(nn.ModuleList([$modList]))($allFreshArgs)")
             singleOut
@@ -325,7 +351,8 @@ class PytorchTranslator(
     /**
      * 翻译单个计算图为 nn.Module。
      */
-    private fun translateGraph(builder: StringBuilder, graph: UirGraph, graphIdx: Int) {
+    private fun translateGraph(builder: StringBuilder, graph: UirGraph, graphIdx: Int,
+        staticizedInputIds: Set<String> = emptySet()) {
         val className = "TestModule_$graphIdx"
         builder.appendLine("class $className(nn.Module):")
 
@@ -335,7 +362,8 @@ class PytorchTranslator(
         builder.appendLine("        self.device = device")
 
         // forward 函数（去重：缩减过程中跨图修复可能产生重复输入，防御性 distinct）
-        val params = graph.inputs.map { it.valueId }.distinct().joinToString(", ")
+        val params = graph.inputs.filter { it.valueId !in staticizedInputIds }
+            .map { it.valueId }.distinct().joinToString(", ")
         builder.appendLine("    def forward(self, $params):")
 
         // 值映射：valueId -> Python 变量名
@@ -437,10 +465,22 @@ class PytorchTranslator(
                 val groups = (node.attributes["groups"] as? UirIntAttr)?.value ?: 1
                 val inputVar = valueMap[node.inputs[0].valueId]!!
                 val weightVar = valueMap[node.inputs[1].valueId]!!
-                // Generate weight at runtime with C_in matching input's C channel
-                // This handles cases where ShapeInferer predicted wrong shape for intermediate ops
-                // Weight shape: [C_out, C_in, kH, kW] where C_in = input.shape[1]
-                "$pytorchFunc($inputVar, torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3]), device=self.device), " +
+                // 生成 weight：如果 IR 中 weight shape 全 CONSTANT 则用字面常量，
+                // 否则用运行时推导（兜底 ShapeInferer 预测错误）。
+                // 全 CONSTANT shape 如 (1,3,1,1) → torch.zeros(1,3,1,1)
+                // 含 UNKNOWN/SYMBOLIC 时用运行时 max/min 表达式。
+                // 见 PROJECT-GUIDELINES.md: "禁止翻译器推导形状"
+                val weightShape = node.inputs[1].type.shape
+                val weightDims = weightShape.dims
+                val allConstant = weightDims.all { it.dimKind == UirDimKind.CONSTANT && it.value != null }
+                val weightExpr = if (allConstant && weightDims.size == 4) {
+                    val dims = weightDims.map { it.value!! }.joinToString(", ")
+                    "torch.zeros($dims, device=self.device)"
+                } else {
+                    // 兜底：运行时推导（含 UNKNOWN/SYMBOLIC 维度）
+                    "torch.zeros(max(${weightVar}.shape[0], 1), $inputVar.shape[1], min(${weightVar}.shape[2], $inputVar.shape[2]), min(${weightVar}.shape[3], $inputVar.shape[3]), device=self.device)"
+                }
+                "$pytorchFunc($inputVar, $weightExpr, " +
                     "stride=$stride, padding=$padding, dilation=$dilation, groups=$groups)"
             }
 
@@ -462,9 +502,17 @@ class PytorchTranslator(
                     val maxPad = kernelSize / 2
                     if (padding > maxPad) padding = maxPad
                 }
-                val runtimeKs = "max(1, min($kernelSize, $inputVar.shape[2], $inputVar.shape[3]))"
-                "$pytorchFunc($inputVar, " +
-                    "kernel_size=$runtimeKs, stride=min($stride, $runtimeKs), padding=min($padding, $runtimeKs // 2))"
+                // 如果 IR 中 input shape 全 CONSTANT 且 kernel_size 已静态裁剪，直接输出字面量
+                val allConstant = inputShape.dims.size >= 4 &&
+                    inputShape.dims[2].dimKind == UirDimKind.CONSTANT &&
+                    inputShape.dims[3].dimKind == UirDimKind.CONSTANT
+                if (allConstant) {
+                    "$pytorchFunc($inputVar, kernel_size=$kernelSize, stride=$stride, padding=$padding)"
+                } else {
+                    val runtimeKs = "max(1, min($kernelSize, $inputVar.shape[2], $inputVar.shape[3]))"
+                    "$pytorchFunc($inputVar, " +
+                        "kernel_size=$runtimeKs, stride=min($stride, $runtimeKs), padding=min($padding, $runtimeKs // 2))"
+                }
             }
             UirOpKind.AVG_POOL2D -> {
                 var kernelSize = (node.attributes["kernel_size"] as? UirIntAttr)?.value ?: 2
@@ -482,13 +530,17 @@ class PytorchTranslator(
                         stride = minOf(stride, kernelSize)
                     }
                 }
-                // Runtime guard: clamp kernel_size to actual spatial dims via min().
-                // This catches cases where the IR-inferred shape is incorrect
-                // (e.g., due to GATHER shape inference limitations), ensuring
-                // kernel_size never exceeds the real spatial dimensions at runtime.
-                val runtimeKs = "max(1, min($kernelSize, $inputVar.shape[2], $inputVar.shape[3]))"
-                "$pytorchFunc($inputVar, " +
-                    "kernel_size=$runtimeKs, stride=min($stride, $runtimeKs), padding=$padding)"
+                // 如果 IR 中 input shape 全 CONSTANT 且 kernel_size 已静态裁剪，直接输出字面量
+                val allConstant = inputShape.dims.size >= 4 &&
+                    inputShape.dims[2].dimKind == UirDimKind.CONSTANT &&
+                    inputShape.dims[3].dimKind == UirDimKind.CONSTANT
+                if (allConstant) {
+                    "$pytorchFunc($inputVar, kernel_size=$kernelSize, stride=$stride, padding=$padding)"
+                } else {
+                    val runtimeKs = "max(1, min($kernelSize, $inputVar.shape[2], $inputVar.shape[3]))"
+                    "$pytorchFunc($inputVar, " +
+                        "kernel_size=$runtimeKs, stride=min($stride, $runtimeKs), padding=$padding)"
+                }
             }
 
             // ===== 归一化 =====
@@ -862,6 +914,7 @@ UirOpKind.TILE -> {
         freshInputIds: List<String>,
         graphs: List<UirGraph>,
         indent: Int = 0,
+        staticizedInputIds: Set<String> = emptySet(),
     ) {
         val indentStr = " ".repeat(indent)
         val bodyIndent = indentStr + "        "  // 8 spaces: class body(4) + method body(4)
@@ -873,14 +926,13 @@ UirOpKind.TILE -> {
         builder.appendLine("${indentStr}    def forward(self, $forwardParams):")
         var prevGraphOutputIds = emptySet<String>()
         for ((gIdx, graph) in graphs.withIndex()) {
+            val filteredInputs = graph.inputs.filter { it.valueId !in staticizedInputIds }
             if (gIdx == 0) {
-                val moduleInputs = graph.inputs.indices.joinToString(", ") { i ->
-                    if (i < freshInputIds.size) freshInputIds[i] else graph.inputs[i].valueId
-                }
+                val moduleInputs = filteredInputs.joinToString(", ") { it.valueId }
                 builder.appendLine("${bodyIndent}x = self._mods[0]($moduleInputs)")
             } else {
-                val chainInputIds = graph.inputs.filter { it.valueId in prevGraphOutputIds }
-                val freshInputIdsForGraph = graph.inputs.filter { it.valueId !in prevGraphOutputIds }
+                val chainInputIds = filteredInputs.filter { it.valueId in prevGraphOutputIds }
+                val freshInputIdsForGraph = filteredInputs.filter { it.valueId !in prevGraphOutputIds }
                 val callArgs = mutableListOf<String>()
                 if (chainInputIds.size > 0) {
                     // 解包数量必须等于上一图全部 outputs 数量（wire-around 等修复可能提升额外 output，
@@ -896,9 +948,10 @@ UirOpKind.TILE -> {
                         builder.appendLine("${bodyIndent}$chainNames = x if isinstance(x, tuple) else (x,)")
                     }
                     chainInputIds.forEach { callArgs.add("ch_${it.valueId}") }
-                } else {
-                    callArgs.add("x")
                 }
+                // 本图输入不消费上一图输出时，不传 x——SHAPE_ABSORB-EXT 清空上一图输出后
+                // x 是空 tuple，传入会导致 TypeError（参数数量不匹配）。
+                // 本图所需全部输入都来自 fresh 参数。
                 freshInputIdsForGraph.forEach { callArgs.add(it.valueId) }
                 builder.appendLine("${bodyIndent}x = self._mods[$gIdx](" + callArgs.joinToString(", ") + ")")
             }
