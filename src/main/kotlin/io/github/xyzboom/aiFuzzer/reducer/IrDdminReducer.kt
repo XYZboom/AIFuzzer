@@ -22,6 +22,8 @@ private val log = KotlinLogging.logger {}
 sealed class DDMinCandidate {
     data class Node(val node: UirNode) : DDMinCandidate()
     data class GraphOutputRef(val graph: UirGraph, val valueId: String) : DDMinCandidate()
+    /** 跨图 input 边界。删除 = 把上游图合并到本图（消除图边界） */
+    data class GraphInputRef(val graph: UirGraph, val valueId: String) : DDMinCandidate()
 }
 
 /**
@@ -31,7 +33,69 @@ sealed class DDMinCandidate {
 class IrDdminReducer(
     private val propertyChecker: PropertyChecker,
     private val program: UirProgram,
+    /** 翻译器：UirProgram → Python 源码。用于第二层缓存（不同 IR 结构可能生成相同源码） */
+    private val translator: ((UirProgram) -> String)? = null,
 ) {
+    /**
+     * 两层缩减结果缓存，参考 CrossLangFuzzer MinimizeRunner2 的 groupCache/stringCache。
+     *
+     * 第一层（programCache）：序列化 IR（JSONL）。不同候选子集可能产生完全相同的修复后 IR，
+     * 直接命中跳过 daemon 执行。
+     *
+     * 第二层（sourceCache）：翻译后的 Python 源码。不同 IR 结构可能生成相同的 Python 代码
+     *（如 FULL 节点 fill_value 不同但其他相同，或节点顺序不同但语义等价），
+     * 命中后跳过 daemon 执行。
+     *
+     * 两层串行检查：先查第一层（快），未命中才查第二层（需翻译），都未命中才执行 daemon。
+     */
+    private val programCache = mutableMapOf<String, Boolean>()
+    private val sourceCache = mutableMapOf<String, Boolean>()
+
+    /** 检查缓存；命中则直接返回，未命中则运行 propertyChecker 并缓存到两层 */
+    private fun checkCached(copy: UirProgram): Boolean {
+        val jsonlKey = try {
+            UirSerializer.toJsonl(copy)
+        } catch (e: Exception) {
+            null
+        }
+        // 第一层：JSONL 缓存
+        if (jsonlKey != null) {
+            val cached = programCache[jsonlKey]
+            if (cached != null) return cached
+        }
+        // 第二层：源码缓存（不同 IR 可能生成相同源码）
+        if (translator != null && jsonlKey != null) {
+            val source = try {
+                translator(copy)
+            } catch (e: Exception) {
+                null
+            }
+            if (source != null) {
+                val cached = sourceCache[source]
+                if (cached != null) {
+                    // 把结果也缓存到第一层
+                    programCache[jsonlKey] = cached
+                    return cached
+                }
+            }
+        }
+        val result = propertyChecker.check(copy)
+        if (jsonlKey != null) {
+            programCache[jsonlKey] = result
+        }
+        if (translator != null && jsonlKey != null) {
+            val source = try {
+                translator(copy)
+            } catch (e: Exception) {
+                null
+            }
+            if (source != null) {
+                sourceCache[source] = result
+            }
+        }
+        return result
+    }
+
     fun reduceGraph(
         graph: UirGraph,
         steps: MutableList<ReductionStep>,
@@ -294,7 +358,7 @@ class IrDdminReducer(
                 return false
             }
             val checkResult = try { 
-                val pcResult = propertyChecker.check(copy)
+                val pcResult = checkCached(copy)
                 // 记录详细结果——但无法直接获取 success/matched 因为 PropertyChecker 接口只返回 boolean
                 pcResult
             } catch (e: Exception) { false }
@@ -330,12 +394,20 @@ class IrDdminReducer(
         }.toSet()
         // 候选集
         val allNodes = program.graphs.flatMap { it.nodes.toList() }
+        // 所有图的全部输出声明（不管是否被其他图消费）。删除只影响输出声明，不改变图结构。
         val allOutputCandidates = program.graphs.flatMap { g ->
             g.outputs
                 .map { it.valueId }
-                .filter { it !in allGraphInputIds && it in allProducedByNodes }
                 .map { DDMinCandidate.GraphOutputRef(g, it) }
         }
+        // 跨图 input 边界候选：被其他图 outputs 产出的 input 声明。删除 = 图融合（两图变一图）。
+        val allGraphInputRefs = program.graphs.flatMap { g ->
+            g.inputs
+                .map { it.valueId }
+                .filter { v -> program.graphs.any { it !== g && it.outputs.any { o -> o.valueId == v } } }
+                .map { DDMinCandidate.GraphInputRef(g, it) }
+        }
+        log.warn { "reduceProgram: 候选集 ${allNodes.size} 节点 + ${allOutputCandidates.size} 输出 + ${allGraphInputRefs.size} 跨图输入边界" }
         if (allNodes.size <= 1) {
             return propertyChecker.check(program)
         }
@@ -348,12 +420,12 @@ class IrDdminReducer(
             cleanupInputsOutputs(graph, crossGraphRefs)
         }
 
-        val allCandidates = allNodes.map { DDMinCandidate.Node(it) } + allOutputCandidates
+        val allCandidates = allNodes.map { DDMinCandidate.Node(it) } + allOutputCandidates + allGraphInputRefs
         var bestSubset: Set<DDMinCandidate>? = null
 
         val ddmin = DDMin<DDMinCandidate> { candidates ->
             if (candidates.toSet() == allCandidates.toSet()) return@DDMin true
-            val testResult = testProgramSubset(allNodes, allOutputCandidates, candidates, nodeToGraph)
+            val testResult = testProgramSubset(allNodes, allOutputCandidates, allGraphInputRefs, candidates, nodeToGraph)
             if (testResult) bestSubset = candidates.toSet()
             testResult
         }
@@ -369,7 +441,12 @@ class IrDdminReducer(
             ?.toSet() ?: allOutputCandidates.map { it.valueId }.toSet()
         val removedNodes = allNodes.filter { it !in keptNodes }.toSet()
         val removedOutputIds = allOutputCandidates.map { it.valueId }.toSet() - keptOutputIds
-        if (removedNodes.isEmpty() && removedOutputIds.isEmpty()) return true
+        val keptInputRefIds = bestSubset
+            ?.filterIsInstance<DDMinCandidate.GraphInputRef>()
+            ?.map { it.valueId }
+            ?.toSet() ?: allGraphInputRefs.map { it.valueId }.toSet()
+        val removedInputRefIds = allGraphInputRefs.map { it.valueId }.toSet() - keptInputRefIds
+        if (removedNodes.isEmpty() && removedOutputIds.isEmpty() && removedInputRefIds.isEmpty()) return true
 
         // 备份所有图
         val nodesBackups = mutableMapOf<UirGraph, List<UirNode>>()
@@ -384,6 +461,39 @@ class IrDdminReducer(
         // 删输出引用
         for (graph in program.graphs) {
             graph.outputs.removeAll { it.valueId in removedOutputIds }
+        }
+
+        // 图融合：删除跨图 input 边界 = 把上游图合并到本图（与 testProgramSubset 一致）
+        if (removedInputRefIds.isNotEmpty()) {
+            for (valueId in removedInputRefIds) {
+                val upstream = program.graphs.firstOrNull { g -> g.outputs.any { it.valueId == valueId } } ?: continue
+                val target = program.graphs.firstOrNull { g -> g.inputs.any { it.valueId == valueId } } ?: continue
+                if (upstream === target) continue
+                for (node in upstream.nodes) {
+                    if (target.nodes.none { it === node }) target.nodes.add(node)
+                }
+                for (inputRef in upstream.inputs) {
+                    if (target.inputs.none { it.valueId == inputRef.valueId }) {
+                        val ref = buildValueRef {
+                            this.valueId = inputRef.valueId
+                            this.type = inputRef.type
+                        }
+                        target.inputs.add(ref)
+                    }
+                }
+                for (outputRef in upstream.outputs) {
+                    if (target.outputs.none { it.valueId == outputRef.valueId }) {
+                        val ref = buildValueRef {
+                            this.valueId = outputRef.valueId
+                            this.type = outputRef.type
+                        }
+                        target.outputs.add(ref)
+                    }
+                }
+                target.inputs.removeAll { it.valueId == valueId }
+                upstream.nodes.clear(); upstream.inputs.clear(); upstream.outputs.clear()
+            }
+            program.graphs.removeAll { it.nodes.isEmpty() }
         }
 
         // 按图分组删节点，每图各自修复（与 testSubset 逻辑一致）
@@ -479,14 +589,17 @@ class IrDdminReducer(
     private fun testProgramSubset(
         allNodes: List<UirNode>,
         allOutputCandidates: List<DDMinCandidate.GraphOutputRef>,
+        allGraphInputRefs: List<DDMinCandidate.GraphInputRef>,
         candidates: List<DDMinCandidate>,
         nodeToGraph: Map<UirNode, UirGraph>,
     ): Boolean {
         val keptNodes = candidates.filterIsInstance<DDMinCandidate.Node>().map { it.node }.toSet()
         val keptOutputIds = candidates.filterIsInstance<DDMinCandidate.GraphOutputRef>().map { it.valueId }.toSet()
+        val keptInputRefIds = candidates.filterIsInstance<DDMinCandidate.GraphInputRef>().map { it.valueId }.toSet()
         val removedNodes = allNodes.filter { it !in keptNodes }.toSet()
         val removedOutputIds = allOutputCandidates.map { it.valueId }.toSet() - keptOutputIds
-        if (removedNodes.isEmpty() && removedOutputIds.isEmpty()) return true
+        val removedInputRefIds = allGraphInputRefs.map { it.valueId }.toSet() - keptInputRefIds
+        if (removedNodes.isEmpty() && removedOutputIds.isEmpty() && removedInputRefIds.isEmpty()) return true
         val removedOps = removedNodes.map { it.op.name }.sorted()
 
         return try {
@@ -494,6 +607,31 @@ class IrDdminReducer(
             // 删输出引用（所有图）
             for (graph in copy.graphs) {
                 graph.outputs.removeAll { it.valueId in removedOutputIds }
+            }
+            // 图融合：删除跨图 input 边界 = 把上游图合并到本图
+            if (removedInputRefIds.isNotEmpty()) {
+                for (valueId in removedInputRefIds) {
+                    // 找上游图（产出 valueId 的图）
+                    val upstream = copy.graphs.firstOrNull { g -> g.outputs.any { it.valueId == valueId } } ?: continue
+                    // 找目标图（消费 valueId 的图）
+                    val target = copy.graphs.firstOrNull { g -> g.inputs.any { it.valueId == valueId } } ?: continue
+                    if (upstream === target) continue
+                    // 整图融合：上游图的所有节点 + inputs + outputs 合并到目标图
+                    target.nodes.addAll(upstream.nodes)
+                    for (input in upstream.inputs) {
+                        if (target.inputs.none { it.valueId == input.valueId }) {
+                            target.inputs.add(input)
+                        }
+                    }
+                    for (output in upstream.outputs) {
+                        if (target.outputs.none { it.valueId == output.valueId }) {
+                            target.outputs.add(output)
+                        }
+                    }
+                    target.inputs.removeAll { it.valueId == valueId }
+                    upstream.nodes.clear(); upstream.inputs.clear(); upstream.outputs.clear()
+                }
+                copy.graphs.removeAll { it.nodes.isEmpty() }
             }
             // 删节点（按图分组）
             if (removedNodes.isNotEmpty()) {
@@ -568,7 +706,7 @@ class IrDdminReducer(
             }
             fixAllGatherIndices(copy)
             copy.graphs.removeAll { it.nodes.isEmpty() }
-            propertyChecker.check(copy)
+            checkCached(copy)
         } catch (e: Exception) {
             log.debug { "testProgramSubset 异常: ${e.message}" }
             false

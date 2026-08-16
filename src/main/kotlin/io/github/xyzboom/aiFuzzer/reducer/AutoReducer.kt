@@ -15,6 +15,7 @@ class AutoReducer(
     fun reduce(
         program: UirProgram,
         propertyChecker: PropertyChecker,
+        translator: ((UirProgram) -> String)? = null,
     ): ReductionResult {
         if (!config.enabled) return ReductionResult.unchanged(program)
         if (program.graphs.isEmpty()) {
@@ -22,7 +23,7 @@ class AutoReducer(
         }
         val originalNodeCount = program.graphs.sumOf { it.nodes.size }
         return try {
-            doReduce(program, originalNodeCount, propertyChecker)
+            doReduce(program, originalNodeCount, propertyChecker, translator)
         } catch (e: Exception) {
             log.error(e) { "Reduction failed" }
             ReductionResult.failed(program, "reduction failed: ${e.message}")
@@ -32,9 +33,10 @@ class AutoReducer(
     fun reduceFromJsonl(
         jsonl: String,
         propertyChecker: PropertyChecker,
+        translator: ((UirProgram) -> String)? = null,
     ): ReductionResult {
         val program = UirSerializer.fromJsonl(jsonl)
-        return reduce(program, propertyChecker)
+        return reduce(program, propertyChecker, translator)
     }
 
     private fun testGraphSubset(
@@ -68,9 +70,10 @@ class AutoReducer(
         program: UirProgram,
         originalNodeCount: Int,
         propertyChecker: PropertyChecker,
+        translator: ((UirProgram) -> String)? = null,
     ): ReductionResult {
         val steps = mutableListOf<ReductionStep>()
-        val reducer = IrDdminReducer(propertyChecker, program)
+        val reducer = IrDdminReducer(propertyChecker, program, translator)
 
         // 保存原始程序的深拷贝，用于最终属性检查失败时回滚
         val originalProgram = try {

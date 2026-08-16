@@ -126,7 +126,7 @@ class ReduceCommand : CliktCommand(
                     override fun bugSignature(): String = originalError.take(200)
                 }
 
-                val result = reducer.reduceFromJsonl(jsonl, propertyChecker)
+                val result = reducer.reduceFromJsonl(jsonl, propertyChecker, translator)
                 if (result.minifiedProgram != null && result.propertyPreserved) {
                     val minCount = result.minifiedProgram.graphs.sumOf { it.nodes.size }
                     val baseName = irFile.nameWithoutExtension
