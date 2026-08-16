@@ -57,3 +57,4 @@ maybeBug
 *.bak
 # Local temp configs
 configs/
+outputs/

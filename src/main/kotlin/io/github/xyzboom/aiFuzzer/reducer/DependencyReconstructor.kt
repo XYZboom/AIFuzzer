@@ -302,6 +302,7 @@ class DependencyReconstructor(
             UirOpKind.EXP, UirOpKind.LOG, UirOpKind.LOG2,
             UirOpKind.SQRT, UirOpKind.RSQRT, UirOpKind.RECIPROCAL,
             UirOpKind.CEIL, UirOpKind.FLOOR, UirOpKind.ROUND, UirOpKind.CLAMP,
+            UirOpKind.BATCH_NORM,
         )
 
         val SHAPE_TRANSFORM_OPS = setOf(
