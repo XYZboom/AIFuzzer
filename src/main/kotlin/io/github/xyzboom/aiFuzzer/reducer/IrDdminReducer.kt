@@ -419,7 +419,22 @@ class IrDdminReducer(
         if (allNodes.size <= 1) {
             return propertyChecker.check(program)
         }
-        // 初始化清理各图
+
+        // 备份所有图（必须在 cleanupInputsOutputs 之前，否则 cleanup 删掉的直通输出无法恢复）
+        val nodesBackups = mutableMapOf<UirGraph, List<UirNode>>()
+        val inputsBackups = mutableMapOf<UirGraph, List<UirValueRef>>()
+        val outputsBackups = mutableMapOf<UirGraph, List<UirValueRef>>()
+        val nodeInputSnapshots = mutableMapOf<UirGraph, List<Pair<UirNode, List<UirValueRef>>>>()
+        for (graph in program.graphs) {
+            nodesBackups[graph] = graph.nodes.toList()
+            inputsBackups[graph] = graph.inputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toList()
+            outputsBackups[graph] = graph.outputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toList()
+            nodeInputSnapshots[graph] = graph.nodes.map { node ->
+                node to node.inputs.map { ref -> buildValueRef { valueId = ref.valueId; type = ref.type } }
+            }
+        }
+
+        // 初始化清理各图（backup 之后，回滚可恢复）
         for (graph in program.graphs) {
             val crossGraphRefs = program.graphs
                 .filter { it !== graph }
@@ -456,146 +471,16 @@ class IrDdminReducer(
         val removedInputRefIds = allGraphInputRefs.map { it.valueId }.toSet() - keptInputRefIds
         if (removedNodes.isEmpty() && removedOutputIds.isEmpty() && removedInputRefIds.isEmpty()) return true
 
-        // 备份所有图
-        val nodesBackups = mutableMapOf<UirGraph, List<UirNode>>()
-        val inputsBackups = mutableMapOf<UirGraph, List<UirValueRef>>()
-        val outputsBackups = mutableMapOf<UirGraph, List<UirValueRef>>()
-        for (graph in program.graphs) {
-            nodesBackups[graph] = graph.nodes.toList()
-            inputsBackups[graph] = graph.inputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toList()
-            outputsBackups[graph] = graph.outputs.map { buildValueRef { valueId = it.valueId; type = it.type } }.toList()
+        // 应用重构（与 testProgramSubset 共享同一份 applyRemovals 代码）
+        if (!applyRemovals(program, allNodes, removedNodes, removedOutputIds, removedInputRefIds, nodeToGraph)) {
+            log.warn { "reduceProgram: applyRemovals 失败" }
+            rollbackProgram(program, nodesBackups, inputsBackups, outputsBackups, nodeInputSnapshots)
+            return false
         }
-
-        // 删输出引用
-        for (graph in program.graphs) {
-            graph.outputs.removeAll { it.valueId in removedOutputIds }
-        }
-        // 同步删下游图的无用 input/output 引用（否则 ChainedModel 解包数量不匹配 → NameError）
-        cleanupCrossGraphRefs(program, removedOutputIds)
-
-        // 图融合：删除跨图 input 边界 = 把上游图合并到本图（与 testProgramSubset 一致）
-        if (removedInputRefIds.isNotEmpty()) {
-            for (valueId in removedInputRefIds) {
-                val upstream = program.graphs.firstOrNull { g -> g.outputs.any { it.valueId == valueId } } ?: continue
-                val target = program.graphs.firstOrNull { g -> g.inputs.any { it.valueId == valueId } } ?: continue
-                if (upstream === target) continue
-                for (node in upstream.nodes) {
-                    if (target.nodes.none { it === node }) target.nodes.add(node)
-                }
-                for (inputRef in upstream.inputs) {
-                    if (target.inputs.none { it.valueId == inputRef.valueId }) {
-                        val ref = buildValueRef {
-                            this.valueId = inputRef.valueId
-                            this.type = inputRef.type
-                        }
-                        target.inputs.add(ref)
-                    }
-                }
-                for (outputRef in upstream.outputs) {
-                    if (target.outputs.none { it.valueId == outputRef.valueId }) {
-                        val ref = buildValueRef {
-                            this.valueId = outputRef.valueId
-                            this.type = outputRef.type
-                        }
-                        target.outputs.add(ref)
-                    }
-                }
-                target.inputs.removeAll { it.valueId == valueId }
-                upstream.nodes.clear(); upstream.inputs.clear(); upstream.outputs.clear()
-            }
-            program.graphs.removeAll { it.nodes.isEmpty() }
-        }
-
-        // 按图分组删节点，每图各自修复（与 testSubset 逻辑一致）
-        val removedByGraph = removedNodes.groupBy { nodeToGraph[it]!! }
-        val allRepairs = mutableListOf<Pair<UirGraph, RepairAction>>()
-        for ((graph, gNodes) in removedByGraph) {
-            val crossGraphRefs = program.graphs
-                .filter { it !== graph }
-                .flatMap { it.outputs.map { o -> o.valueId } }
-                .toSet()
-            val crossGraphConsumedRefs = program.graphs
-                .filter { it !== graph }
-                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
-                .toSet()
-            val reconstructor = DependencyReconstructor(graph, crossGraphRefs, crossGraphConsumedRefs)
-            val repairPlan = reconstructor.prepare(gNodes.toSet())
-            graph.nodes.removeAll(gNodes.toSet())
-            reconstructor.apply(repairPlan)
-            val outputValueIdsBefore = (outputsBackups[graph]?.map { it.valueId }?.toSet() ?: emptySet()) - removedOutputIds
-            repairGraphOutputs(graph, gNodes.toSet(), repairPlan, outputValueIdsBefore)
-            DeadCodeEliminator.eliminateToFixpoint(graph)
-            for (repair in repairPlan.repairs) {
-                allRepairs.add(graph to repair)
-            }
-        }
-
-        // 跨图引用更新（与 testSubset 逻辑一致）
-        for ((repairGraph, repair) in allRepairs) {
-            val newValueId = when (repair.type) {
-                RepairType.WIRE_AROUND -> repair.newValueId
-                RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
-                RepairType.SHAPE_ABSORB -> repair.targetInputValueId
-                RepairType.CONSTANT_TO_INPUT -> repair.newInputValueId
-            }
-            if (newValueId == null) continue
-            for (otherGraph in program.graphs) {
-                if (otherGraph === repairGraph) continue
-                for (input in otherGraph.inputs) {
-                    if (input.valueId == repair.oldValueId) {
-                        if (otherGraph.inputs.any { it.valueId == newValueId }) {
-                            otherGraph.inputs.remove(input)
-                        } else {
-                            input.valueId = newValueId
-                            input.type = repair.oldType ?: repair.newType ?: input.type
-                        }
-                    }
-                }
-                for (output in otherGraph.outputs) {
-                    if (output.valueId == repair.oldValueId) {
-                        output.valueId = newValueId
-                    }
-                }
-                for (node in otherGraph.nodes) {
-                    for (nodeInput in node.inputs) {
-                        if (nodeInput.valueId == repair.oldValueId) {
-                            nodeInput.valueId = newValueId
-                        }
-                    }
-                }
-            }
-        }
-
-        // 删除 FULL 等常量节点后，清理下游图不再被内部节点消费的 input/output 引用
-        val removedConstantOutputIds = removedNodes
-            .filter { it.op in listOf(UirOpKind.FULL, UirOpKind.ZEROS, UirOpKind.ONES, UirOpKind.ARANGE) }
-            .flatMap { it.outputs.map { o -> o.valueId } }
-            .toSet()
-        if (removedConstantOutputIds.isNotEmpty()) {
-            cleanupCrossGraphRefs(program, removedConstantOutputIds)
-        }
-
-        fixAllGatherIndices(program)
-
-        // 清理各图 outputs（与 testSubset 中 copyGraph.outputs.removeAll 一致）
-        for (graph in program.graphs) {
-            val crossRefs = program.graphs
-                .filter { it !== graph }
-                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
-                .toSet()
-            val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
-                graph.inputs.map { it.valueId }.toSet()
-            graph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
-        }
-        program.graphs.removeAll { it.nodes.isEmpty() }
 
         // 验证
         if (!propertyChecker.check(program)) {
-            for (graph in program.graphs) {
-                nodesBackups[graph]?.let { graph.nodes.clear(); graph.nodes.addAll(it) }
-                inputsBackups[graph]?.let { graph.inputs.clear(); graph.inputs.addAll(it) }
-                outputsBackups[graph]?.let { graph.outputs.clear(); graph.outputs.addAll(it) }
-            }
+            rollbackProgram(program, nodesBackups, inputsBackups, outputsBackups, nodeInputSnapshots)
             return false
         }
         val removedDesc = removedNodes.map { it.op.name }.sorted().joinToString(",")
@@ -629,7 +514,140 @@ class IrDdminReducer(
         }
     }
 
-    /** 程序级 DDMin 测试子集，与 testSubset 逻辑一致，扩展到多图 */
+    /**
+     * 公共重构函数：删除输出引用、图融合、删节点+依赖重构、跨图引用更新、output清理。
+     * 与 testProgramSubset 和 reduceProgram 共享同一份代码，确保测试和实际应用一致。
+     * 修改目标 program 原地，调用方负责备份/回滚。
+     */
+    private fun applyRemovals(
+        target: UirProgram,
+        allNodes: List<UirNode>,
+        removedNodes: Set<UirNode>,
+        removedOutputIds: Set<String>,
+        removedInputRefIds: Set<String>,
+        nodeToGraph: Map<UirNode, UirGraph>,
+    ): Boolean {
+        // 1. 删输出引用（所有图）
+        for (graph in target.graphs) {
+            graph.outputs.removeAll { it.valueId in removedOutputIds }
+        }
+        // 2. 同步删下游图的无用 input/output 引用
+        if (removedOutputIds.isNotEmpty()) {
+            cleanupCrossGraphRefs(target, removedOutputIds)
+        }
+        // 3. 图融合：删除跨图 input 边界 = 把上游图合并到本图
+        if (removedInputRefIds.isNotEmpty()) {
+            for (valueId in removedInputRefIds) {
+                val upstream = target.graphs.firstOrNull { g -> g.outputs.any { it.valueId == valueId } } ?: continue
+                val targetGraph = target.graphs.firstOrNull { g -> g.inputs.any { it.valueId == valueId } } ?: continue
+                if (upstream === targetGraph) continue
+                targetGraph.nodes.addAll(upstream.nodes)
+                for (inputRef in upstream.inputs) {
+                    if (targetGraph.inputs.none { it.valueId == inputRef.valueId }) {
+                        targetGraph.inputs.add(buildValueRef { this.valueId = inputRef.valueId; this.type = inputRef.type })
+                    }
+                }
+                for (outputRef in upstream.outputs) {
+                    if (targetGraph.outputs.none { it.valueId == outputRef.valueId }) {
+                        targetGraph.outputs.add(buildValueRef { this.valueId = outputRef.valueId; this.type = outputRef.type })
+                    }
+                }
+                targetGraph.inputs.removeAll { it.valueId == valueId }
+                upstream.nodes.clear(); upstream.inputs.clear(); upstream.outputs.clear()
+            }
+            target.graphs.removeAll { it.nodes.isEmpty() }
+        }
+        // 4. 删节点（按图分组）+ 依赖重构
+        val allRepairs = mutableListOf<Pair<UirGraph, RepairAction>>()
+        if (removedNodes.isNotEmpty()) {
+            val removedByGraph = removedNodes.groupBy { nodeToGraph[it]!! }
+            for ((graph, gNodes) in removedByGraph) {
+                val targetGraph = target.graphs.firstOrNull { it.name == graph.name } ?: return false
+                val targetRemovedNodes = targetGraph.nodes.filter { node ->
+                    gNodes.any { it.name == node.name && it.op == node.op }
+                }.toSet()
+                if (targetRemovedNodes.isEmpty()) return false
+                val crossGraphRefs = target.graphs
+                    .filter { it !== targetGraph }
+                    .flatMap { it.outputs.map { o -> o.valueId } }
+                    .toSet()
+                val crossGraphConsumed = target.graphs
+                    .filter { it !== targetGraph }
+                    .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                    .toSet()
+                val reconstructor = DependencyReconstructor(targetGraph, crossGraphRefs, crossGraphConsumed)
+                val repairPlan = reconstructor.prepare(targetRemovedNodes)
+                targetGraph.nodes.removeAll(targetRemovedNodes)
+                reconstructor.apply(repairPlan)
+                val outputValueIdsBefore = targetGraph.outputs.map { it.valueId }.toSet()
+                repairGraphOutputs(targetGraph, targetRemovedNodes, repairPlan, outputValueIdsBefore)
+                DeadCodeEliminator.eliminateToFixpoint(targetGraph)
+                for (repair in repairPlan.repairs) {
+                    allRepairs.add(targetGraph to repair)
+                }
+            }
+            // 5. 跨图引用更新
+            for ((repairGraph, repair) in allRepairs) {
+                val newValueId = when (repair.type) {
+                    RepairType.WIRE_AROUND -> repair.newValueId
+                    RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
+                    RepairType.SHAPE_ABSORB -> repair.targetInputValueId
+                    RepairType.CONSTANT_TO_INPUT -> repair.newInputValueId
+                }
+                if (newValueId == null) continue
+                for (otherGraph in target.graphs) {
+                    if (otherGraph === repairGraph) continue
+                    for (input in otherGraph.inputs) {
+                        if (input.valueId == repair.oldValueId) {
+                            if (otherGraph.inputs.any { it.valueId == newValueId }) {
+                                otherGraph.inputs.remove(input)
+                            } else {
+                                input.valueId = newValueId
+                                input.type = repair.oldType ?: repair.newType ?: input.type
+                            }
+                        }
+                    }
+                    for (output in otherGraph.outputs) {
+                        if (output.valueId == repair.oldValueId) {
+                            output.valueId = newValueId
+                        }
+                    }
+                    for (node in otherGraph.nodes) {
+                        for (nodeInput in node.inputs) {
+                            if (nodeInput.valueId == repair.oldValueId) {
+                                nodeInput.valueId = newValueId
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 6. 删除 FULL 等常量节点后，清理下游图不再被内部节点消费的 input/output 引用
+        val removedConstantOutputIds = removedNodes
+            .filter { it.op in listOf(UirOpKind.FULL, UirOpKind.ZEROS, UirOpKind.ONES, UirOpKind.ARANGE) }
+            .flatMap { it.outputs.map { o -> o.valueId } }
+            .toSet()
+        if (removedConstantOutputIds.isNotEmpty()) {
+            cleanupCrossGraphRefs(target, removedConstantOutputIds)
+        }
+        // 7. 修复 GATHER indices
+        fixAllGatherIndices(target)
+        // 8. 清理各图 outputs
+        for (graph in target.graphs) {
+            val crossRefs = target.graphs
+                .filter { it !== graph }
+                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
+                .toSet()
+            val producedByNodes = graph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
+                graph.inputs.map { it.valueId }.toSet()
+            graph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
+        }
+        // 9. 删除空图
+        target.graphs.removeAll { it.nodes.isEmpty() }
+        return true
+    }
+
+    /** 程序级 DDMin 测试子集，与 reduceProgram 共享同一份 applyRemovals 重构逻辑 */
     private fun testProgramSubset(
         allNodes: List<UirNode>,
         allOutputCandidates: List<DDMinCandidate.GraphOutputRef>,
@@ -648,115 +666,17 @@ class IrDdminReducer(
 
         return try {
             val copy = UirSerializer.fromJsonl(UirSerializer.toJsonl(program))
-            // 删输出引用（所有图）
-            for (graph in copy.graphs) {
-                graph.outputs.removeAll { it.valueId in removedOutputIds }
+            if (!applyRemovals(copy, allNodes, removedNodes, removedOutputIds, removedInputRefIds, nodeToGraph)) {
+                log.warn { "DDMIN_REJECT(testProgramSubset): applyRemovals 失败 (节点[$removedOps], 输出[$removedOutputIds], 输入边界[$removedInputRefIds])" }
+                return false
             }
-            // 同步删下游图的无用 input/output 引用（否则 ChainedModel 解包数量不匹配 → NameError）
-            cleanupCrossGraphRefs(copy, removedOutputIds)
-            // 图融合：删除跨图 input 边界 = 把上游图合并到本图
-            if (removedInputRefIds.isNotEmpty()) {
-                for (valueId in removedInputRefIds) {
-                    // 找上游图（产出 valueId 的图）
-                    val upstream = copy.graphs.firstOrNull { g -> g.outputs.any { it.valueId == valueId } } ?: continue
-                    // 找目标图（消费 valueId 的图）
-                    val target = copy.graphs.firstOrNull { g -> g.inputs.any { it.valueId == valueId } } ?: continue
-                    if (upstream === target) continue
-                    // 整图融合：上游图的所有节点 + inputs + outputs 合并到目标图
-                    target.nodes.addAll(upstream.nodes)
-                    for (input in upstream.inputs) {
-                        if (target.inputs.none { it.valueId == input.valueId }) {
-                            target.inputs.add(input)
-                        }
-                    }
-                    for (output in upstream.outputs) {
-                        if (target.outputs.none { it.valueId == output.valueId }) {
-                            target.outputs.add(output)
-                        }
-                    }
-                    target.inputs.removeAll { it.valueId == valueId }
-                    upstream.nodes.clear(); upstream.inputs.clear(); upstream.outputs.clear()
-                }
-                copy.graphs.removeAll { it.nodes.isEmpty() }
+            val checkResult = try { checkCached(copy) } catch (e: Exception) { false }
+            if (!checkResult) {
+                log.warn { "DDMIN_REJECT(testProgramSubset): 属性检查失败 (节点[$removedOps], 输出[$removedOutputIds], 输入边界[$removedInputRefIds])" }
+            } else if (removedNodes.isNotEmpty() || removedOutputIds.isNotEmpty() || removedInputRefIds.isNotEmpty()) {
+                log.info { "DDMIN_ACCEPT(testProgramSubset): 属性保持 (节点[$removedOps], 输出[$removedOutputIds], 输入边界[$removedInputRefIds])" }
             }
-            // 删节点（按图分组）
-            if (removedNodes.isNotEmpty()) {
-                val removedByGraph = removedNodes.groupBy { nodeToGraph[it]!! }
-                val allRepairs = mutableListOf<Pair<UirGraph, RepairAction>>()
-                for ((origGraph, gNodes) in removedByGraph) {
-                    val copyGraph = copy.graphs.firstOrNull { it.name == origGraph.name } ?: return false
-                    val copyRemovedNodes = copyGraph.nodes.filter { node ->
-                        gNodes.any { it.name == node.name && it.op == node.op }
-                    }.toSet()
-                    if (copyRemovedNodes.isEmpty()) return false
-                    val copyCrossGraphRefs = copy.graphs
-                        .filter { it !== copyGraph }
-                        .flatMap { it.outputs.map { o -> o.valueId } }
-                        .toSet()
-                    val copyCrossGraphConsumed = copy.graphs
-                        .filter { it !== copyGraph }
-                        .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
-                        .toSet()
-                    val reconstructor = DependencyReconstructor(copyGraph, copyCrossGraphRefs, copyCrossGraphConsumed)
-                    val repairPlan = reconstructor.prepare(copyRemovedNodes)
-                    copyGraph.nodes.removeAll(copyRemovedNodes)
-                    reconstructor.apply(repairPlan)
-                    val outputValueIdsBefore = copyGraph.outputs.map { it.valueId }.toSet()
-                    repairGraphOutputs(copyGraph, copyRemovedNodes, repairPlan, outputValueIdsBefore)
-                    DeadCodeEliminator.eliminateToFixpoint(copyGraph)
-                    for (repair in repairPlan.repairs) {
-                        allRepairs.add(copyGraph to repair)
-                    }
-                }
-                // 跨图引用更新（与 testSubset 完全一致，但处理所有图的 repair）
-                for ((repairGraph, repair) in allRepairs) {
-                    val newValueId = when (repair.type) {
-                        RepairType.WIRE_AROUND -> repair.newValueId
-                        RepairType.DEFAULT_VALUE -> "${repair.oldValueId}_default"
-                        RepairType.SHAPE_ABSORB -> repair.targetInputValueId
-                        RepairType.CONSTANT_TO_INPUT -> repair.newInputValueId
-                    }
-                    if (newValueId == null) continue
-                    for (otherGraph in copy.graphs) {
-                        if (otherGraph === repairGraph) continue
-                        for (input in otherGraph.inputs) {
-                            if (input.valueId == repair.oldValueId) {
-                                if (otherGraph.inputs.any { it.valueId == newValueId }) {
-                                    otherGraph.inputs.remove(input)
-                                } else {
-                                    input.valueId = newValueId
-                                    input.type = repair.oldType ?: repair.newType ?: input.type
-                                }
-                            }
-                        }
-                        for (output in otherGraph.outputs) {
-                            if (output.valueId == repair.oldValueId) {
-                                output.valueId = newValueId
-                            }
-                        }
-                        for (node in otherGraph.nodes) {
-                            for (nodeInput in node.inputs) {
-                                if (nodeInput.valueId == repair.oldValueId) {
-                                    nodeInput.valueId = newValueId
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // 对各图做 output 清理（与 testSubset 一致）
-                        for (copyGraph in copy.graphs) {
-                            val crossRefs = copy.graphs
-                                .filter { it !== copyGraph }
-                                .flatMap { it.nodes.flatMap { n -> n.inputs.map { i -> i.valueId } } }
-                                .toSet()
-                            val producedByNodes = copyGraph.nodes.flatMap { it.outputs.map { o -> o.valueId } }.toSet() +
-                                copyGraph.inputs.map { it.valueId }.toSet()
-                            copyGraph.outputs.removeAll { it.valueId !in producedByNodes && it.valueId !in crossRefs }
-                        }
-            fixAllGatherIndices(copy)
-            copy.graphs.removeAll { it.nodes.isEmpty() }
-            checkCached(copy)
+            checkResult
         } catch (e: Exception) {
             log.debug { "testProgramSubset 异常: ${e.message}" }
             false
@@ -783,6 +703,34 @@ class IrDdminReducer(
                 if (i < snapshot.node.inputs.size) {
                     snapshot.node.inputs[i].valueId = snapshot.originalInputs[i].valueId
                     snapshot.node.inputs[i].type = snapshot.originalInputs[i].type
+                }
+            }
+        }
+    }
+
+    /** 完整的 program 级回滚：恢复节点内部 inputs 和 graph 级别的 nodes/inputs/outputs */
+    private fun rollbackProgram(
+        program: UirProgram,
+        nodesBackups: Map<UirGraph, List<UirNode>>,
+        inputsBackups: Map<UirGraph, List<UirValueRef>>,
+        outputsBackups: Map<UirGraph, List<UirValueRef>>,
+        nodeInputSnapshots: Map<UirGraph, List<Pair<UirNode, List<UirValueRef>>>>,
+    ) {
+        for (graph in program.graphs) {
+            // 恢复节点列表
+            nodesBackups[graph]?.let { graph.nodes.clear(); graph.nodes.addAll(it) }
+            // 恢复 graph 级 inputs/outputs
+            inputsBackups[graph]?.let { graph.inputs.clear(); graph.inputs.addAll(it) }
+            outputsBackups[graph]?.let { graph.outputs.clear(); graph.outputs.addAll(it) }
+            // 恢复节点内部 inputs（applyRemovals 的跨图引用更新原地修改了节点 inputs）
+            nodeInputSnapshots[graph]?.let { snapshots ->
+                for ((node, originalInputs) in snapshots) {
+                    for (i in originalInputs.indices) {
+                        if (i < node.inputs.size) {
+                            node.inputs[i].valueId = originalInputs[i].valueId
+                            node.inputs[i].type = originalInputs[i].type
+                        }
+                    }
                 }
             }
         }

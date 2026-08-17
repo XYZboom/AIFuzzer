@@ -122,6 +122,19 @@ def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
     sys.stdout = old_stdout
     sys.stderr = old_stderr
 
+    # 清空 torch._dynamo 和 inductor 编译缓存，确保每次 exec 走完整编译路径
+    # 否则同一进程内二次编译相同 FX 图时命中缓存跳过 codegen
+    try:
+        if hasattr(torch, '_dynamo'):
+            torch._dynamo.reset()
+        # 清空磁盘缓存目录
+        import shutil, os
+        cache_dir = os.path.expanduser("~/.cache/torch/inductor")
+        if os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+    except Exception:
+        pass
+
     return {
         "success": success,
         "exit_code": exit_code,

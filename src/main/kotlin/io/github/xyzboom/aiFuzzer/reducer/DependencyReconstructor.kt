@@ -90,6 +90,36 @@ class DependencyReconstructor(
                         ))
                     }
                 }
+                // 非 wire-aroundable 但输入输出 shape 兼容的算子：用 WIRE_AROUND 替代 DEFAULT_VALUE
+                // 保留原始计算值（而非 FULL 常量替代），避免常量折叠掩盖 bug。
+                // 覆盖 max_pool2d(ks=1)、avg_pool2d(ks=1)、tile(1,1,1,1) 等参恒等算子。
+                else if (removedNode.inputs.isNotEmpty() && survivingConsumers.isNotEmpty() &&
+                    !hasCrossRef && !isGraphOutput && !isShapeUpgradingOp(removedNode)) {
+                    val inputShape = removedNode.inputs[0].type?.shape
+                    val outputShape = outputRef.type?.shape
+                    if (inputShape != null && outputShape != null && shapesCompatible(inputShape, outputShape)) {
+                        for (consumer in survivingConsumers) {
+                            for (input in consumer.inputs) {
+                                if (input.valueId == outputRef.valueId) {
+                                    repairs.add(RepairAction(
+                                        type = RepairType.WIRE_AROUND,
+                                        targetNode = consumer,
+                                        oldValueId = outputRef.valueId,
+                                        newValueId = removedNode.inputs[0].valueId,
+                                        newType = removedNode.inputs[0].type,
+                                    ))
+                                }
+                            }
+                        }
+                    } else {
+                        repairs.add(RepairAction(
+                            type = RepairType.DEFAULT_VALUE,
+                            oldValueId = outputRef.valueId,
+                            oldType = outputRef.type,
+                            survivingConsumers = survivingConsumers,
+                        ))
+                    }
+                }
                 // 非 wire-aroundable 算子：有消费者、graph output、跨图引用或形状放大算子时创建 FULL 节点替代
                 else if (hasCrossRef || isGraphOutput || survivingConsumers.isNotEmpty()
                     || (removedNode.inputs.isNotEmpty() && isShapeUpgradingOp(removedNode))) {
