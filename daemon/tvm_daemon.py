@@ -16,6 +16,7 @@ API:
 """
 
 import json
+import os
 import signal
 import sys
 import threading
@@ -29,7 +30,6 @@ TVM_AVAILABLE = False
 _import_error = ""
 _tvm_import_detail = ""
 try:
-    import tvm
     from tvm import relax
     import tvm.relax.op as op
     TVM_AVAILABLE = True
@@ -90,6 +90,10 @@ def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
             signal.alarm(old_alarm)
 
     elapsed = int((time.time() - start) * 1000)
+
+    # 覆盖率 flush 由 /shutdown（daemon 优雅退出时 gcov atexit）负责。
+    # 不要在此处直接调 __gcov_dump（local symbol 会 segfault），
+    # 也不要 fork 子进程（JVM 环境下不稳定）。
     captured_stdout = sys.stdout.getvalue()
     captured_stderr = sys.stderr.getvalue()
     sys.stdout = old_stdout

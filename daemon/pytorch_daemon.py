@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import traceback
+import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import StringIO
 
@@ -134,6 +135,24 @@ def run_source(source: str, timeout: int = EXEC_TIMEOUT_SECONDS) -> dict:
             shutil.rmtree(cache_dir, ignore_errors=True)
     except Exception:
         pass
+    
+    # 可选：环境变量 AIFUZZER_GCOV_FLUSH=1 时强制写入 gcov 覆盖数据
+    # 仅覆盖率构建的 PyTorch 需要此开关；日常使用无需设置，此段代码不会执行
+    if os.environ.get("AIFUZZER_GCOV_FLUSH") == "1":
+        try:
+            import ctypes as _ct
+            # 用无路径方式加载（复用已加载句柄，避免二次初始化崩溃）
+            # 符号名是 __gcov_dump（GCC 9+ 将 __gcov_flush 改名为 __gcov_dump）
+            for _lib_name in ("libtorch_cpu.so", "libtorch_cuda.so", "libc10.so"):
+                try:
+                    _lib = _ct.CDLL(_lib_name)
+                    if hasattr(_lib, "__gcov_dump"):
+                        _lib.__gcov_dump()
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     return {
         "success": success,

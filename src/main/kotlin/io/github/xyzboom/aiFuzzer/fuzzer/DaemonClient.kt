@@ -461,6 +461,9 @@ class DefaultDaemonEnvProvider(
                            "TEMP", "TMP", "SYSTEMROOT", "WINDIR")) {
             systemEnv[key]?.let { env[key] = it }
         }
+        
+        // 透传 gcov flush 环境变量（可选，仅覆盖率测量需要）
+        systemEnv["AIFUZZER_GCOV_FLUSH"]?.let { env["AIFUZZER_GCOV_FLUSH"] = it }
 
         // 如果 python 路径在 conda 环境中，自动设置 conda 相关变量
         val condaPrefix = pythonPath.substringBeforeLast("/bin/python")
