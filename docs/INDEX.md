@@ -11,6 +11,8 @@
 - [**翻译器 & Fuzzer 设计**](features/TRANSLATOR_FUZZER_DESIGN.md) — 翻译器和 fuzzer 架构
 - [**扩展设计**](features/EXTENSION_DESIGN.md) — 扩展机制
 - [**程序缩减模块**](reducer.md) — IR 级缩减
+- [**Pattern 系统**](pattern-system.md) — pattern 定义、匹配算法、加载配置
+- [**Pattern 表达式约束**](expression-constraints.md) — 跨维度表达式约束 (ExpressionConstraint)
 
 ## 问题追踪
 
