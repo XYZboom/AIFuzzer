@@ -192,6 +192,9 @@ class OnnxTranslator(
         UirOpKind.TRIL,                    // index+Where compound
         UirOpKind.TRIU,                    // index+Where compound
         UirOpKind.LAYER_NORM,              // ReduceMean→Sub→Pow→Add→Sqrt→Div→Mul
+        UirOpKind.EQUAL, UirOpKind.LESS, UirOpKind.GREATER,
+        UirOpKind.LOGICAL_AND, UirOpKind.LOGICAL_OR, UirOpKind.LOGICAL_XOR,
+        UirOpKind.WHERE,
     )
 
     // Ops where opset 11+ requires parameters as constant inputs, not attributes
@@ -940,6 +943,82 @@ class OnnxTranslator(
                 val nvOut = nextNodeVar()
                 nodeLines.add(NodeLine(nvOut, "    $nvOut = helper.make_node('Add', inputs=['$mulId', '$betaId'], outputs=['$outputId'])"))
             }
+            UirOpKind.EQUAL, UirOpKind.LESS, UirOpKind.GREATER -> {
+                val in1 = node.inputs.getOrNull(0)?.valueId ?: inputId
+                val in2 = node.inputs.getOrNull(1)?.valueId ?: in1
+                val onnxOpName = when (node.op) {
+                    UirOpKind.EQUAL -> "Equal"
+                    UirOpKind.LESS -> "Less"
+                    else -> "Greater"
+                }
+                val in1Float = if (valueDtypeMap[in1] != null && valueDtypeMap[in1] != FLOAT) {
+                    val cId = "c${outputId}_in1_f32"
+                    val nv = nextNodeVar()
+                    nodeLines.add(NodeLine(nv, "    $nv = helper.make_node('Cast', inputs=['$in1'], outputs=['$cId'], to=$FLOAT)"))
+                    cId
+                } else in1
+                val in2Float = if (valueDtypeMap[in2] != null && valueDtypeMap[in2] != FLOAT) {
+                    val cId = "c${outputId}_in2_f32"
+                    val nv = nextNodeVar()
+                    nodeLines.add(NodeLine(nv, "    $nv = helper.make_node('Cast', inputs=['$in2'], outputs=['$cId'], to=$FLOAT)"))
+                    cId
+                } else in2
+
+                val rawBoolId = "t${outputId}_bool"
+                val nvCmp = nextNodeVar()
+                nodeLines.add(NodeLine(nvCmp, "    $nvCmp = helper.make_node('$onnxOpName', inputs=['$in1Float', '$in2Float'], outputs=['$rawBoolId'])"))
+                val nvCast = nextNodeVar()
+                nodeLines.add(NodeLine(nvCast, "    $nvCast = helper.make_node('Cast', inputs=['$rawBoolId'], outputs=['$outputId'], to=$FLOAT)"))
+            }
+            UirOpKind.LOGICAL_AND, UirOpKind.LOGICAL_OR, UirOpKind.LOGICAL_XOR -> {
+                val in1 = node.inputs.getOrNull(0)?.valueId ?: inputId
+                val in2 = node.inputs.getOrNull(1)?.valueId ?: in1
+                val onnxOpName = when (node.op) {
+                    UirOpKind.LOGICAL_AND -> "And"
+                    UirOpKind.LOGICAL_OR -> "Or"
+                    else -> "Xor"
+                }
+                // Cast both inputs to BOOL
+                val in1Bool = "b${outputId}_in1_bool"
+                val nvB1 = nextNodeVar()
+                nodeLines.add(NodeLine(nvB1, "    $nvB1 = helper.make_node('Cast', inputs=['$in1'], outputs=['$in1Bool'], to=TensorProto.BOOL)"))
+                val in2Bool = "b${outputId}_in2_bool"
+                val nvB2 = nextNodeVar()
+                nodeLines.add(NodeLine(nvB2, "    $nvB2 = helper.make_node('Cast', inputs=['$in2'], outputs=['$in2Bool'], to=TensorProto.BOOL)"))
+
+                val rawBoolId = "t${outputId}_bool"
+                val nvLog = nextNodeVar()
+                nodeLines.add(NodeLine(nvLog, "    $nvLog = helper.make_node('$onnxOpName', inputs=['$in1Bool', '$in2Bool'], outputs=['$rawBoolId'])"))
+                val nvCast = nextNodeVar()
+                nodeLines.add(NodeLine(nvCast, "    $nvCast = helper.make_node('Cast', inputs=['$rawBoolId'], outputs=['$outputId'], to=$FLOAT)"))
+            }
+            UirOpKind.WHERE -> {
+                val cond = node.inputs.getOrNull(0)?.valueId ?: inputId
+                val inX = node.inputs.getOrNull(1)?.valueId ?: cond
+                val inY = node.inputs.getOrNull(2)?.valueId ?: inX
+
+                // Cast condition to BOOL
+                val condBool = "b${outputId}_cond_bool"
+                val nvCond = nextNodeVar()
+                nodeLines.add(NodeLine(nvCond, "    $nvCond = helper.make_node('Cast', inputs=['$cond'], outputs=['$condBool'], to=TensorProto.BOOL)"))
+
+                // Cast x and y to float if needed
+                val xFloat = if (valueDtypeMap[inX] != null && valueDtypeMap[inX] != FLOAT) {
+                    val cId = "c${outputId}_x_f32"
+                    val nv = nextNodeVar()
+                    nodeLines.add(NodeLine(nv, "    $nv = helper.make_node('Cast', inputs=['$inX'], outputs=['$cId'], to=$FLOAT)"))
+                    cId
+                } else inX
+                val yFloat = if (valueDtypeMap[inY] != null && valueDtypeMap[inY] != FLOAT) {
+                    val cId = "c${outputId}_y_f32"
+                    val nv = nextNodeVar()
+                    nodeLines.add(NodeLine(nv, "    $nv = helper.make_node('Cast', inputs=['$inY'], outputs=['$cId'], to=$FLOAT)"))
+                    cId
+                } else inY
+
+                val nvWhere = nextNodeVar()
+                nodeLines.add(NodeLine(nvWhere, "    $nvWhere = helper.make_node('Where', inputs=['$condBool', '$xFloat', '$yFloat'], outputs=['$outputId'])"))
+            }
             else -> {
                 // Unreachable
             }
@@ -970,7 +1049,7 @@ class OnnxTranslator(
             UirOpKind.GATHER -> p.add("axis=${(attrs["axis"] as? UirIntAttr)?.value ?: 0}")
             UirOpKind.CAST -> p.add("to=${toOnnxDtype((attrs["dtype"] as? UirStringAttr)?.value ?: "float32")}")
             // Reduce ops: axes as input (opset 13+) or attribute (opset 11-12)
-            UirOpKind.REDUCE_SUM -> {
+            UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_PROD -> {
                 val axis = (attrs["axis"] as? UirIntAttr)?.value ?: -1
                 val kd = (attrs["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
                 p.add("keepdims=${kd.toString().replaceFirstChar { it.uppercase() }}")
@@ -1109,6 +1188,18 @@ class OnnxTranslator(
         UirOpKind.CEIL -> "Ceil"
         UirOpKind.FLOOR -> "Floor"
         UirOpKind.ROUND -> "Round"
+        UirOpKind.SIN -> "Sin"
+        UirOpKind.COS -> "Cos"
+        UirOpKind.TAN -> "Tan"
+        UirOpKind.ASIN -> "Asin"
+        UirOpKind.ACOS -> "Acos"
+        UirOpKind.ATAN -> "Atan"
+        UirOpKind.ERF -> "Erf"
+        UirOpKind.SINH -> "Sinh"
+        UirOpKind.COSH -> "Cosh"
+        UirOpKind.ASINH -> "Asinh"
+        UirOpKind.ACOSH -> "Acosh"
+        UirOpKind.ATANH -> "Atanh"
 
         // ─── Binary ────────────────────────────────────
         UirOpKind.POWER -> "Pow"
@@ -1118,12 +1209,20 @@ class OnnxTranslator(
         UirOpKind.DIVIDE -> "Div"
         UirOpKind.MAXIMUM -> "Max"
         UirOpKind.MINIMUM -> "Min"
+        UirOpKind.EQUAL -> null
+        UirOpKind.LESS -> null
+        UirOpKind.GREATER -> null
+        UirOpKind.LOGICAL_AND -> null
+        UirOpKind.LOGICAL_OR -> null
+        UirOpKind.LOGICAL_XOR -> null
+        UirOpKind.WHERE -> null
 
         // ─── Reduce ────────────────────────────────────
         UirOpKind.REDUCE_SUM -> "ReduceSum"
         UirOpKind.REDUCE_MEAN -> "ReduceMean"
         UirOpKind.REDUCE_MAX -> "ReduceMax"
         UirOpKind.REDUCE_MIN -> "ReduceMin"
+        UirOpKind.REDUCE_PROD -> "ReduceProd"
         UirOpKind.ARGMAX -> null  // compound: ArgMax + Cast
         UirOpKind.ARGMIN -> null  // compound: ArgMin + Cast
 

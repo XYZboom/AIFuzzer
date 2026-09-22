@@ -131,6 +131,14 @@ object ShapeAdapter {
                 valueCounter, nodeCounter, constraint
             )
         }
+
+        // 特殊处理：三元运算 (WHERE) 需要推导公共目标形状
+        if (op in UirOpKind.ternaryInputOps && inputShapes.size >= 2) {
+            return adaptTernaryInputs(
+                inputValueRefs, inputShapes, valueShapes,
+                valueCounter, nodeCounter
+            )
+        }
         
         // 特殊处理：需要至少 2D 的算子
         if (op in setOf(UirOpKind.TRANSPOSE, UirOpKind.TRIL, UirOpKind.TRIU, UirOpKind.STRIDED_SLICE)) {
@@ -249,6 +257,49 @@ object ShapeAdapter {
 
             return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
         }
+    }
+
+    /**
+     * 适配三元运算输入（如 WHERE）。
+     * 以第一个输入作为 targetShape，后续输入若不可广播则通过 adaptWithElemCountMatch 调整。
+     */
+    private fun adaptTernaryInputs(
+        inputValueRefs: List<UirValueRef>,
+        inputShapes: List<UirShape>,
+        valueShapes: MutableMap<String, UirShape>,
+        valueCounter: Int,
+        nodeCounter: Int,
+    ): AdaptResult {
+        val targetShape = inputShapes[0]
+        val wrapperNodes = mutableListOf<UirNode>()
+        val adaptedRefs = mutableListOf<UirValueRef>()
+        val adaptedShapes = mutableListOf<UirShape>()
+
+        var localValueCounter = valueCounter
+        var localNodeCounter = nodeCounter
+
+        adaptedRefs.add(inputValueRefs[0])
+        adaptedShapes.add(targetShape)
+
+        for (i in 1 until inputValueRefs.size) {
+            val ref = inputValueRefs[i]
+            val shape = inputShapes[i]
+            if (canBroadcastTogether(targetShape, shape)) {
+                adaptedRefs.add(ref)
+                adaptedShapes.add(shape)
+            } else {
+                val (adaptedRef, nodes) = adaptWithElemCountMatch(
+                    ref, shape, targetShape,
+                    valueShapes, localValueCounter, localNodeCounter
+                )
+                wrapperNodes.addAll(nodes)
+                adaptedRefs.add(adaptedRef)
+                adaptedShapes.add(valueShapes[adaptedRef.valueId]!!)
+                localValueCounter += nodes.size
+                localNodeCounter += nodes.size
+            }
+        }
+        return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)
     }
     
     /**

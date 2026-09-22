@@ -170,6 +170,14 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             UirOpKind.POWER,
             UirOpKind.EXP,
             UirOpKind.CUMPROD,
+            UirOpKind.REDUCE_PROD,
+            UirOpKind.TAN,
+            UirOpKind.ASIN,
+            UirOpKind.ACOS,
+            UirOpKind.SINH,
+            UirOpKind.COSH,
+            UirOpKind.ACOSH,
+            UirOpKind.ATANH,
         )
 
         /**
@@ -492,6 +500,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 in UirOpKind.singleInputOps -> 1
                 in UirOpKind.multiInputOps -> minOf(2, availableValues.size)
                 in UirOpKind.binaryInputOps -> minOf(2, availableValues.size)
+                in UirOpKind.ternaryInputOps -> minOf(3, availableValues.size)
                 else -> 1
             }
             
@@ -586,6 +595,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 if (op == UirOpKind.CONV2D) 2
                 else minOf(2, availableValues.size)
             }
+            in UirOpKind.ternaryInputOps -> minOf(3, availableValues.size)
             else -> 1
         }
         log.trace { "节点 $nodeIndex: 输入数量 $numInputs" }
@@ -1044,6 +1054,69 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             
             return listOf(input1Ref, input2Ref)
         }
+
+        // 特殊处理：三元运算 (如 WHERE)
+        if (op in UirOpKind.ternaryInputOps && numInputs >= 2 && availableValues.isNotEmpty()) {
+            val input1ValueId = if (tipValue != null && tipValue in availableValues) {
+                tipValue
+            } else {
+                availableValues.random(rand)
+            }
+            val input1Shape = valueShapes[input1ValueId] ?: buildShape { }
+
+            // 选择第二个输入 (x) — 寻找与 input1Shape 广播兼容的值
+            val broadcastComp2 = availableValues.filter { vid ->
+                vid != input1ValueId && valueShapes[vid]?.let { s2 ->
+                    ShapeConstraints.areBroadcastable(input1Shape, s2)
+                } ?: false
+            }
+            val input2ValueId = if (broadcastComp2.isNotEmpty()) {
+                broadcastComp2.random(rand)
+            } else {
+                val otherValues = availableValues.filter { it != input1ValueId }
+                if (otherValues.isNotEmpty()) otherValues.random(rand) else input1ValueId
+            }
+
+            // 选择第三个输入 (y) — 寻找与 input1Shape / input2Shape 广播兼容的值
+            val shape12 = ShapeInferer.broadcastShapes(input1Shape, valueShapes[input2ValueId] ?: input1Shape)
+            val broadcastComp3 = availableValues.filter { vid ->
+                vid != input1ValueId && vid != input2ValueId && valueShapes[vid]?.let { s3 ->
+                    ShapeConstraints.areBroadcastable(shape12, s3)
+                } ?: false
+            }
+            val input3ValueId = if (broadcastComp3.isNotEmpty()) {
+                broadcastComp3.random(rand)
+            } else {
+                val otherValues = availableValues.filter { it != input1ValueId && it != input2ValueId }
+                if (otherValues.isNotEmpty()) otherValues.random(rand) else input2ValueId
+            }
+
+            val input1Ref = buildValueRef {
+                this.valueId = input1ValueId
+                this.type = buildTensorType {
+                    this.typeKind = UirTypeKind.TENSOR
+                    this.shape = valueShapes[input1ValueId] ?: buildShape { }
+                    this.dtype = mkDataType()
+                }
+            }
+            val input2Ref = buildValueRef {
+                this.valueId = input2ValueId
+                this.type = buildTensorType {
+                    this.typeKind = UirTypeKind.TENSOR
+                    this.shape = valueShapes[input2ValueId] ?: buildShape { }
+                    this.dtype = mkDataType()
+                }
+            }
+            val input3Ref = buildValueRef {
+                this.valueId = input3ValueId
+                this.type = buildTensorType {
+                    this.typeKind = UirTypeKind.TENSOR
+                    this.shape = valueShapes[input3ValueId] ?: buildShape { }
+                    this.dtype = mkDataType()
+                }
+            }
+            return listOf(input1Ref, input2Ref, input3Ref)
+        }
         
         // 其他情况：随机选择，但优先选择满足约束的值
         val selectedIds: List<String> = when {
@@ -1129,7 +1202,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 attrs["min"] = buildStringAttr { value = String.format("%.2f", minVal) }
                 attrs["max"] = buildStringAttr { value = String.format("%.2f", maxVal) }
             }
-            UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN -> {
+            UirOpKind.REDUCE_SUM, UirOpKind.REDUCE_MEAN, UirOpKind.REDUCE_MAX, UirOpKind.REDUCE_MIN, UirOpKind.REDUCE_PROD -> {
                 attrs["axis"] = buildIntAttr { value = -1 }
                 attrs["keepdims"] = buildIntAttr { value = 0 }
                 

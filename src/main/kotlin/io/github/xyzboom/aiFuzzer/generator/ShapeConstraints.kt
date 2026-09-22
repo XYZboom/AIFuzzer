@@ -90,6 +90,54 @@ object ShapeConstraints {
             numInputs = 1..1,
             description = "逐元素数学运算，形状不变"
         ),
+        UirOpKind.SIN to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素三角运算，形状不变"
+        ),
+        UirOpKind.COS to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素三角运算，形状不变"
+        ),
+        UirOpKind.TAN to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素三角运算，形状不变"
+        ),
+        UirOpKind.ASIN to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素反三角运算，形状不变"
+        ),
+        UirOpKind.ACOS to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素反三角运算，形状不变"
+        ),
+        UirOpKind.ATAN to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素反三角运算，形状不变"
+        ),
+        UirOpKind.ERF to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素误差函数，形状不变"
+        ),
+        UirOpKind.SINH to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素双曲运算，形状不变"
+        ),
+        UirOpKind.COSH to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素双曲运算，形状不变"
+        ),
+        UirOpKind.ASINH to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素反双曲运算，形状不变"
+        ),
+        UirOpKind.ACOSH to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素反双曲运算，形状不变"
+        ),
+        UirOpKind.ATANH to OpShapeConstraint(
+            numInputs = 1..1,
+            description = "逐元素反双曲运算，形状不变"
+        ),
         UirOpKind.CAST to OpShapeConstraint(
             numInputs = 1..1,
             description = "类型转换，形状不变"
@@ -154,6 +202,65 @@ object ShapeConstraints {
                 else areBroadcastable(shapes[0], shapes[1])
             },
             description = "二元运算，支持广播"
+        ),
+        UirOpKind.EQUAL to OpShapeConstraint(
+            numInputs = 1..2,
+            isApplicable = { shapes ->
+                if (shapes.size == 1) true
+                else areBroadcastable(shapes[0], shapes[1])
+            },
+            description = "比较运算，支持广播"
+        ),
+        UirOpKind.LESS to OpShapeConstraint(
+            numInputs = 1..2,
+            isApplicable = { shapes ->
+                if (shapes.size == 1) true
+                else areBroadcastable(shapes[0], shapes[1])
+            },
+            description = "比较运算，支持广播"
+        ),
+        UirOpKind.GREATER to OpShapeConstraint(
+            numInputs = 1..2,
+            isApplicable = { shapes ->
+                if (shapes.size == 1) true
+                else areBroadcastable(shapes[0], shapes[1])
+            },
+            description = "比较运算，支持广播"
+        ),
+        UirOpKind.LOGICAL_AND to OpShapeConstraint(
+            numInputs = 1..2,
+            isApplicable = { shapes ->
+                if (shapes.size == 1) true
+                else areBroadcastable(shapes[0], shapes[1])
+            },
+            description = "逻辑运算，支持广播"
+        ),
+        UirOpKind.LOGICAL_OR to OpShapeConstraint(
+            numInputs = 1..2,
+            isApplicable = { shapes ->
+                if (shapes.size == 1) true
+                else areBroadcastable(shapes[0], shapes[1])
+            },
+            description = "逻辑运算，支持广播"
+        ),
+        UirOpKind.LOGICAL_XOR to OpShapeConstraint(
+            numInputs = 1..2,
+            isApplicable = { shapes ->
+                if (shapes.size == 1) true
+                else areBroadcastable(shapes[0], shapes[1])
+            },
+            description = "逻辑运算，支持广播"
+        ),
+        UirOpKind.WHERE to OpShapeConstraint(
+            numInputs = 2..3,
+            isApplicable = { shapes ->
+                when (shapes.size) {
+                    1 -> true
+                    2 -> areBroadcastable(shapes[0], shapes[1])
+                    else -> areBroadcastable(shapes[0], shapes[1]) && areBroadcastable(shapes[1], shapes[2])
+                }
+            },
+            description = "条件选择，三元广播"
         ),
         
         // ===== 分类 C：矩阵乘法 =====
@@ -255,6 +362,11 @@ object ShapeConstraints {
             numInputs = 1..1,
             minNdim = 1,
             description = "归约运算，输出维度减少"
+        ),
+        UirOpKind.REDUCE_PROD to OpShapeConstraint(
+            numInputs = 1..1,
+            minNdim = 1,
+            description = "归约乘积运算，输出维度减少"
         ),
         
         // ===== 分类 E：形状变换 =====

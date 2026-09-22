@@ -72,6 +72,8 @@ class FuzzCommand : CliktCommand(
         }
         if (ready.isEmpty()) { backends.forEach { it.close() }; return@withTrace }
 
+        BugCollector.reportsDir = File(config.run.outputDir).absoluteFile.also { it.mkdirs() }
+
         val summary = FuzzingPipeline(
             config.generator.toGeneratorConfig(seed),
             backends,

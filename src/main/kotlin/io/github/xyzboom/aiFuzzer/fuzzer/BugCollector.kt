@@ -27,7 +27,7 @@ private val log = KotlinLogging.logger {}
 object BugCollector {
 
     /** Bug 报告输出目录 */
-    val reportsDir: File = run {
+    var reportsDir: File = run {
         val dir = File("reports").absoluteFile
         dir.mkdirs()
         dir

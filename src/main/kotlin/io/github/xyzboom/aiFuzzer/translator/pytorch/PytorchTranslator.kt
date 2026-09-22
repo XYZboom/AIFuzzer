@@ -42,6 +42,13 @@ class PytorchTranslator(
             UirOpKind.MAXIMUM to "torch.maximum",
             UirOpKind.MINIMUM to "torch.minimum",
             UirOpKind.POWER to "torch.pow",
+            UirOpKind.EQUAL to "torch.eq",
+            UirOpKind.LESS to "torch.less",
+            UirOpKind.GREATER to "torch.greater",
+            UirOpKind.LOGICAL_AND to "torch.logical_and",
+            UirOpKind.LOGICAL_OR to "torch.logical_or",
+            UirOpKind.LOGICAL_XOR to "torch.logical_xor",
+            UirOpKind.WHERE to "torch.where",
 
             // 矩阵乘法
             UirOpKind.MATMUL to "torch.matmul",
@@ -81,6 +88,18 @@ class PytorchTranslator(
             UirOpKind.FLOOR to "torch.floor",
             UirOpKind.ROUND to "torch.round",
             UirOpKind.CLAMP to "torch.clamp",
+            UirOpKind.SIN to "torch.sin",
+            UirOpKind.COS to "torch.cos",
+            UirOpKind.TAN to "torch.tan",
+            UirOpKind.ASIN to "torch.asin",
+            UirOpKind.ACOS to "torch.acos",
+            UirOpKind.ATAN to "torch.atan",
+            UirOpKind.ERF to "torch.erf",
+            UirOpKind.SINH to "torch.sinh",
+            UirOpKind.COSH to "torch.cosh",
+            UirOpKind.ASINH to "torch.asinh",
+            UirOpKind.ACOSH to "torch.acosh",
+            UirOpKind.ATANH to "torch.atanh",
 
             // SOFTMAX
             UirOpKind.SOFTMAX to "F.softmax",
@@ -91,6 +110,7 @@ class PytorchTranslator(
             UirOpKind.REDUCE_MEAN to "torch.mean",
             UirOpKind.REDUCE_MAX to "torch.max",
             UirOpKind.REDUCE_MIN to "torch.min",
+            UirOpKind.REDUCE_PROD to "torch.prod",
 
             // 形状变换
             UirOpKind.RESHAPE to "torch.reshape",
@@ -443,6 +463,18 @@ class PytorchTranslator(
                 val maxVal = (node.attributes["max"] as? UirStringAttr)?.value?.toDoubleOrNull() ?: 1.0
                 "torch.clamp($inputVar, min=$minVal, max=$maxVal)"
             }
+            UirOpKind.SIN -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.COS -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.TAN -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ASIN -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ACOS -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ATAN -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ERF -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.SINH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.COSH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ASINH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ACOSH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
+            UirOpKind.ATANH -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float())"
 
             // ===== 二元运算（单输入模式保护 + 广播兼容） =====
             // Cast both inputs to float for dtype compatibility
@@ -453,6 +485,20 @@ class PytorchTranslator(
             UirOpKind.MAXIMUM -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
             UirOpKind.MINIMUM -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
             UirOpKind.POWER -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float())"
+            UirOpKind.EQUAL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float()).float()"
+            UirOpKind.LESS -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float()).float()"
+            UirOpKind.GREATER -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.float(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float()).float()"
+            UirOpKind.LOGICAL_AND -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.bool(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.bool()).float()"
+            UirOpKind.LOGICAL_OR -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.bool(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.bool()).float()"
+            UirOpKind.LOGICAL_XOR -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}.bool(), ${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.bool()).float()"
+
+            // ===== 条件选择 =====
+            UirOpKind.WHERE -> {
+                val cond = "${valueMap[node.inputs[0].valueId]}.bool()"
+                val x = "${valueMap[node.inputs.getOrElse(1) { node.inputs[0] }.valueId]}.float()"
+                val y = "${valueMap[node.inputs.getOrElse(2) { node.inputs.getOrElse(1) { node.inputs[0] } }.valueId]}.float()"
+                "torch.where($cond, $x, $y)"
+            }
 
             // ===== 矩阵乘法 =====
             UirOpKind.MATMUL -> "$pytorchFunc(${valueMap[node.inputs[0].valueId]}, ${valueMap[node.inputs[1].valueId]})"
@@ -614,6 +660,16 @@ class PytorchTranslator(
                 } else {
                     "torch.min($inputVar, dim=$axis, keepdim=False).values"
                 }
+            }
+            UirOpKind.REDUCE_PROD -> {
+                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: -1
+                val keepdims = (node.attributes["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
+                val keepdimsStr = if (keepdims) "True" else "False"
+                val dtypeAttr = node.attributes["dtype"] as? UirStringAttr
+                val dtypeStr = if (dtypeAttr != null) ", dtype=torch.${dtypeAttr.value}" else ""
+                val inputVar = valueMap[node.inputs[0].valueId]!!
+                val result = "$pytorchFunc($inputVar.float(), dim=$axis, keepdim=$keepdimsStr$dtypeStr)"
+                if (dtypeAttr != null && dtypeAttr.value != "float32") "$result.float()" else result
             }
 
             // ===== P0: 累积操作（支持显式 dtype） =====
