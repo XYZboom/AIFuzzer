@@ -64,6 +64,18 @@ class TvmRelaxTranslator(
             UirOpKind.FLOOR to "relax.op.floor",
             UirOpKind.ROUND to "relax.op.round",
             UirOpKind.CLAMP to "relax.op.clip",
+            UirOpKind.SIN to "relax.op.sin",
+            UirOpKind.COS to "relax.op.cos",
+            UirOpKind.TAN to "relax.op.tan",
+            UirOpKind.ASIN to "relax.op.asin",
+            UirOpKind.ACOS to "relax.op.acos",
+            UirOpKind.ATAN to "relax.op.atan",
+            UirOpKind.ERF to "relax.op.erf",
+            UirOpKind.SINH to "relax.op.sinh",
+            UirOpKind.COSH to "relax.op.cosh",
+            UirOpKind.ASINH to "relax.op.asinh",
+            UirOpKind.ACOSH to "relax.op.acosh",
+            UirOpKind.ATANH to "relax.op.atanh",
 
             // 二元运算
             UirOpKind.ADD to "relax.op.add",
@@ -73,6 +85,17 @@ class TvmRelaxTranslator(
             UirOpKind.MAXIMUM to "relax.op.maximum",
             UirOpKind.MINIMUM to "relax.op.minimum",
             UirOpKind.POWER to "relax.op.power",
+
+            // 比较与逻辑
+            UirOpKind.EQUAL to "relax.op.equal",
+            UirOpKind.LESS to "relax.op.less",
+            UirOpKind.GREATER to "relax.op.greater",
+            UirOpKind.LOGICAL_AND to "relax.op.logical_and",
+            UirOpKind.LOGICAL_OR to "relax.op.logical_or",
+            UirOpKind.LOGICAL_XOR to "relax.op.logical_xor",
+
+            // 条件选择
+            UirOpKind.WHERE to "relax.op.where",
 
             // 矩阵乘法
             UirOpKind.MATMUL to "relax.op.matmul",
@@ -95,6 +118,7 @@ class TvmRelaxTranslator(
             UirOpKind.REDUCE_MEAN to "relax.op.mean",
             UirOpKind.REDUCE_MAX to "relax.op.max",
             UirOpKind.REDUCE_MIN to "relax.op.min",
+            UirOpKind.REDUCE_PROD to "relax.op.prod",
 
             // 形状变换
             UirOpKind.RESHAPE to "relax.op.reshape",
@@ -487,6 +511,18 @@ class TvmRelaxTranslator(
                 val maxVal = (attributes["max"] as? UirStringAttr)?.value?.toDoubleOrNull()?.toInt() ?: 1
                 "relax.op.clip(${inputVars[0]}, $minVal, $maxVal)"
             }
+            UirOpKind.SIN -> "relax.op.sin(${inputVars[0]})"
+            UirOpKind.COS -> "relax.op.cos(${inputVars[0]})"
+            UirOpKind.TAN -> "relax.op.tan(${inputVars[0]})"
+            UirOpKind.ASIN -> "relax.op.asin(${inputVars[0]})"
+            UirOpKind.ACOS -> "relax.op.acos(${inputVars[0]})"
+            UirOpKind.ATAN -> "relax.op.atan(${inputVars[0]})"
+            UirOpKind.ERF -> "relax.op.erf(${inputVars[0]})"
+            UirOpKind.SINH -> "relax.op.sinh(${inputVars[0]})"
+            UirOpKind.COSH -> "relax.op.cosh(${inputVars[0]})"
+            UirOpKind.ASINH -> "relax.op.asinh(${inputVars[0]})"
+            UirOpKind.ACOSH -> "relax.op.acosh(${inputVars[0]})"
+            UirOpKind.ATANH -> "relax.op.atanh(${inputVars[0]})"
 
             // ===== 二元运算 =====
             UirOpKind.ADD -> "relax.op.add(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\"))"
@@ -496,6 +532,20 @@ class TvmRelaxTranslator(
             UirOpKind.MAXIMUM -> "relax.op.maximum(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\"))"
             UirOpKind.MINIMUM -> "relax.op.minimum(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\"))"
             UirOpKind.POWER -> "relax.op.power(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\"))"
+            UirOpKind.EQUAL -> "relax.op.astype(relax.op.equal(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\")), dtype=\"float32\")"
+            UirOpKind.LESS -> "relax.op.astype(relax.op.less(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\")), dtype=\"float32\")"
+            UirOpKind.GREATER -> "relax.op.astype(relax.op.greater(relax.op.astype(${inputVars[0]}, dtype=\"float32\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\")), dtype=\"float32\")"
+            UirOpKind.LOGICAL_AND -> "relax.op.astype(relax.op.logical_and(relax.op.astype(${inputVars[0]}, dtype=\"bool\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"bool\")), dtype=\"float32\")"
+            UirOpKind.LOGICAL_OR -> "relax.op.astype(relax.op.logical_or(relax.op.astype(${inputVars[0]}, dtype=\"bool\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"bool\")), dtype=\"float32\")"
+            UirOpKind.LOGICAL_XOR -> "relax.op.astype(relax.op.logical_xor(relax.op.astype(${inputVars[0]}, dtype=\"bool\"), relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"bool\")), dtype=\"float32\")"
+
+            // ===== 条件选择 =====
+            UirOpKind.WHERE -> {
+                val cond = "relax.op.astype(${inputVars[0]}, dtype=\"bool\")"
+                val x = "relax.op.astype(${inputVars.getOrElse(1) { inputVars[0] }}, dtype=\"float32\")"
+                val y = "relax.op.astype(${inputVars.getOrElse(2) { inputVars.getOrElse(1) { inputVars[0] } }}, dtype=\"float32\")"
+                "relax.op.where($cond, $x, $y)"
+            }
 
             // ===== 矩阵乘法 =====
             UirOpKind.MATMUL -> {
@@ -627,6 +677,14 @@ class TvmRelaxTranslator(
                 val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
                 val keepdims = (attributes["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
                 "relax.op.min(${inputVars[0]}, axis=[$axis], keepdims=${
+                    keepdims.toString().replaceFirstChar { it.uppercase() }
+                })"
+            }
+
+            UirOpKind.REDUCE_PROD -> {
+                val axis = (attributes["axis"] as? UirIntAttr)?.value ?: -1
+                val keepdims = (attributes["keepdims"] as? UirIntAttr)?.value?.let { it != 0 } ?: false
+                "relax.op.prod(${inputVars[0]}, axis=[$axis], keepdims=${
                     keepdims.toString().replaceFirstChar { it.uppercase() }
                 })"
             }

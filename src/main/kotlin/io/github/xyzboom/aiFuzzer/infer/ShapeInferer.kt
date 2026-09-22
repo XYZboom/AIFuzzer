@@ -95,6 +95,18 @@ object ShapeInferer {
             UirOpKind.FLOOR,
             UirOpKind.ROUND,
             UirOpKind.CLAMP,
+            UirOpKind.SIN,
+            UirOpKind.COS,
+            UirOpKind.TAN,
+            UirOpKind.ASIN,
+            UirOpKind.ACOS,
+            UirOpKind.ATAN,
+            UirOpKind.ERF,
+            UirOpKind.SINH,
+            UirOpKind.COSH,
+            UirOpKind.ASINH,
+            UirOpKind.ACOSH,
+            UirOpKind.ATANH,
             UirOpKind.SOFTMAX,
             UirOpKind.LOG_SOFTMAX,
             UirOpKind.CAST -> {
@@ -109,12 +121,27 @@ object ShapeInferer {
             UirOpKind.DIVIDE,
             UirOpKind.MAXIMUM,
             UirOpKind.MINIMUM,
-            UirOpKind.POWER -> {
+            UirOpKind.POWER,
+            UirOpKind.EQUAL,
+            UirOpKind.LESS,
+            UirOpKind.GREATER,
+            UirOpKind.LOGICAL_AND,
+            UirOpKind.LOGICAL_OR,
+            UirOpKind.LOGICAL_XOR -> {
                 // 支持单输入（自己和自己运算）
                 if (inputShapes.size == 1) {
                     listOf(inputShapes[0])
                 } else {
                     listOf(broadcastShapes(inputShapes[0], inputShapes[1]))
+                }
+            }
+
+            // ===== 分类 B.2：条件选择（三元广播） =====
+            UirOpKind.WHERE -> {
+                when (inputShapes.size) {
+                    1 -> listOf(inputShapes[0])
+                    2 -> listOf(broadcastShapes(inputShapes[0], inputShapes[1]))
+                    else -> listOf(broadcastShapes(broadcastShapes(inputShapes[0], inputShapes[1]), inputShapes[2]))
                 }
             }
             
@@ -138,7 +165,8 @@ object ShapeInferer {
             UirOpKind.REDUCE_SUM,
             UirOpKind.REDUCE_MEAN,
             UirOpKind.REDUCE_MAX,
-            UirOpKind.REDUCE_MIN -> {
+            UirOpKind.REDUCE_MIN,
+            UirOpKind.REDUCE_PROD -> {
                 inferReduceShape(inputShapes, attributes)
             }
 

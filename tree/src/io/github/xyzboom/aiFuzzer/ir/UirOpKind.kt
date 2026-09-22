@@ -16,6 +16,17 @@ enum class UirOpKind {
     MINIMUM,
     POWER,
 
+    // 比较与逻辑
+    EQUAL,
+    LESS,
+    GREATER,
+    LOGICAL_AND,
+    LOGICAL_OR,
+    LOGICAL_XOR,
+
+    // 条件选择
+    WHERE,
+
     // 矩阵乘法
     MATMUL,
 
@@ -48,6 +59,22 @@ enum class UirOpKind {
     ROUND,
     CLAMP,
 
+    // 三角与反三角数学
+    SIN,
+    COS,
+    TAN,
+    ASIN,
+    ACOS,
+    ATAN,
+
+    // 双曲与误差函数
+    ERF,
+    SINH,
+    COSH,
+    ASINH,
+    ACOSH,
+    ATANH,
+
     // 形状变换
     RESHAPE,
     TRANSPOSE,
@@ -63,6 +90,7 @@ enum class UirOpKind {
     REDUCE_MEAN,
     REDUCE_MAX,
     REDUCE_MIN,
+    REDUCE_PROD,
     CUMSUM,       // 累积和（Issue #189518: dtype bug）
     CUMPROD,      // 累积积
     ARGMAX,       // 最大值索引
@@ -112,9 +140,11 @@ enum class UirOpKind {
             RELU, LEAKY_RELU, ELU, SELU, MISH, HARDTANH, SIGMOID, TANH, GELU, SILU,
             ABS, SIGN, EXP, LOG, LOG2, SQRT, RSQRT, RECIPROCAL, NEG,
             CEIL, FLOOR, ROUND, CLAMP,
+            SIN, COS, TAN, ASIN, ACOS, ATAN,
+            ERF, SINH, COSH, ASINH, ACOSH, ATANH,
             SOFTMAX, LOG_SOFTMAX,
             RESHAPE, SQUEEZE, UNSQUEEZE,
-            REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN,
+            REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN, REDUCE_PROD,
             CUMSUM, CUMPROD, ARGMAX, ARGMIN,
             CAST, TRIL, TRIU,
             TRANSPOSE, BROADCAST_TO,
@@ -130,9 +160,16 @@ enum class UirOpKind {
         val binaryInputOps = setOf(
             ADD, SUBTRACT, MULTIPLY, DIVIDE,
             MAXIMUM, MINIMUM, POWER,
+            EQUAL, LESS, GREATER,
+            LOGICAL_AND, LOGICAL_OR, LOGICAL_XOR,
             CONCAT,
             MATMUL,
             CONV2D,
+        )
+
+        /** 三输入算子 */
+        val ternaryInputOps = setOf(
+            WHERE,
         )
 
         /** 常数生成算子（无输入，支持显式 dtype） */
@@ -149,7 +186,7 @@ enum class UirOpKind {
 
         /** reduce 类算子（支持显式 dtype） */
         val reducingOps = setOf(
-            REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN,
+            REDUCE_SUM, REDUCE_MEAN, REDUCE_MAX, REDUCE_MIN, REDUCE_PROD,
             CUMSUM, CUMPROD, ARGMAX, ARGMIN,
         )
 
@@ -157,6 +194,9 @@ enum class UirOpKind {
         val ndimStableOps = setOf(
             RELU, LEAKY_RELU, ELU, SELU, MISH, HARDTANH, SIGMOID, TANH, GELU, SILU,
             NEG, ABS, SIGN, EXP, LOG, LOG2, SQRT, RSQRT, RECIPROCAL, CEIL, FLOOR, ROUND, CLAMP,
+            SIN, COS, TAN, ASIN, ACOS, ATAN,
+            ERF, SINH, COSH, ASINH, ACOSH, ATANH,
+            EQUAL, LESS, GREATER, LOGICAL_AND, LOGICAL_OR, LOGICAL_XOR, WHERE,
             SOFTMAX, LOG_SOFTMAX, CAST,
             SPLIT, CONCAT, TILE,
             TRANSPOSE,
