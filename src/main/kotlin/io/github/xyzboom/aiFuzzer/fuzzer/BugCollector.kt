@@ -201,7 +201,10 @@ ${result.stderr.trimEnd()}
     }
 
     /** 上次生成时记录的 pattern 匹配信息，用于写入 bug 报告 */
-    var lastPatternMatches: String? = null
+    private val threadLocalPatternMatches = ThreadLocal<String?>()
+    var lastPatternMatches: String?
+        get() = threadLocalPatternMatches.get()
+        set(value) = threadLocalPatternMatches.set(value)
 
     fun reset() { bugCounter.set(0) }
 }

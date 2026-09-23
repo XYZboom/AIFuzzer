@@ -374,7 +374,10 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_shutdown(self):
         self._json_response(200, {"status": "shutting_down"})
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        def _exit_soon():
+            time.sleep(0.2)
+            os.kill(os.getpid(), signal.SIGTERM)
+        threading.Thread(target=_exit_soon, daemon=True).start()
 
     def _json_response(self, status_code, data):
         body = json.dumps(data).encode("utf-8")

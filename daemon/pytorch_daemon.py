@@ -222,8 +222,10 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     def _handle_shutdown(self):
         """处理 /shutdown：优雅关闭。"""
         self._json_response(200, {"status": "shutting_down"})
-        # 在响应发送后关闭服务
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        def _exit_soon():
+            time.sleep(0.2)
+            os.kill(os.getpid(), signal.SIGTERM)
+        threading.Thread(target=_exit_soon, daemon=True).start()
 
     def _json_response(self, status_code: int, data: dict):
         """发送 JSON 响应。"""

@@ -81,32 +81,93 @@ class FuzzingPipeline(
         }
     }
 
-    /** 转换测试：ONNX 参考 daemon（lazy，仅当有后端需要时创建） */
-    private val conversionOnnxDaemon: DaemonClient? by lazy {
-        if (backends.any { it.needsConversionTest() }) {
-            val python = (backends.find { it is OnnxDaemonBackend } as? OnnxDaemonBackend)?.pythonPath
-                ?: (backends.find { it is TvmDaemonBackend } as? TvmDaemonBackend)?.pythonPath
-                ?: "python3"
-            DaemonClient(pythonPath = python, daemonScriptPath = "daemon/onnx_daemon.py").also { it.start() }
-        } else null
+    /** 转换测试：ONNX 参考 daemon 实例池（按 workerId 索引） */
+    private val conversionOnnxDaemonPool = java.util.concurrent.ConcurrentHashMap<Int, DaemonClient>()
+
+    /** 转换测试：TVM ONNX frontend daemon 实例池（按 workerId 索引） */
+    private val conversionTvmFrontendDaemonPool = java.util.concurrent.ConcurrentHashMap<Int, DaemonClient>()
+
+    /** 转换测试：PyTorch daemon 实例池（按 workerId 索引） */
+    private val conversionPytorchDaemonPool = java.util.concurrent.ConcurrentHashMap<Int, DaemonClient>()
+
+    private fun getConversionOnnxDaemon(workerId: Int): DaemonClient? {
+        if (!backends.any { it.needsConversionTest() }) return null
+        val existing = conversionOnnxDaemonPool[workerId]
+        if (existing != null && existing.isAlive()) {
+            return existing
+        }
+        val python = (backends.find { it is OnnxDaemonBackend } as? OnnxDaemonBackend)?.pythonPath
+            ?: (backends.find { it is TvmDaemonBackend } as? TvmDaemonBackend)?.pythonPath
+            ?: "python3"
+        val client = DaemonClient(pythonPath = python, daemonScriptPath = "daemon/onnx_daemon.py")
+        if (!client.start()) {
+            log.error { "ONNX daemon 实例 #$workerId 启动失败" }
+        }
+        conversionOnnxDaemonPool[workerId] = client
+        return client
     }
 
-    /** 转换测试：TVM ONNX frontend daemon（lazy） */
-    private val conversionTvmFrontendDaemon: DaemonClient? by lazy {
-        if (backends.any { it is TvmDaemonBackend && it.needsConversionTest() }) {
-            val python = (backends.find { it is TvmDaemonBackend } as? TvmDaemonBackend)?.let { it.pythonPath }
-                ?: "python3"
-            DaemonClient(pythonPath = python, daemonScriptPath = "daemon/tvm_onnx_frontend_daemon.py").also { it.start() }
-        } else null
+    private fun getConversionTvmFrontendDaemon(workerId: Int): DaemonClient? {
+        if (!backends.any { it is TvmDaemonBackend && it.needsConversionTest() }) return null
+        val existing = conversionTvmFrontendDaemonPool[workerId]
+        if (existing != null && existing.isAlive()) {
+            return existing
+        }
+        val python = (backends.find { it is TvmDaemonBackend } as? TvmDaemonBackend)?.let { it.pythonPath }
+            ?: "python3"
+        val client = DaemonClient(pythonPath = python, daemonScriptPath = "daemon/tvm_onnx_frontend_daemon.py")
+        if (!client.start()) {
+            log.error { "TVM ONNX frontend daemon 实例 #$workerId 启动失败" }
+        }
+        conversionTvmFrontendDaemonPool[workerId] = client
+        return client
     }
 
-    /** 转换测试：PyTorch daemon（lazy） */
-    private val conversionPytorchDaemon: DaemonClient? by lazy {
-        if (backends.any { it is PytorchDaemonBackend && it.needsConversionTest() }) {
-            val python = (backends.find { it is PytorchDaemonBackend } as? PytorchDaemonBackend)?.let { it.pythonPath }
-                ?: "python3"
-            DaemonClient(pythonPath = python, daemonScriptPath = "daemon/pytorch_daemon.py").also { it.start() }
-        } else null
+    private fun getConversionPytorchDaemon(workerId: Int): DaemonClient? {
+        if (!backends.any { it is PytorchDaemonBackend && it.needsConversionTest() }) return null
+        val existing = conversionPytorchDaemonPool[workerId]
+        if (existing != null && existing.isAlive()) {
+            return existing
+        }
+        val python = (backends.find { it is PytorchDaemonBackend } as? PytorchDaemonBackend)?.let { it.pythonPath }
+            ?: "python3"
+        val client = DaemonClient(pythonPath = python, daemonScriptPath = "daemon/pytorch_daemon.py")
+        if (!client.start()) {
+            log.error { "PyTorch daemon 实例 #$workerId 启动失败" }
+        }
+        conversionPytorchDaemonPool[workerId] = client
+        return client
+    }
+
+    private fun preWarmConversionDaemons(workerCount: Int) {
+        if (!backends.any { it.needsConversionTest() }) return
+        log.info { "预热 $workerCount 个转换测试 daemon 实例池..." }
+        val threads = (0 until workerCount).map { wid ->
+            thread(name = "daemon-prewarm-$wid") {
+                getConversionOnnxDaemon(wid)
+                if (backends.any { it is TvmDaemonBackend && it.needsConversionTest() }) {
+                    getConversionTvmFrontendDaemon(wid)
+                }
+                if (backends.any { it is PytorchDaemonBackend && it.needsConversionTest() }) {
+                    getConversionPytorchDaemon(wid)
+                }
+            }
+        }
+        threads.forEach { it.join() }
+        log.info { "转换测试 daemon 预热完成: ${conversionTvmFrontendDaemonPool.size} 个 TVM frontend 实例, ${conversionOnnxDaemonPool.size} 个 ONNX 实例" }
+    }
+
+    private fun closeConversionDaemons() {
+        val allDaemons = conversionOnnxDaemonPool.values + conversionTvmFrontendDaemonPool.values + conversionPytorchDaemonPool.values
+        val threads = allDaemons.map { d ->
+            thread(name = "daemon-close") {
+                try { d.close() } catch (_: Exception) {}
+            }
+        }
+        threads.forEach { it.join() }
+        conversionOnnxDaemonPool.clear()
+        conversionTvmFrontendDaemonPool.clear()
+        conversionPytorchDaemonPool.clear()
     }
 
     /** 变异配置（从 generatorConfig 派生） */
@@ -210,15 +271,15 @@ class FuzzingPipeline(
      * 每次调用创建新的 [UirGenerator] 实例，确保线程安全。
      */
     fun runOnce(seed: Long = System.currentTimeMillis()): List<FuzzingResult> {
-        return runOnce(seed, backends)
+        return runOnce(seed, backends, 0)
     }
 
     /**
-     * 单次 Fuzzing 运行，使用指定的 backends 列表。
-     * 并行模式下每个 worker 传入自己的 threadBackends 副本。
+     * 单次 Fuzzing 运行，使用指定的 backends 列表和 workerId。
+     * 并行模式下每个 worker 传入自己的 threadBackends 副本与专属 workerId。
      */
-    private fun runOnce(seed: Long, backends: List<Backend<*>>): List<FuzzingResult> {
-        log.debug { "运行单次测试: seed=$seed" }
+    private fun runOnce(seed: Long, backends: List<Backend<*>>, workerId: Int = 0): List<FuzzingResult> {
+        log.debug { "运行单次测试: seed=$seed (workerId=$workerId)" }
         // 每次创建新的 generator，避免共享可变状态
         var genConfig = generatorConfig.copy(seed = seed)
         if (patternDatabase != null) {
@@ -295,7 +356,7 @@ class FuzzingPipeline(
         // 检查是否有后端需要转换测试（frontend 不是自然前端）
         val conversionBackends = backends.filter { it.needsConversionTest() }
         if (conversionBackends.isNotEmpty()) {
-            return runConversionTest(program, seed)
+            return runConversionTest(program, seed, backends, workerId)
         }
 
         return backends.map { backend ->
@@ -354,12 +415,15 @@ class FuzzingPipeline(
         }
 
         if (config.workers <= 1) {
+            if (backends.any { it.needsConversionTest() }) {
+                preWarmConversionDaemons(1)
+            }
             // 串行模式：使用原始 backend
             for (i in 0 until count) {
                 val seed = seeds[i]
                 var shouldBreak = false
                 try {
-                    val results = runOnce(seed)
+                    val results = runOnce(seed = seed, backends = backends, workerId = 0)
                     allResults.addAll(results)
                     results.forEach {
                         if (it.backendResult.success) successCount.incrementAndGet()
@@ -394,30 +458,38 @@ class FuzzingPipeline(
                 if (shouldBreak) break
             }
         } else {
-            // 并行模式：每个 worker 线程使用独立的 backend 副本
+            // 并行模式：每个 worker 线程使用独立的 backend 副本与转换 daemon
+            if (backends.any { it.needsConversionTest() }) {
+                preWarmConversionDaemons(config.workers)
+            }
             log.info { "并行模式: 启动 ${backendPool.size} 个 backend 实例" }
             backendPool.forEachIndexed { idx, backs ->
                 backs.forEach { backend ->
-                    if (!backend.checkEnvironment()) {
+                    if (!backend.needsConversionTest() && !backend.checkEnvironment()) {
                         log.error { "Backend 副本 #$idx 初始化失败: ${backend.name}" }
                     }
                 }
             }
 
+            val threadWorkerId = ThreadLocal<Int>()
+            val threadIdCounter = java.util.concurrent.atomic.AtomicInteger(0)
             val executor = java.util.concurrent.Executors.newFixedThreadPool(config.workers) { r ->
-                Thread(r, "fuzzer-worker").also { it.isDaemon = true }
+                val id = threadIdCounter.getAndIncrement() % config.workers
+                Thread({
+                    threadWorkerId.set(id)
+                    r.run()
+                }, "fuzzer-worker-$id").also { it.isDaemon = true }
             }
             val failFastTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
-            val nextWorkerId = AtomicLong(0)
 
             val futures = (0 until count).map { i ->
                 val seed = seeds[i]
                 executor.submit<List<FuzzingResult>> {
-                    val workerId = (nextWorkerId.getAndIncrement() % config.workers).toInt()
+                    val workerId = threadWorkerId.get() ?: 0
                     val threadBackends = backendPool[workerId]
                     try {
-                        // 调用 runOnce(seed, threadBackends) 来复用生成→变异→种子池逻辑
-                        val results = runOnce(seed = seed, backends = threadBackends)
+                        // 调用 runOnce(seed, threadBackends, workerId) 来复用生成→变异→种子池逻辑
+                        val results = runOnce(seed = seed, backends = threadBackends, workerId = workerId)
                         results.forEach {
                             if (it.backendResult.success) successCount.incrementAndGet()
                             else if (config.failFast && failFastTriggered.compareAndSet(false, true)) {
@@ -507,15 +579,16 @@ class FuzzingPipeline(
         }
 
         // 关闭所有 backend（原始 + 副本）
-        backends.forEach { it.close() }
-        backendPool.forEach { backendList ->
-            backendList.forEach { it.close() }
+        val allBackends: List<Backend<*>> = (backends + backendPool.flatMap { it }).distinct()
+        val closeThreads = allBackends.map { b ->
+            thread(name = "backend-close") {
+                try { b.close() } catch (_: Exception) {}
+            }
         }
+        closeThreads.forEach { it.join() }
 
-        // 关闭转换测试 daemon
-        conversionOnnxDaemon?.close()
-        conversionTvmFrontendDaemon?.close()
-        conversionPytorchDaemon?.close()
+        // 关闭转换测试 daemon 实例池
+        closeConversionDaemons()
 
         // 输出 pattern 匹配统计
         val totalMatches = patternMatchCount["TOTAL_MATCHES"] ?: 0
@@ -571,11 +644,12 @@ class FuzzingPipeline(
         } else {
             arrayOf(backends)
         }
-        backendPool.forEachIndexed { idx, bl ->
-            bl.forEach { if (!it.checkEnvironment()) log.error { "Backend 副本 #$idx 初始化失败: ${it.name}" } }
+        if (backends.any { it.needsConversionTest() }) {
+            preWarmConversionDaemons(workerCount)
         }
-
-        val nextWorkerId = AtomicLong(0)
+        backendPool.forEachIndexed { idx, bl ->
+            bl.forEach { if (!it.needsConversionTest() && !it.checkEnvironment()) log.error { "Backend 副本 #$idx 初始化失败: ${it.name}" } }
+        }
 
         // 进度报告线程
         val progressReporter = thread(name = "dedup-progress") {
@@ -590,9 +664,15 @@ class FuzzingPipeline(
             }
         }
 
+        val threadWorkerId = ThreadLocal<Int>()
+        val threadIdCounter = java.util.concurrent.atomic.AtomicInteger(0)
         // 线程池
         val executor = java.util.concurrent.Executors.newFixedThreadPool(workerCount) {
-            Thread(it, "dedup-worker").also { it.isDaemon = true }
+            val id = threadIdCounter.getAndIncrement() % workerCount
+            Thread({
+                threadWorkerId.set(id)
+                it.run()
+            }, "dedup-worker-$id").also { t -> t.isDaemon = true }
         }
 
         val workers = mutableListOf<java.util.concurrent.Future<*>>()
@@ -600,7 +680,7 @@ class FuzzingPipeline(
             val seed = seeds[i]
             workers.add(executor.submit {
                 try {
-                    val workerId = (nextWorkerId.getAndIncrement() % workerCount).toInt()
+                    val workerId = threadWorkerId.get() ?: 0
                     val threadBackends = backendPool[workerId]
 
                     // 1. 生成 no-dedup 程序（不启用 pattern 去重）
@@ -647,8 +727,16 @@ class FuzzingPipeline(
                     println("[seed=$seed] dedup:    $dedupInfo")
 
                     // 4. 去重触发了，两个程序不同，分别执行
-                    val resultsNoDedup = threadBackends.map { runOnBackend(genNoDedup, it, seed) }
-                    val resultsDedup = threadBackends.map { runOnBackend(genDedup, it, seed) }
+                    val resultsNoDedup = if (threadBackends.any { it.needsConversionTest() }) {
+                        runConversionTest(genNoDedup, seed, threadBackends, workerId)
+                    } else {
+                        threadBackends.map { runOnBackend(genNoDedup, it, seed) }
+                    }
+                    val resultsDedup = if (threadBackends.any { it.needsConversionTest() }) {
+                        runConversionTest(genDedup, seed, threadBackends, workerId)
+                    } else {
+                        threadBackends.map { runOnBackend(genDedup, it, seed) }
+                    }
 
                     val noDedupFailed = resultsNoDedup.any { !it.backendResult.success }
                     val dedupFailed = resultsDedup.any { !it.backendResult.success }
@@ -706,7 +794,14 @@ class FuzzingPipeline(
         progressReporter.join()
 
         // 关闭所有 backend 副本
-        backendPool.forEach { it.forEach { b -> b.close() } }
+        val allBackends: List<Backend<*>> = (backends + backendPool.flatMap { it }).distinct()
+        val closeThreads = allBackends.map { b ->
+            thread(name = "backend-close") {
+                try { b.close() } catch (_: Exception) {}
+            }
+        }
+        closeThreads.forEach { it.join() }
+        closeConversionDaemons()
 
         val collected = bugPrevented.get() + dedupOnlyFail.get() + bothFailed.get() + bothSuccess.get()
         return DedupEvalSummary(
@@ -998,9 +1093,13 @@ class FuzzingPipeline(
      * 运行转换测试：将 UIR 翻译为 ONNX，在 ONNX Runtime 上跑参考，
      * 然后通过 TVM frontend 导入运行，比较输出。
      */
-    private fun runConversionTest(program: UirProgram, seed: Long): List<FuzzingResult> {
-        val onnxDaemon = conversionOnnxDaemon ?: return emptyList()
-        val tvmFrontend = conversionTvmFrontendDaemon
+    private fun runConversionTest(
+        program: UirProgram,
+        seed: Long,
+        backends: List<Backend<*>> = this.backends,
+        workerId: Int = 0,
+    ): List<FuzzingResult> {
+        val onnxDaemon = getConversionOnnxDaemon(workerId) ?: return emptyList()
 
         // 翻译 UIR→ONNX（强制单图）
         val singleGraphProgram = if (program.graphs.size == 1) {
@@ -1078,7 +1177,7 @@ class FuzzingPipeline(
                 // 不需要转换的后端用现有逻辑
                 runOnBackend(program, backend, seed)
             } else {
-                val result = runConversionOnBackend(backend, modelB64, onnxResult, seed)
+                val result = runConversionOnBackend(backend, modelB64, onnxResult, seed, workerId)
                 // 收集转换测试失败的 bug
                 if (!result.backendResult.success) {
                     BugCollector.collect(
@@ -1103,12 +1202,13 @@ class FuzzingPipeline(
         modelB64: String,
         onnxResult: DaemonResult,
         seed: Long,
+        workerId: Int = 0,
     ): FuzzingResult {
         val backendName = backend.name
 
         when {
             backend is TvmDaemonBackend && backend.frontend == "onnx" -> {
-                val tvmFrontend = conversionTvmFrontendDaemon
+                val tvmFrontend = getConversionTvmFrontendDaemon(workerId)
                 if (tvmFrontend == null) {
                     return FuzzingResult(seed, backendName, object : BackendResult(false, -1, "", "TVM frontend daemon not available", 0) {}, io.github.xyzboom.aiFuzzer.fuzzer.ErrorCategory.UNKNOWN, "no daemon")
                 }
