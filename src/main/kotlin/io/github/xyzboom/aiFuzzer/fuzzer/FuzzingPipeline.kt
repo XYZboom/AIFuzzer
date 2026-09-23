@@ -84,7 +84,9 @@ class FuzzingPipeline(
     /** 转换测试：ONNX 参考 daemon（lazy，仅当有后端需要时创建） */
     private val conversionOnnxDaemon: DaemonClient? by lazy {
         if (backends.any { it.needsConversionTest() }) {
-            val python = (backends.find { it is OnnxDaemonBackend } as? OnnxDaemonBackend)?.pythonPath ?: "python3"
+            val python = (backends.find { it is OnnxDaemonBackend } as? OnnxDaemonBackend)?.pythonPath
+                ?: (backends.find { it is TvmDaemonBackend } as? TvmDaemonBackend)?.pythonPath
+                ?: "python3"
             DaemonClient(pythonPath = python, daemonScriptPath = "daemon/onnx_daemon.py").also { it.start() }
         } else null
     }
@@ -1001,8 +1003,27 @@ class FuzzingPipeline(
         val tvmFrontend = conversionTvmFrontendDaemon
 
         // 翻译 UIR→ONNX（强制单图）
-        val genConfig = generatorConfig.copy(seed = seed, graphCount = 1..1)
-        val singleGraphProgram = UirGenerator(genConfig).generate()
+        val singleGraphProgram = if (program.graphs.size == 1) {
+            program
+        } else {
+            val dedupTarget = resolveDedupTarget()
+            val genConfig = generatorConfig.copy(
+                seed = seed,
+                graphCount = 1..1,
+                dedup = if (patternDatabase != null) {
+                    io.github.xyzboom.aiFuzzer.generator.DedupConfig(
+                        enabled = config.dedup.enabled,
+                        patternDatabase = patternDatabase,
+                        compiler = config.dedup.compiler,
+                        target = dedupTarget,
+                        frontend = config.dedup.frontend,
+                        maxRetries = 10,
+                        valueRangeAnalysis = config.dedup.valueRangeAnalysis,
+                    )
+                } else generatorConfig.dedup,
+            )
+            UirGenerator(genConfig).generate()
+        }
         val onnxSource = OnnxTranslator().translate(singleGraphProgram)
 
         // 追加输出/输入捕获代码

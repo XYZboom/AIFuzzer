@@ -30,6 +30,7 @@ TVM_AVAILABLE = False
 _import_error = ""
 _tvm_import_detail = ""
 try:
+    import tvm
     from tvm import relax
     import tvm.relax.op as op
     TVM_AVAILABLE = True

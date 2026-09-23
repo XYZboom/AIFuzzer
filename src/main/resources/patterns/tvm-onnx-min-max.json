@@ -1,0 +1,85 @@
+{
+  "format_version": "1.0",
+  "patterns": [
+    {
+      "id": "tvm-onnx-min-const",
+      "compiler": "tvm",
+      "target": "llvm",
+      "frontend": "onnx",
+      "description": "TVM Relax ONNX frontend Min constant folding crash (TypeError: only integer scalar arrays can be converted to a scalar index)",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node",
+          "id": "n0",
+          "op": "MINIMUM",
+          "inputs": ["v_in0", "v_in1"],
+          "outputs": ["v_out"]
+        }
+      ],
+      "values": [
+        {
+          "match": "value",
+          "id": "v_in0",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value",
+          "id": "v_in1",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value",
+          "id": "v_out",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        }
+      ]
+    },
+    {
+      "id": "tvm-onnx-max-const",
+      "compiler": "tvm",
+      "target": "llvm",
+      "frontend": "onnx",
+      "description": "TVM Relax ONNX frontend Max constant folding crash (TypeError: only integer scalar arrays can be converted to a scalar index)",
+      "severity": "crash",
+      "nodes": [
+        {
+          "match": "node",
+          "id": "n0",
+          "op": "MAXIMUM",
+          "inputs": ["v_in0", "v_in1"],
+          "outputs": ["v_out"]
+        }
+      ],
+      "values": [
+        {
+          "match": "value",
+          "id": "v_in0",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value",
+          "id": "v_in1",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        },
+        {
+          "match": "value",
+          "id": "v_out",
+          "ndim": {},
+          "shape": [],
+          "dtype": "float32"
+        }
+      ]
+    }
+  ]
+}
