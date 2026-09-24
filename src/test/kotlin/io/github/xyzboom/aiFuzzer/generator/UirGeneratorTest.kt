@@ -99,6 +99,22 @@ class UirGeneratorTest {
     }
 
     @Test
+    fun `deep and wide dimensional generator should not crash including seed 6003`() {
+        for (seed in 6000L..6050L) {
+            val gen = UirGenerator(GeneratorConfig(
+                seed = seed,
+                minNdim = 1,
+                maxNdim = 5,
+                minNodesPerGraph = 6,
+                maxNodesPerGraph = 12,
+            ))
+            val program = gen.generate()
+            assertNotNull(program)
+            assertTrue(program.graphs.isNotEmpty())
+        }
+    }
+
+    @Test
     fun `avoidExtremeOps should filter out extreme ops`() {
         // Run 100 seeds with avoidExtremeOps=true — should NEVER see extreme ops
         for (seed in 0L until 100L) {

@@ -257,7 +257,7 @@ object ShapeConstraints {
                 when (shapes.size) {
                     1 -> true
                     2 -> areBroadcastable(shapes[0], shapes[1])
-                    else -> areBroadcastable(shapes[0], shapes[1]) && areBroadcastable(shapes[1], shapes[2])
+                    else -> areBroadcastable(shapes)
                 }
             },
             description = "条件选择，三元广播"
@@ -580,6 +580,30 @@ object ShapeConstraints {
             }
         }
         
+        return true
+    }
+    
+    /**
+     * 检查多个形状是否可以一起广播（如 WHERE(c, x, y)）。
+     */
+    fun areBroadcastable(shapes: List<UirShape>): Boolean {
+        if (shapes.size <= 1) return true
+        if (shapes.size == 2) return areBroadcastable(shapes[0], shapes[1])
+        val reversedDimsList = shapes.map { it.dims.reversed() }
+        val maxLen = reversedDimsList.maxOf { it.size }
+        for (i in 0 until maxLen) {
+            var nonOneVal: Int? = null
+            for (dims in reversedDimsList) {
+                val v = dims.getOrNull(i)?.valueOrNull() ?: continue
+                if (v != 1) {
+                    if (nonOneVal == null) {
+                        nonOneVal = v
+                    } else if (nonOneVal != v) {
+                        return false
+                    }
+                }
+            }
+        }
         return true
     }
     

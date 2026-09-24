@@ -284,7 +284,7 @@ object ShapeAdapter {
         for (i in 1 until inputValueRefs.size) {
             val ref = inputValueRefs[i]
             val shape = inputShapes[i]
-            if (canBroadcastTogether(targetShape, shape)) {
+            if (ShapeConstraints.areBroadcastable(adaptedShapes + shape)) {
                 adaptedRefs.add(ref)
                 adaptedShapes.add(shape)
             } else {
@@ -429,18 +429,53 @@ object ShapeAdapter {
         }
         adaptedShapes.add(currentShape2)
         
-        // 检查 K 维是否匹配
-        val k1 = currentShape1.dims.last().valueOrNull()
-        val k2 = currentShape2.dims[currentShape2.dims.size - 2].valueOrNull()
-        
-        if (k1 != null && k2 != null && k1 != k2) {
-            // K 维不匹配：生成常量张量替换第二个输入
-            val (constRef, constNode) = generateConstantTensor(
-                currentShape2, valueShapes, localValueCounter, localNodeCounter
-            )
-            wrapperNodes.add(constNode)
-            adaptedRefs[1] = constRef
-            adaptedShapes[1] = valueShapes[constRef.valueId]!!
+        val batch1 = currentShape1.dims.dropLast(2)
+        val batch2 = currentShape2.dims.dropLast(2)
+        val sBatch1 = buildShape { dims.addAll(batch1) }
+        val sBatch2 = buildShape { dims.addAll(batch2) }
+        val batchOk = ShapeConstraints.areBroadcastable(sBatch1, sBatch2)
+
+        val k1 = currentShape1.dims.last().valueOrNull() ?: 1
+        val k2 = currentShape2.dims[currentShape2.dims.size - 2].valueOrNull() ?: 1
+        val n = currentShape2.dims.last().valueOrNull() ?: 1
+
+        val kOk = (k1 == k2)
+
+        if (!batchOk || !kOk) {
+            // 构造与 currentShape1 批次完全对齐、K 维精确匹配的目标形状
+            val targetShape2 = buildShape {
+                batch1.forEach { dims.add(it) }
+                dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = k1 })
+                dims.add(buildDim { dimKind = UirDimKind.CONSTANT; value = n })
+            }
+
+            val ref2 = adaptedRefs[1]
+            val shape2Now = adaptedShapes[1]
+            val totalElems2 = shape2Now.dims.mapNotNull { it.valueOrNull() }.fold(1L) { acc, v -> acc * v }
+            val targetElems2 = targetShape2.dims.mapNotNull { it.valueOrNull() }.fold(1L) { acc, v -> acc * v }
+
+            if (totalElems2 > 0 && targetElems2 > 0) {
+                // 加形状处理：通过 adaptWithElemCountMatch 适配到 targetShape2
+                val (newRef, nodes) = adaptWithElemCountMatch(
+                    ref2, shape2Now, targetShape2,
+                    valueShapes, localValueCounter, localNodeCounter
+                )
+                wrapperNodes.addAll(nodes)
+                adaptedRefs[1] = newRef
+                adaptedShapes[1] = valueShapes[newRef.valueId]!!
+                localValueCounter += nodes.size
+                localNodeCounter += nodes.size
+            } else {
+                // 生成新形状的输入：生成常量张量
+                val (constRef, constNode) = generateConstantTensor(
+                    targetShape2, valueShapes, localValueCounter, localNodeCounter
+                )
+                wrapperNodes.add(constNode)
+                adaptedRefs[1] = constRef
+                adaptedShapes[1] = valueShapes[constRef.valueId]!!
+                localValueCounter++
+                localNodeCounter++
+            }
         }
         
         return AdaptResult(adaptedRefs, wrapperNodes, adaptedShapes)

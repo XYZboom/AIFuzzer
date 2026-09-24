@@ -898,7 +898,92 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
         // 8. 返回：转换节点 + wrapper节点 + 主节点
         return conversionNodes + mainNode
     }
-    
+
+    /**
+     * 寻找与目标形状广播兼容的输入值；若无兼容值，则“不回退，加形状处理或者生成新形状的输入”。
+     *
+     * 策略：
+     * 1. 优先从 availableValues (除 excludeIds) 中寻找已广播兼容的值
+     * 2. 若无兼容值：
+     *    - 策略A（加形状处理）：从已有候选值中选一个，通过 ShapeAdapter.adaptWithElemCountMatch 适配到 targetShape
+     *    - 策略B（生成新形状的输入）：生成与 targetShape 精确匹配的 FULL 常量节点
+     */
+    private fun getOrCreateBroadcastInput(
+        targetShape: UirShape,
+        availableValues: MutableList<String>,
+        excludeIds: Set<String>,
+        nodeList: MutableList<UirNode>,
+        namePrefix: String = "in"
+    ): UirValueRef {
+        val compatibleValues = availableValues.filter { vid ->
+            vid !in excludeIds && valueShapes[vid]?.let { s ->
+                ShapeConstraints.areBroadcastable(targetShape, s)
+            } ?: false
+        }
+        if (compatibleValues.isNotEmpty()) {
+            val selectedId = compatibleValues.random(rand)
+            return buildValueRef {
+                this.valueId = selectedId
+                this.type = buildTensorType {
+                    typeKind = UirTypeKind.TENSOR
+                    shape = valueShapes[selectedId]!!
+                    dtype = mkDataType()
+                }
+            }
+        }
+
+        val otherCandidates = availableValues.filter { it !in excludeIds }
+        val useShapeAdaptation = otherCandidates.isNotEmpty() && rand.nextBoolean()
+
+        return if (useShapeAdaptation) {
+            val candId = otherCandidates.random(rand)
+            val candShape = valueShapes[candId]!!
+            val candRef = buildValueRef {
+                this.valueId = candId
+                this.type = buildTensorType {
+                    typeKind = UirTypeKind.TENSOR
+                    shape = candShape
+                    dtype = mkDataType()
+                }
+            }
+            val (adaptedRef, wrapperNodes) = ShapeAdapter.adaptWithElemCountMatch(
+                candRef, candShape, targetShape,
+                valueShapes, valueCounter, nodeCounter
+            )
+            nodeList.addAll(wrapperNodes)
+            valueCounter += wrapperNodes.size
+            nodeCounter += wrapperNodes.size
+            availableValues.add(adaptedRef.valueId)
+            log.trace { "getOrCreateBroadcastInput: 加形状处理 $candId ${shapeDims(candShape)} -> ${shapeDims(targetShape)} (插入 ${wrapperNodes.size} 个 wrapper)" }
+            adaptedRef
+        } else {
+            val newValueId = newValueId()
+            valueShapes[newValueId] = targetShape
+            val outputRef = buildValueRef {
+                this.valueId = newValueId
+                this.type = buildTensorType {
+                    typeKind = UirTypeKind.TENSOR
+                    shape = targetShape
+                    dtype = mkDataType()
+                }
+            }
+            val shapeStr = "(${targetShape.dims.joinToString { "${it.valueOrNull() ?: 1}" }})"
+            val newNode = buildNode {
+                name = "${namePrefix}_const_${randomIdSuffix()}"
+                op = UirOpKind.FULL
+                attributes["fill_value"] = buildStringAttr { value = "0.5" }
+                attributes["shape"] = buildStringAttr { value = shapeStr }
+                attributes["dtype"] = buildStringAttr { value = config.dtype }
+                outputs.add(outputRef)
+            }
+            nodeList.add(newNode)
+            availableValues.add(newValueId)
+            nodeCounter++
+            log.trace { "getOrCreateBroadcastInput: 生成新形状输入 $newValueId shape=$shapeStr" }
+            outputRef
+        }
+    }
+
     private fun selectInputValues(
         op: UirOpKind,
         numInputs: Int,
@@ -1020,20 +1105,32 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     ShapeConstraints.areBroadcastable(valueShapes[input1ValueId]!!, shape2)
                 } ?: false
             }
-            val input2ValueId = if (broadcastCompatibleValues.isNotEmpty()) {
-                broadcastCompatibleValues.random(rand)
+            val input2Ref = if (broadcastCompatibleValues.isNotEmpty()) {
+                val input2ValueId = broadcastCompatibleValues.random(rand)
+                buildValueRef {
+                    this.valueId = input2ValueId
+                    this.type = buildTensorType {
+                        this.typeKind = UirTypeKind.TENSOR
+                        this.shape = valueShapes[input2ValueId]!!
+                        this.dtype = mkDataType()
+                    }
+                }
+            } else if (availableValues.size == 1 || rand.nextDouble() < 0.15) {
+                // 自操作边缘用例 (如 x + x)
+                buildValueRef {
+                    this.valueId = input1ValueId
+                    this.type = buildTensorType {
+                        this.typeKind = UirTypeKind.TENSOR
+                        this.shape = valueShapes[input1ValueId]!!
+                        this.dtype = mkDataType()
+                    }
+                }
             } else {
-                // No broadcast-compatible value found — pick an existing value from the graph.
-                // ShapeAdapter will handle shape adaptation (expand dims, broadcast, reshape),
-                // so there's no need to generate a ZEROS constant even as last resort.
-                // If only input1 is available, it's fine — the binary op will have the same
-                // value as both inputs, but that's a valid edge case for fuzzing.
-                val otherValues = availableValues.filter { it != input1ValueId }
-                log.trace { "二元运算: 无广播兼容值，从已有值中随机选 (${otherValues.size} 个候选)" }
-                if (otherValues.isNotEmpty()) otherValues.random(rand)
-                else input1ValueId  // same value for both inputs — valid edge case
+                getOrCreateBroadcastInput(
+                    valueShapes[input1ValueId]!!, availableValues, setOf(input1ValueId), nodeList, "binary_in2"
+                )
             }
-            
+
             val input1Ref = buildValueRef {
                 this.valueId = input1ValueId
                 this.type = buildTensorType {
@@ -1042,16 +1139,7 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                     this.dtype = mkDataType()
                 }
             }
-            
-            val input2Ref = buildValueRef {
-                this.valueId = input2ValueId
-                this.type = buildTensorType {
-                    this.typeKind = UirTypeKind.TENSOR
-                    this.shape = valueShapes[input2ValueId]!!
-                    this.dtype = mkDataType()
-                }
-            }
-            
+
             return listOf(input1Ref, input2Ref)
         }
 
@@ -1063,59 +1151,31 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
                 availableValues.random(rand)
             }
             val input1Shape = valueShapes[input1ValueId] ?: buildShape { }
-
-            // 选择第二个输入 (x) — 寻找与 input1Shape 广播兼容的值
-            val broadcastComp2 = availableValues.filter { vid ->
-                vid != input1ValueId && valueShapes[vid]?.let { s2 ->
-                    ShapeConstraints.areBroadcastable(input1Shape, s2)
-                } ?: false
-            }
-            val input2ValueId = if (broadcastComp2.isNotEmpty()) {
-                broadcastComp2.random(rand)
-            } else {
-                val otherValues = availableValues.filter { it != input1ValueId }
-                if (otherValues.isNotEmpty()) otherValues.random(rand) else input1ValueId
-            }
-
-            // 选择第三个输入 (y) — 寻找与 input1Shape / input2Shape 广播兼容的值
-            val shape12 = ShapeInferer.broadcastShapes(input1Shape, valueShapes[input2ValueId] ?: input1Shape)
-            val broadcastComp3 = availableValues.filter { vid ->
-                vid != input1ValueId && vid != input2ValueId && valueShapes[vid]?.let { s3 ->
-                    ShapeConstraints.areBroadcastable(shape12, s3)
-                } ?: false
-            }
-            val input3ValueId = if (broadcastComp3.isNotEmpty()) {
-                broadcastComp3.random(rand)
-            } else {
-                val otherValues = availableValues.filter { it != input1ValueId && it != input2ValueId }
-                if (otherValues.isNotEmpty()) otherValues.random(rand) else input2ValueId
-            }
-
             val input1Ref = buildValueRef {
                 this.valueId = input1ValueId
                 this.type = buildTensorType {
                     this.typeKind = UirTypeKind.TENSOR
-                    this.shape = valueShapes[input1ValueId] ?: buildShape { }
+                    this.shape = input1Shape
                     this.dtype = mkDataType()
                 }
             }
-            val input2Ref = buildValueRef {
-                this.valueId = input2ValueId
-                this.type = buildTensorType {
-                    this.typeKind = UirTypeKind.TENSOR
-                    this.shape = valueShapes[input2ValueId] ?: buildShape { }
-                    this.dtype = mkDataType()
-                }
-            }
-            val input3Ref = buildValueRef {
-                this.valueId = input3ValueId
-                this.type = buildTensorType {
-                    this.typeKind = UirTypeKind.TENSOR
-                    this.shape = valueShapes[input3ValueId] ?: buildShape { }
-                    this.dtype = mkDataType()
-                }
-            }
-            return listOf(input1Ref, input2Ref, input3Ref)
+
+            // 选择第二个输入 (x) — 寻找或生成与 input1Shape 广播兼容的值
+            val input2Ref = getOrCreateBroadcastInput(
+                input1Shape, availableValues, setOf(input1ValueId), nodeList, "ternary_in2"
+            )
+            val input2Shape = valueShapes[input2Ref.valueId] ?: input1Shape
+
+            // 选择第三个输入 (y) — 寻找或生成与 input1Shape / input2Shape 广播兼容的值
+            val shape12 = ShapeInferer.broadcastShapes(input1Shape, input2Shape)
+            val input3Ref = if (numInputs >= 3) {
+                getOrCreateBroadcastInput(
+                    shape12, availableValues, setOf(input1ValueId, input2Ref.valueId), nodeList, "ternary_in3"
+                )
+            } else null
+
+            return if (input3Ref != null) listOf(input1Ref, input2Ref, input3Ref)
+                   else listOf(input1Ref, input2Ref)
         }
         
         // 其他情况：随机选择，但优先选择满足约束的值
@@ -1511,9 +1571,12 @@ open class UirGenerator(private val config: GeneratorConfig = GeneratorConfig())
             val chainLen = rand.nextInt(config.shapePreservingChainRange.first, config.shapePreservingChainRange.last + 1)
             var currentValueId = constValueId
             var currentShape = targetShape
-        
+            val candidates = UirOpKind.shapePreservingOps.filter { op ->
+                (!config.avoidNaNInf || op !in nanInfProneOps) &&
+                (!config.avoidExtremeOps || op !in extremeOps)
+            }
             for (i in 0 until chainLen) {
-                val shapeOp = UirOpKind.shapePreservingOps.toList().random(rand)
+                val shapeOp = (if (candidates.isNotEmpty()) candidates else listOf(UirOpKind.RELU)).random(rand)
                 val outValueId = newValueId()
                 valueShapes[outValueId] = currentShape  // 形状不变
             
