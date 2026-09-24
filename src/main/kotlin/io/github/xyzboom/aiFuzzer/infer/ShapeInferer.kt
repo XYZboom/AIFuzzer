@@ -847,10 +847,11 @@ object ShapeInferer {
         
         val inputShape = inputShapes[0]
         
-        // 简化处理：在 axis=0 插入
-        val outputDims = mutableListOf<UirDim>()
-        outputDims.add(constantDim(1))
-        outputDims.addAll(inputShape.dims)
+        val rawAxis = (attributes["axis"] as? UirIntAttr)?.value ?: 0
+        val axis = if (rawAxis >= 0) rawAxis else inputShape.dims.size + 1 + rawAxis
+        
+        val outputDims = inputShape.dims.toMutableList()
+        outputDims.add(axis.coerceIn(0, outputDims.size), constantDim(1))
         
         return listOf(shapeFromDims(outputDims))
     }

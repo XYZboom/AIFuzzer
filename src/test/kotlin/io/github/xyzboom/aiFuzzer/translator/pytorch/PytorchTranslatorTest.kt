@@ -69,4 +69,24 @@ class PytorchTranslatorTest {
         // 第二个 module 可能不会被执行，但应该被定义
         // （因为主代码只实例化 TestModule_0）
     }
+
+    @Test
+    fun `translator should not bypass unsqueeze on high dimensional inputs`() {
+        val translator = PytorchTranslator()
+        val generator = UirGenerator(GeneratorConfig(
+            seed = 6059L,
+            minNodesPerGraph = 6,
+            maxNodesPerGraph = 12,
+            minInputs = 1,
+            maxInputs = 4,
+            minNdim = 1,
+            maxNdim = 5,
+        ))
+        val program = generator.generate()
+        val pythonCode = translator.translate(program)
+
+        // 必须没有残留的 ndim >= 4 旁路代码
+        assertFalse(pythonCode.contains("ndim >= 4"))
+        assertTrue(pythonCode.contains("class TestModule_0"))
+    }
 }

@@ -730,11 +730,11 @@ class PytorchTranslator(
                 "$pytorchFunc(${valueMap[node.inputs[0].valueId]})"
             }
             UirOpKind.UNSQUEEZE -> {
-                val axis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
+                val rawAxis = (node.attributes["axis"] as? UirIntAttr)?.value ?: 0
                 val inputVar = valueMap[node.inputs[0].valueId]!!
-                // Runtime guard: skip unsqueeze if input is already ≥4D
-                // (downstream ops like conv2d, batch_norm, interpolate require ≤4D)
-                "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $axis))"
+                val ndim = node.inputs[0].type.shape.dims.size
+                val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + 1 + rawAxis
+                "torch.unsqueeze($inputVar, $normalizedAxis)"
             }
 
             // ===== 拼接/分割 =====
@@ -889,9 +889,8 @@ UirOpKind.TILE -> {
                 val ndim = node.inputs[0].type.shape.dims.size
                 // 归一化负轴：与 ShapeInferer.inferExpandDimsShape 保持一致
                 // PyTorch 的 torch.unsqueeze 使用 output_ndim + axis = (input.ndim + 1) + axis
-                // axis=-1 在 1D 输入上 → (1+1)+(-1)=1 → 在末尾插入 → [75,1]
                 val normalizedAxis = if (rawAxis >= 0) rawAxis else ndim + 1 + rawAxis
-                "($inputVar if $inputVar.ndim >= 4 else torch.unsqueeze($inputVar, $normalizedAxis))"
+                "torch.unsqueeze($inputVar, $normalizedAxis)"
             }
 
             // ===== 默认 =====
